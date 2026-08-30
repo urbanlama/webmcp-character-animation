@@ -71,13 +71,11 @@ ein Fehler: Für eine 60 cm große Figur bedeuten 50 cm etwas anderes als für e
 
 ## Arbeitsteilung
 
-Kritische Rechenlogik und alles Sichtbare baut Opus, über die Subagents `kern`,
-`oberflaeche` und `festgefahren` in `.claude/agents/`. Abgegrenzte Arbeitspakete gehen
-an Qwen 3.8 Flash über Command Code und an GLM 5.3 Flash über Ollama — beides starke
-Modelle, die echte Pakete bekommen, keinen Kleinkram.
+Opus baut die Rechenlogik im Kern und alles Sichtbare. Der Rest der Bauarbeit geht an
+GLM 5.3 Flash über Ollama (zuerst ausschöpfen, höchstens drei gleichzeitig) und an
+Qwen 3.8 Flash über Command Code (beliebig viele).
 
-Kein Auftrag an ein externes Modell ohne Abnahmetest mit Negativfall. Einzelheiten und
-getestete Befehlszeilen in `docs/flotte.md`.
+Kein Auftrag ohne Abnahmetest mit Negativfall. Aufrufe in `docs/flotte.md`.
 
 ## Aufbau des Repos
 
