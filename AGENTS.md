@@ -123,6 +123,34 @@ erkennt, dass es fertig ist.
 **Zwei Agents bearbeiten nie gleichzeitig dieselbe Datei.** Gemeinsame Dateien —
 Schemata, Werkzeugkatalog — gehören dem Leiter.
 
+## Abnahme: Grün heißt gar nichts
+
+Der Leiter nimmt kein Ergebnis an, weil ein Test grün ist. Ein grüner Test ist ein
+Hinweis, kein Beweis. Er hat die Endverantwortung und muss selbst hinsehen.
+
+**Belegt, zweimal am selben Tag:** Eine Messschicht meldete null Fehler auf sauberem
+Mocap — und war maßlos überangepasst, weil sie mit denselben Daten kalibriert war, mit
+denen sie geprüft wurde. Eine Animation bestand jede Physikprüfung und zeigte auf dem
+Bildschirm eine Figur, die ein Drittel der Zeit reglos dastand.
+
+Bei jeder Abnahme sind vier Dinge zu klären:
+
+**Ist der Negativfall tatsächlich rot geworden?** Nicht "es gibt einen Negativtest",
+sondern: Er lief, und er hat gemeldet. Die Zeile aus der Ausgabe muss vorliegen.
+
+**Stimmt der gemeldete Betrag?** Wer 5 cm absenkt, muss 5 cm zurückbekommen. Eine
+Meldung ohne Zahl oder mit falscher Zahl ist ein Durchfall.
+
+**Wurde mit anderen Daten geprüft als kalibriert?** Wenn irgendwo gelernt wird, ist das
+die erste Frage.
+
+**Und bei allem, was Bewegung erzeugt: das Bild ansehen.** Selbst. Widersprechen sich
+Zahl und Bild, gewinnt das Bild und das Paket geht zurück.
+
+**Prüfen darf delegiert werden, die Verantwortung nicht.** Der Leiter kann Prüfaufträge
+ausschicken — gerade um handlungsfähig zu bleiben, während anderes läuft. Aber er
+entscheidet, ob abgenommen wird, und das Bild schaut er sich an.
+
 ## Schwarzes Brett
 
 `BRETT.md` ist die gemeinsame Pinnwand. Dort steht, was andere wissen müssen: geänderte
