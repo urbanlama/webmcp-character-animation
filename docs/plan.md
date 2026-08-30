@@ -442,9 +442,16 @@ Fragen pro Auftrag, einstellbar bis null.
 
 ### 6.8 Sehen
 
-Feste benannte Ansichten im Charakter-Bezugssystem, mehrere in einem Bild, immer
-annotiert mit Achsenkreuz, Bodengitter mit Maßstab, Schwerpunkt, Stützfläche und
-Kontaktpunkten.
+Zwei getrennte Blicke auf dieselbe Szene.
+
+**Der Mensch** sieht die Figur von vorne, mittig, in ganzer Höhe, zugewandt. Kamerahöhe
+und -abstand folgen der gemessenen Körpergröße, die Drehung der gemessenen
+Vorwärtsachse. Eine Figur, die aus dem Bild ragt oder dem Betrachter den Rücken zukehrt,
+ist ein Fehler, kein Geschmack.
+
+**Der Agent** bekommt feste benannte Ansichten im Charakter-Bezugssystem, mehrere in
+einem Bild, immer annotiert mit Achsenkreuz, Bodengitter mit Maßstab, Schwerpunkt,
+Stützfläche und Kontaktpunkten. Diese dürfen technisch aussehen.
 
 **An jedem Validierungsbericht hängt automatisch ein Bildstreifen der kritischen
 Frames.** Der Agent bekommt das Bild, ohne danach zu fragen — die direkte Antwort auf

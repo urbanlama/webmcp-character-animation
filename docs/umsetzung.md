@@ -38,9 +38,21 @@ gerade wenig läuft.
 |---|---|---|
 | Testkommando | ein Kommando führt alle Tests aus und meldet Erfolg | ein absichtlich fehlschlagender Test lässt das Kommando mit Fehlercode enden |
 | Laden | `Xbot.glb` wird per Datei-Auswahl geladen, Figur steht sichtbar in der Szene | eine Datei ohne Skelett wird mit benanntem Grund abgelehnt |
+| Ansicht | die Figur steht mittig im Bild und ist dem Betrachter zugewandt | dasselbe gilt für eine auf 0,6 m und eine auf 2,4 m skalierte Kopie — steht sie dann am Rand oder ragt aus dem Bild, sind Kamerawerte eingetippt statt gemessen |
 
 Legt fest, wie in diesem Projekt getestet wird, und stellt die Szene bereit, in der
 alles andere sichtbar wird. Solange das offen ist, kann kein Paket abgenommen werden.
+
+**Die Ansicht, die der Mensch sieht, ist nicht die Ansicht, die der Agent bekommt.** Der
+Mensch sieht die Figur von vorne, mittig, in ganzer Höhe — sie schaut ihn an. Der Agent
+bekommt die technischen Ansichten aus AP9. Wer beides in dieselben Kamerawerte packt,
+macht eine davon unbrauchbar.
+
+Der Spike macht es falsch und zeigt genau, was schiefgeht: `index.html:57` startet
+seitlich, mit auf Xbot getippten Abständen. Kamerahöhe und -abstand kommen aus der
+Bounding Box des geladenen Modells. Die Zuwendung braucht die gemessene Vorwärtsachse
+aus AP2; bis die vorliegt, genügt die tiefste Ausdehnung der Bounding Box als Näherung,
+und AP2 korrigiert sie.
 
 Mit zu entscheiden und im Brett zu vermerken: Läuft ein Test in Node oder im Browser?
 Löser und Prüfungen brauchen three.js und ein geladenes Skelett — eine Antwort für alle,
@@ -190,6 +202,9 @@ Kann gegen Attrappen gebaut werden, bevor Löser und Prüfungen stehen.
 
 Ohne dieses Paket ist der teuerste Fehler — korrekte Zahlen bei toter Bewegung — nicht
 zu sehen, und AP5 nicht abzunehmen. Details in `docs/plan.md` 6.8.
+
+Diese Ansichten sind für den Agenten gemacht und dürfen technisch aussehen. Die Ansicht
+des Menschen gehört AP0 und wird hier nicht angefasst.
 
 ---
 
