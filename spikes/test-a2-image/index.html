@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Test A2 – Kommt ein Bild beim Agenten an?</title>
+<style>
+  body{margin:0;background:#0e1116;color:#e6edf3;font:14px/1.6 ui-monospace,Consolas,monospace;padding:22px;max-width:900px}
+  h1{font-size:17px;margin:0 0 6px} .dim{color:#8b949e}
+  .panel{background:#161b22;border:1px solid #262d38;border-radius:8px;padding:14px;margin-top:14px}
+  canvas{border-radius:6px;border:1px solid #262d38;margin-right:10px}
+  .row{padding:4px 0;border-bottom:1px solid #262d38;display:flex;justify-content:space-between}
+  .ok{color:#3fb950} .bad{color:#f85149}
+</style>
+</head>
+<body>
+<h1>Test A2 – Kommt ein Bild in einer Werkzeugantwort beim Agenten an?</h1>
+<p class="dim">Jedes Bild enthält ein Wort, das nirgends im Text steht.
+Wer das Wort nennen kann, hat das Bild gesehen.</p>
+
+<div class="panel">
+  <canvas id="c1" width="300" height="150"></canvas>
+  <canvas id="c2" width="300" height="150"></canvas>
+</div>
+
+<div class="panel">
+  <div class="row"><span>API gefunden</span><b id="mApi" class="dim">–</b></div>
+  <div class="row"><span>Werkzeuge registriert</span><b id="mTools">0</b></div>
+  <div class="row"><span>image-Typ akzeptiert</span><b id="mImg" class="dim">–</b></div>
+  <div class="row"><span>Aufrufe</span><b id="mCalls">0</b></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var mc = document.modelContext || navigator.modelContext;
+  var el = function (id) { return document.getElementById(id); };
+  var calls = 0, tools = 0;
+
+  // Zwei Bilder mit je einem geheimen Wort.
+  // Zufaellig gewaehlt, damit auch der Testende sie nicht vorher kennt.
+  var POOL = ["KAKTUS","SCHNEEBESEN","LEUCHTTURM","WASSERHAHN","ZAHNRAD","KOMPASS",
+              "TROMPETE","LAWINE","BRIEFKASTEN","NUDELHOLZ","SEEIGEL","ZIMTSTERN"];
+  function pick(ex) { var w; do { w = POOL[Math.floor(Math.random()*POOL.length)]; } while (w === ex); return w; }
+  var WORDS = {}; WORDS.c1 = pick(); WORDS.c2 = pick(WORDS.c1);
+  function paint(id, word, bg) {
+    var c = el(id), x = c.getContext('2d');
+    x.fillStyle = bg; x.fillRect(0, 0, 300, 150);
+    x.fillStyle = '#ffffff'; x.font = 'bold 30px monospace';
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText(word, 150, 75);
+    x.strokeStyle = '#ffffff'; x.lineWidth = 3;
+    x.strokeRect(14, 14, 272, 122);
+  }
+  paint('c1', WORDS.c1, '#1f6feb');
+  paint('c2', WORDS.c2, '#8957e5');
+  var b64 = function (id) { return el(id).toDataURL('image/png').split(',')[1]; };
+
+  if (!mc) { el('mApi').textContent = 'NEIN'; el('mApi').className = 'bad'; return; }
+  el('mApi').textContent = 'ja'; el('mApi').className = 'ok';
+
+  function note(n) { calls++; el('mCalls').textContent = calls; }
+  function reg(def) {
+    return Promise.resolve(mc.registerTool(def))
+      .then(function () { tools++; el('mTools').textContent = tools; return true; })
+      .catch(function (e) { window.__regError = String(e); return false; });
+  }
+
+  var defs = [
+    { // Variante A: MCP-Bildtyp
+      name: 'bild_als_image',
+      description: 'Liefert ein Bild zurueck. Auf dem Bild steht ein Wort. Nenne das Wort.',
+      inputSchema: { type: 'object', properties: { welches: { type: 'string', description: 'eins oder zwei' } } },
+      execute: function (a) {
+        note();
+        var id = (a && a.welches === 'zwei') ? 'c2' : 'c1';
+        return { content: [{ type: 'image', data: b64(id), mimeType: 'image/png' }] };
+      }
+    },
+    { // Variante B: Data-URL im Text
+      name: 'bild_als_dataurl',
+      description: 'Liefert ein Bild als Data-URL im Text zurueck. Auf dem Bild steht ein Wort. Nenne das Wort.',
+      inputSchema: { type: 'object', properties: { welches: { type: 'string' } } },
+      execute: function (a) {
+        note();
+        var id = (a && a.welches === 'zwei') ? 'c2' : 'c1';
+        return { content: [{ type: 'text', text: el(id).toDataURL('image/png') }] };
+      }
+    },
+    { // Variante C: Bild plus erklaerender Text
+      name: 'bild_mit_text',
+      description: 'Liefert Messwerte als Text und zusaetzlich ein Bild. Auf dem Bild steht ein Wort. Nenne das Wort.',
+      inputSchema: { type: 'object', properties: { welches: { type: 'string' } } },
+      execute: function (a) {
+        note();
+        var id = (a && a.welches === 'zwei') ? 'c2' : 'c1';
+        return { content: [
+          { type: 'text', text: 'Messwerte: Bodenabstand 0.8 cm, Schwerpunkt im Lot.' },
+          { type: 'image', data: b64(id), mimeType: 'image/png' }
+        ] };
+      }
+    }
+  ];
+
+  (function chain(i) {
+    if (i >= defs.length) {
+      el('mImg').textContent = window.__regError ? ('Fehler: ' + window.__regError) : 'Registrierung ok';
+      el('mImg').className = window.__regError ? 'bad' : 'ok';
+      window.__ready = true;
+      return;
+    }
+    reg(defs[i]).then(function () { chain(i + 1); });
+  })(0);
+
+  window.__words = WORDS;
+})();
+</script>
+</body>
+</html>
