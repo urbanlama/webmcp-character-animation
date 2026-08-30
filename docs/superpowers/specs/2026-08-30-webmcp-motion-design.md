@@ -2,7 +2,37 @@
 
 Beitrag zur OpenAI WebMCP Challenge. Abgabe: 3. September 2026, 13:00 PT.
 
-## Bewertungskriterien der Challenge
+Fassung 2. Die erste Fassung wurde von zwei unabhängigen Prüfern zerlegt; alle Funde
+sind eingearbeitet. Was sich geändert hat, steht am Ende unter „Was Fassung 1 falsch
+gemacht hat".
+
+---
+
+## 0. Wie in diesem Projekt geprüft wird
+
+Diese Regeln stehen ganz oben, weil ihre Verletzung heute bereits zwei falsche
+Ergebnisse erzeugt hat.
+
+**Kein Test ohne Negativfall.** Ein Test, der nur bestätigt, dass etwas grün ist, ist
+wertlos. Zu jedem Test gehört ein absichtlich kaputter Fall, der rot werden **muss**.
+Wird er nicht rot, ist der Test kaputt, nicht der Code.
+
+**Kalibrierungsdaten und Testdaten sind getrennt.** Wer aus Daten lernt, darf nicht mit
+denselben Daten prüfen. Belegt: Auf allen fünf Referenzclips kalibriert ergab null
+Fehlalarme; auf zwei kalibriert und gegen die anderen drei geprüft ergab 150, 132 und
+183. Der Erfolg war Überanpassung.
+
+**Zahlen ohne Bild sind unvollständig.** Jeder Abnahmetest, der ein Bewegungsergebnis
+bewertet, erzeugt zusätzlich einen Bildstreifen. Wenn Zahlen und Bild sich
+widersprechen, gewinnt das Bild und der Test gilt als nicht bestanden.
+
+**Ein Ergebnis ist erst dann ein Ergebnis, wenn der Weg dahin geprüft ist.** Nicht „der
+Wert ist 0,03", sondern „der Wert ist 0,03, und bei einem eingebauten Fehler von 0,05
+meldet dasselbe Verfahren 0,05".
+
+---
+
+## 1. Bewertungskriterien der Challenge
 
 Vier Kriterien, gleich gewichtet (Quelle: `docs/challenge.md`):
 
@@ -11,256 +41,632 @@ Vier Kriterien, gleich gewichtet (Quelle: `docs/challenge.md`):
 3. **Potential Impact** — echtes Problem, echte Zielgruppe
 4. **Creativity & Ambition**
 
-Für die Architektur heißt das vor allem: Der WebMCP-Anteil darf nicht dekorativ sein.
-Messschicht, Löser und Retargeting wären in einem klassischen MCP-Server identisch. Was
-nur WebMCP kann, ist die gemeinsame sichtbare Situation — Mensch, Agent, Modell und
-Diagnose in derselben laufenden Seite. Die Mensch-Schleife ist deshalb kein Zusatz,
-sondern das Kernstück.
+Für die Architektur folgt daraus: Messschicht, Löser und Retargeting wären in einem
+klassischen MCP-Server identisch. Was **nur** WebMCP kann, ist die gemeinsame sichtbare
+Situation — Mensch, Agent, Modell und Diagnose in derselben laufenden Seite. Die
+Mensch-Schleife ist deshalb kein Zusatz, sondern das Kernstück.
 
-## Was gebaut wird
+---
 
-Eine Webseite, in die man ein beliebiges geriggtes Humanoid-Modell lädt. Die Seite
-vermisst das Skelett selbst und erzeugt daraus die Werkzeuge, die ein Agent für
-genau dieses Modell braucht. Der Mensch schreibt im Chat, was animiert werden soll.
-Der Agent baut die Animation, sieht nach jedem Schritt Messwerte statt nur Bilder,
-und fragt den Menschen, wo Zahlen nicht weiterhelfen. Ergebnis ist ein abspielbarer
-und exportierbarer Clip.
+## 2. Was gebaut wird
 
-## Was vorher gemessen wurde
+Eine Webseite, in die man ein geriggtes Humanoid-Modell lädt. Die Seite vermisst das
+Skelett selbst und stellt einem Agenten Werkzeuge bereit, mit denen er Bewegung als
+Abfolge von Phasen erzeugt. Nach jedem Schritt bekommt der Agent Messwerte **und** ein
+Bild. Wo Zahlen nicht ausreichen, fragt er den Menschen — mit einem Klick beantwortbar.
+Ergebnis ist ein abspielbarer und als glTF exportierbarer Clip.
 
-Zwei Vorabtests, beide durchgeführt. Ihre Ergebnisse bestimmen die Architektur.
+---
 
-### Test A — WebMCP-Grenzen (Chrome 151, gemessen)
+## 3. Was gemessen wurde
+
+### 3.1 WebMCP-Grenzen (Chrome 151)
 
 | Frage | Ergebnis |
 |---|---|
-| Werkzeuge zur Laufzeit nachregistrieren | funktioniert, 5 → 45 Werkzeuge, alle aufrufbar |
+| Werkzeuge zur Laufzeit nachregistrieren | funktioniert, 5 → 45, alle aufrufbar |
 | Antwortgröße | 512 KB in 5 ms, vollständig |
 | 50 Aufrufe am Stück | 16 ms, fehlerfrei |
-| Werkzeug wartet auf Klick des Menschen | funktioniert, Antwort kommt im selben Aufruf zurück |
+| Werkzeug wartet auf Klick des Menschen | funktioniert, Antwort im selben Aufruf |
 
-API-Fakten: `document.modelContext.registerTool({name, description, inputSchema, execute})`.
-`execute` liefert `{content:[{type:'text',text}]}`. Zusätzlich existieren `getTools()`
-und `executeTool(tool, argsAlsJsonString)` — die Seite kann ihre eigenen Werkzeuge
-aufrufen, was Regressionsläufe ohne Agent ermöglicht.
+`await document.modelContext.registerTool({name, description, inputSchema, execute})`,
+`execute` liefert `{content:[{type:'text',text}]}`. Zusätzlich `getTools()` und
+`executeTool(tool, argsAlsJsonString)` — die Seite kann ihre eigenen Werkzeuge aufrufen,
+was Regressionsläufe ohne Agent ermöglicht.
 
-Ungeklärt: wie ein echter Browser-Agent mit 45 Werkzeugen umgeht und wie viele
-Aufrufe er freiwillig macht. Kein ChatGPT-Browser verfügbar.
+**Diese Messung sagt nichts über Agentenverhalten.** Sie misst Transport im Browser,
+nicht ob ein Agent 45 Werkzeuge überblickt, wie viele Aufrufe er freiwillig macht oder
+wie viel Text sein Kontext verkraftet.
 
-### Test B — Kann ein Agent mit Messfeedback animieren?
+### 3.2 Rohe Keyframes plus Messfeedback reichen nicht
 
 Aufbau: festes Mixamo-Rig, Keyframe-Werkzeuge auf Gelenkebene, vier Validatoren,
-Bildausgabe. Agent: Fable 5 auf hoher Reasoning-Stufe, ohne Zugriff auf den Quellcode.
-Auftrag: Rückwärtssalto aus dem Stand.
+Bildausgabe auf Anforderung. Agent: Fable 5, hohe Reasoning-Stufe, kein Zugriff auf den
+Quellcode. Auftrag: Rückwärtssalto aus dem Stand.
 
-Ergebnis nach zwanzig Minuten: eine Drehung ohne Absprung. Ein Drittel der Timeline
-bewegungslos, kaum Flughöhe, harte Übergänge, keine Vorbereitung, keine Landung.
-Der Agent hat in dieser Zeit **kein einziges Bild** gerendert und rein nach Zahlen
-gearbeitet.
+Ergebnis nach zwanzig Minuten: eine Drehung ohne Absprung. Ein Drittel der Zeitachse
+bewegungslos, kaum Flughöhe, harte Übergänge, keine Vorbereitung, keine Landung. Der
+Agent hat in dieser Zeit **kein einziges Bild** gerendert.
 
 Drei Schlüsse:
 
-1. **Messfeedback ist notwendig, aber nicht hinreichend.** Ohne Messung geht nichts,
-   mit Messung allein aber auch nicht.
-2. **Gelenkwinkel sind die falsche Aktionsebene.** Der Agent muss Phasen bestellen,
-   nicht Winkel setzen.
-3. **Fehlerfreiheit ist kein Erfolg.** Eine Animation, in der nichts passiert, besteht
-   jede Prüfung.
+1. Messfeedback ist notwendig, aber nicht hinreichend.
+2. Gelenkwinkel sind die falsche Aktionsebene.
+3. Fehlerfreiheit ist kein Erfolg — wo nichts passiert, ist auch nichts falsch.
 
-### Nebenbefund: Geratene Zahlen sind wertlos
+### 3.3 Gemessene Geometrie schlägt geschätzte
 
-Bei der Entwicklung der Messschicht wurden Kapselradien, Massenverteilung und
-Fußkontaktpunkte zunächst geschätzt. Ergebnis: 269 Fehlalarme auf einem Mocap-Clip,
-in dem eine Figur ruhig dasteht.
+Geschätzte Kapselradien, Massen und Fußkontaktpunkte erzeugten 269 Fehlalarme auf einem
+Clip, in dem eine Figur ruhig dasteht.
 
-Nach Umstellung auf gemessene Werte — Radien aus Vertexabständen zur Knochenachse,
-Massen aus Kapselvolumen, Sohlen aus der Bodennähe in Bind-Pose, erlaubte
-Berührungsabstände aus Referenzbewegung — sank die Zahl auf **null** bei fünf von
-sieben Clips. Die verbleibenden zwei laufen auf der Stelle und rutschen tatsächlich.
+Nach Umstellung auf Messung — Radien aus Vertexabständen zur Segmentachse, Massen aus
+Kapselvolumen, Sohlen aus Bodennähe in Bind-Pose, Kontaktschwelle aus der Sohlenhöhe —
+verschwanden **Bodendurchdringung und Balancefehler vollständig**, und zwar auch ohne
+jede weitere Kalibrierung.
 
-Ebenso falsch waren die Gelenkachsen: Links-Rechts-Spiegelung fehlte, Hüftbeugung
-wirkte rückwärts, die Beckendrehung war wirkungslos. Alle drei wurden durch
-automatisches Abtasten gefunden und korrigiert.
+### 3.4 Kapseln taugen nicht für Selbstdurchdringung
 
-**Regel für den Plan: Keine Körpergröße wird gesetzt. Jede wird gemessen.**
+Der Hold-out-Test:
 
-## Architektur
+| Prüfung | kalibriert auf alle 5 | nur auf walk+run | gar nicht kalibriert |
+|---|---|---|---|
+| idle | 0 | 150 | 150 |
+| agree | 0 | 132 | 132 |
+| headShake | 0 | 183 | 183 |
 
-### Schicht 1 — Rig-Verständnis
+Alle verbleibenden Meldungen sind Selbstdurchdringungen. Zwei Erkenntnisse:
 
-Eingabe: glTF/GLB mit Skin und Bind-Pose. Ausgabe: ein Rig-Profil.
+**Das Lernen aus Referenzbewegung überträgt nicht.** Spalte 2 und 3 sind identisch — was
+aus `walk` gelernt wurde, hilft `idle` nicht.
 
-Was gemessen wird:
+**Zylinder um Knochen sind zu grob.** Eine stehende Figur hat die Hand am Oberschenkel
+und den Arm am Rumpf. Das überlappt dauerhaft, unabhängig davon, wie gut die Radien
+gemessen sind.
 
-- Symmetrieebene aus Bind-Pose-Positionen, daraus Links/Rechts-Paare
-- Mittelkette (Becken, Wirbelsäule, Hals, Kopf) aus Knochen nahe der Symmetrieebene
-- Gliedmaßen als längste abzweigende Ketten, sortiert nach Richtung gegen die Up-Achse
-- Endeffektoren, Finger, Scharniergelenke aus der Bind-Pose-Geometrie
-- Körperhöhe, Bodenebene, Maßstab — alle Toleranzen relativ zur Körperhöhe
-- Kapselradien aus Vertexabständen zur Segmentachse
-- Massenanteile aus Kapselvolumen bei konstanter Dichte
-- Sohlenpunkte rein geometrisch: was in Bind-Pose nahe am Boden liegt
-- Vorzeichen jedes Freiheitsgrades durch Abtasten: +20° anwenden, Wirkung messen,
-  Vorzeichen drehen, wo Name und Wirkung nicht zusammenpassen
+Konsequenz für die Architektur: Selbstdurchdringung wird nicht über gelernte
+Paarabstände geprüft, sondern über **Bind-Pose-Ruheabstände** — wie nah sind sich zwei
+Segmente, wenn die Figur entspannt steht? Das ist eine Messung am Modell und setzt keine
+mitgelieferten Clips voraus.
 
-Jede Zuordnung trägt eine Konfidenz. Unsichere Zuordnungen werden nicht geraten,
-sondern gemeldet.
+### 3.5 Gelenkachsen lassen sich messen
 
-### Schicht 2 — Weltvertrag
+Automatisches Abtasten (+20° anwenden, Wirkung am Kettenende messen) fand drei Fehler:
+fehlende Links-Rechts-Spiegelung, rückwärts wirkende Hüftbeugung, wirkungslose
+Beckendrehung. Alle drei wurden korrigiert, das Verfahren ist übertragbar.
 
-Ein Dokument, auf das sich jedes Werkzeug bezieht und das in jeder Antwort mitschwingt:
-Oben, Boden, Blickrichtung, Links, Maßstab. Ausdrücklich getrennt: Bühnen-vorne und
-Charakter-vorne. Jedes Werkzeug nennt in seiner Beschreibung, in welchem Bezugssystem
-es arbeitet.
+**Grenze des Verfahrens:** Drehungen um die eigene Kettenachse (Twist) erzeugen keine
+Bewegung am Kettenende und sind so nicht messbar. Für sie braucht es einen seitlich
+versetzten Messpunkt.
 
-### Schicht 3 — Aktionsebenen
+---
 
-Der Agent wählt die Ebene selbst und geht tiefer, wenn das Ergebnis nicht passt oder
-der Mensch es verlangt.
+## 4. Grundregeln
 
-**Ebene 1, Phasen.** Ein Aufruf pro Bewegungsabschnitt: absenken, ausholen, abspringen,
-drehen, strecken, landen, abfedern. Parameter sind Dauer, Stärke, Richtung. Das System
-erzeugt daraus Posen und Zwischenwerte. Hier arbeitet der Agent normalerweise.
+**Körpermaße werden gemessen, Verfahrensparameter werden benannt.**
 
-**Ebene 2, Ziele.** Endeffektor-Positionen, Schwerpunktbahn, Blickrichtung. Ein Löser
-rechnet die Gelenke aus. Für Fälle, in denen Ebene 1 nicht genau genug trifft.
+Die erste Fassung sagte „keine Zahl wird gesetzt" und war damit sachlich falsch — im
+Code standen 0,90 als Radiusperzentil, 3,5 % als Sohlentoleranz und 1,5 cm als
+Kontaktzuschlag. Solche Parameter sind unvermeidlich. Sie dürfen nur nicht unsichtbar
+sein.
 
-**Ebene 3, Gelenke.** Direkter Zugriff auf Winkel. Jederzeit erlaubt, Validatoren laufen
-mit. Für Feinheiten, die keine Abstraktion vorhergesehen hat.
+Deshalb: Alle Verfahrensparameter stehen an einer Stelle im Code, mit Begründung, und
+werden im Rig-Bericht ausgegeben. Wer einen davon ändert, muss die Abnahmetests erneut
+bestehen.
 
-Test B hat gezeigt: Ebene 3 allein reicht nicht. Ebene 1 ist die Voraussetzung dafür,
-dass überhaupt etwas Brauchbares entsteht.
+| Parameter | Wert | Begründung |
+|---|---|---|
+| Radiusperzentil | 0,90 | 0,80 unterschätzt die Körperbreite, 1,00 fängt Ausreißer |
+| Sohlentoleranz | 3,5 % Körperhöhe | muss Modelle erfassen, die auf dem Ballen stehen |
+| Kontaktzuschlag | 1,5 cm | Spielraum über dem höchsten Sohlenpunkt |
+| Abtastwinkel | 20° | groß genug für messbare Wirkung, klein genug ohne Überschlag |
 
-### Schicht 4 — Garantien statt Prüfungen
+**Alle Toleranzen sind relativ zur Körperhöhe.** Eine Landetoleranz von 50 cm bedeutet
+für eine 60 cm große Figur etwas anderes als für eine 2,40 m große. Absolute
+Zentimeterwerte in Schwellen sind ein Fehler.
 
-Was das System erzwingt, muss nicht geprüft werden:
+**Werkzeugbeschreibungen und Fehlermeldungen sind Produktoberfläche.** Nicht „ungültige
+Eingabe", sondern „Frame 34 liegt außerhalb der Timeline von 0 bis 60".
 
-- Fußanker: ein Fuß, der über mehrere Frames Kontakt hat, bleibt an derselben Stelle
-- Ballistik: in Flugphasen folgt der Schwerpunkt einer Parabel, der Drehimpuls bleibt
-  konstant
-- Gelenkgrenzen: Winkel werden beim Setzen in den erlaubten Bereich gebracht, mit
-  Rückmeldung darüber
-- Bodenkontakt: kein Körperteil sinkt unter y = 0
+---
 
-### Schicht 5 — Die drei Validierungsschichten
+## 5. Datenverträge
 
-**Physik — gilt immer, kennt keine Bewegungsart.**
-Bodendurchdringung, Selbstdurchdringung, Gelenkgrenzen, Fußrutschen bei Kontakt,
-Balance bei Bodenkontakt, ballistische Bahn in der Flugphase. Alle phasenabhängig:
-Balance wird im Flug nicht geprüft.
+Ohne diese Verträge kann niemand parallel arbeiten. Sie werden zuerst geschrieben, in
+einer Datei, und danach nur mit Absprache geändert. Zu jedem Vertrag gehören Beispiel-
+dateien: ein gültiger Fall und ein absichtlich kaputter.
 
-**Absicht — vom Agenten formuliert, vom Menschen bestätigt.**
-Der Agent schreibt vor dem Bauen auf, woran die Bewegung zu erkennen ist. Aus einem
-festen Satz messbarer Bausteine:
+### 5.1 RigProfile
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "source": { "file": "charakter.glb", "boneCount": 67, "vertexCount": 12473 },
+  "world": {
+    "up": "y", "forward": "z", "left": "x",
+    "groundY": 0.0,
+    "height": 1.5968,              // Meter, Bind-Pose
+    "unitsPerMeter": 1.0
+  },
+  "bones": [
+    { "id": "mixamorigHips", "parent": null, "bindWorld": [0,1.04,0] }
+  ],
+  "roles": {
+    // semantische Rolle -> Knochen, mit Konfidenz 0..1
+    "pelvis":   { "bone": "mixamorigHips",     "confidence": 1.0 },
+    "foot_l":   { "bone": "mixamorigLeftFoot", "confidence": 0.94 },
+    "tail":     { "bone": "bone_058",          "confidence": 0.0, "note": "unbekannte Kette" }
+  },
+  "joints": {
+    "hip_l": {
+      "bone": "mixamorigLeftUpLeg",
+      "dof": { "flex": { "axis": "x", "sign": -1, "limit": [-30, 130] } },
+      "signSource": "gemessen",     // gemessen | nicht_messbar
+      "limitSource": "anatomisch"   // anatomisch | gemessen
+    }
+  },
+  "segments": [
+    { "id": "thigh_l", "from": "...UpLeg", "to": "...Leg",
+      "radius": 0.0858, "mass": 0.1372, "volume": 0.0121 }
+  ],
+  "soles": [
+    { "id": "sole_l_front_out", "bone": "...LeftFoot", "local": [0.03,-0.05,0.11] }
+  ],
+  "restDistances": {
+    // Bind-Pose-Ruheabstand je Segmentpaar, Grundlage der Durchdringungsprüfung
+    "hand_l|thigh_l": 0.012
+  },
+  "params": { "radiusPercentile": 0.90, "soleTolerance": 0.035, "contactMargin": 0.015 },
+  "warnings": ["kopf: Kette endet in 3 Verzweigungen, Zuordnung unsicher"]
+}
+```
+
+Pflichtfelder: `world`, `roles.pelvis`, `roles.foot_l`, `roles.foot_r`, `joints`,
+`segments`, `soles`. Fehlt eines davon, wird das Modell abgelehnt statt geraten.
+
+**Konfidenz-Schwellen:** ab 0,9 gilt eine Zuordnung als sicher; zwischen 0,5 und 0,9
+wird der Mensch gefragt; darunter gilt sie als unbekannt und die Kette bleibt ohne
+semantische Rolle nutzbar.
+
+### 5.2 Timeline
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "fps": 30,
+  "frameCount": 90,
+  "rotationFormat": "quaternion",   // intern immer Quaternion
+  "phases": [
+    { "id": "p1", "verb": "crouch", "from": 0,  "to": 12, "params": { "depth": 0.35 } },
+    { "id": "p2", "verb": "takeoff","from": 12, "to": 18, "params": { "vy": 4.2, "spinX": -360 } }
+  ],
+  "overrides": {
+    // vom Agenten auf Ebene 2 oder 3 gesetzte Werte, überschreiben den Phasenlöser
+    "24": { "joints": { "head": { "bend": 12 } } }
+  },
+  "solved": {
+    // Ergebnis des Lösers, wird bei jeder Änderung neu berechnet
+    "frames": [ { "root": {"pos":[0,0,0],"quat":[0,0,0,1]}, "joints": { "hip_l": [0,0,0,1] } } ]
+  }
+}
+```
+
+**Quelle der Wahrheit sind `phases` und `overrides`.** `solved` ist abgeleitet und darf
+jederzeit verworfen werden. Damit ist eindeutig, was beim Neuberechnen überschrieben
+wird — Fassung 1 ließ das offen.
+
+**Rotationen intern immer als Quaternion.** Eingaben in Grad werden beim Eintritt
+umgerechnet. Eine 360°-Drehung wird als Achse-plus-Winkel über die Phasendauer
+interpoliert, nicht als Quaternion-Slerp — sonst wird aus einer vollen Umdrehung eine
+Nullbewegung.
+
+**Phasen dürfen sich zeitlich überlappen**, aber nur, wenn sie disjunkte Körperteile
+betreffen. Überlappen sie auf demselben Körperteil, gewinnt die spätere und es wird
+gewarnt.
+
+**Jede Änderung ist atomar und rücknehmbar.** Vor jeder Änderung wird ein Schnappschuss
+der `phases` und `overrides` abgelegt. `undo` stellt ihn wieder her. Ohne das kann ein
+misslungener Werkzeugaufruf den Clip unrettbar beschädigen.
+
+### 5.3 ValidationReport
+
+```jsonc
+{
+  "frameCount": 90,
+  "phases": [ { "state": "kontakt", "from": 0, "to": 18 }, { "state": "flug", "from": 19, "to": 44 } ],
+  "physics":  { "passed": false, "issues": [
+    { "kind":"boden","frame":34,"value":0.048,"unit":"m","part":"foot_r",
+      "message":"foot_r steckt 4,8 cm im Boden","fix":"Wurzel anheben oder Bein strecken" } ] },
+  "intent":   { "passed": true,  "checks": [
+    { "name":"drehung","required":">=350","measured":358.2,"unit":"grad","passed":true } ] },
+  "style":    { "passed": false, "issues": [
+    { "kind":"bewegungsdichte","value":0.31,"threshold":0.60,
+      "message":"nur 31 % der Frames enthalten Bewegung, erwartet mindestens 60 %" } ] },
+  "images":   [ { "view":"side","frames":[0,12,24,36,48],"ref":"strip_side_0-12-24-36-48.png" } ]
+}
+```
+
+Jeder Bericht enthält **immer** einen Bildverweis. Zahlen ohne Bild werden nicht
+ausgeliefert.
+
+### 5.4 Werkzeugkatalog
+
+Feste Liste, sechzehn Werkzeuge. Kein Werkzeug pro Knochen.
+
+| Werkzeug | Zweck |
+|---|---|
+| `describe_world` | Weltvertrag: oben, vorne, links, Boden, Maßstab, Figurgröße |
+| `describe_rig` | Rollen, Gelenke, Freiheitsgrade, Grenzwerte, Unsicherheiten |
+| `describe_body` | gemessenes Profil: Radien, Massen, Sohlen, Ruheabstände |
+| `probe_joint` | ein Gelenk testweise beugen, Vorher/Nachher als Bild |
+| `confirm_role` | unsichere Zuordnung bestätigen oder korrigieren |
+| `set_intent` | Erfolgskriterien der Bewegung festlegen (siehe 7.2) |
+| `set_duration` | Länge der Animation |
+| `add_phase` | Bewegungsphase anlegen (siehe 6.3) |
+| `edit_phase` | Phase ändern oder entfernen |
+| `set_target` | Ebene 2: Endeffektor- oder Schwerpunktziel für einen Frame |
+| `set_joint` | Ebene 3: einzelne Gelenkwinkel für einen Frame |
+| `undo` | letzte Änderung zurücknehmen |
+| `validate` | vollständiger Bericht plus Bildstreifen |
+| `look` | Bildstreifen aus gewählten Frames und Ansichten |
+| `ask_human` | Frage mit Antwortmöglichkeiten, wartet auf Klick |
+| `export_clip` | glTF mit Wurzelbewegung |
+
+Jede Werkzeugbeschreibung nennt das Bezugssystem, in dem sie arbeitet, und die
+Einheiten ihrer Parameter.
+
+---
+
+## 6. Architektur
+
+### 6.1 Rig-Verständnis
+
+Eingabe: glTF/GLB mit Skin und Bind-Pose. Ausgabe: RigProfile.
+
+Was gemessen wird: Symmetrieebene, Mittelkette, Gliedmaßen, Endeffektoren, Finger,
+Scharnierachsen, Körperhöhe, Bodenebene, Kapselradien, Massen, Sohlenpunkte,
+Bind-Pose-Ruheabstände, Vorzeichen der Freiheitsgrade.
+
+**Was nicht gemessen werden kann, wird ausdrücklich gekennzeichnet:**
+
+- *Gelenkgrenzen.* Aus einer Bind-Pose nicht ableitbar. Es gelten anatomische
+  Standardwerte, skaliert auf die Proportionen des Modells, mit `limitSource:
+  "anatomisch"` im Profil. Das ist eine deklarierte Ausnahme von der Messregel, keine
+  stille.
+- *Twist-Vorzeichen.* Am Kettenende nicht messbar. Wird über einen seitlich versetzten
+  Punkt am Knochen gemessen; gelingt auch das nicht, gilt `signSource: "nicht_messbar"`
+  und das Vorzeichen bleibt 1.
+- *Blickrichtung.* Drei geometrische Signale: Ferse-zu-Zeh, Kopfvorsprung gegenüber der
+  Halsachse, Kniebeugerichtung. Stimmen sie nicht überein oder ist die Bind-Pose keine
+  aufrechte Steh-Pose, **wird der Mensch gefragt**. Nicht geraten.
+
+**Bind-Posen, die nicht aufrecht und symmetrisch sind** (A-Pose, sitzend, gedrehte
+Wurzelknoten, negative Skalierung, mehrere Meshes) werden erkannt und führen zu einer
+Rückfrage oder einer Ablehnung mit Begründung.
+
+### 6.2 Weltvertrag
+
+Ein Text, den `describe_world` liefert und auf den sich jede Werkzeugbeschreibung
+bezieht: oben, Boden, Blickrichtung, links, Maßstab, Figurhöhe. Ausdrücklich getrennt:
+Bühnen-vorne und Charakter-vorne.
+
+### 6.3 Der Phasenlöser — das Herz
+
+Fassung 1 sagte nur „das System erzeugt daraus Posen". Das war die größte Lücke. Hier
+die Entscheidung:
+
+**Phasen sind keine gespeicherten Posen. Phasen sind Parametersätze für einen
+schwerpunktgetriebenen Löser.**
+
+Eine Phase gibt an:
+
+- Sollbahn des Schwerpunkts über die Phasendauer
+- welche Kontaktpunkte bestehen und wo sie verankert sind
+- Streckungsgrad der Stützkette
+- Orientierung des Rumpfes
+- gewünschter Drehimpuls, falls kontaktfrei
+
+Der Löser erzeugt daraus Posen: inverse Kinematik für die verankerten Gliedmaßen,
+Schwerpunktausgleich für den Rest, Gelenkgrenzen als harte Schranken.
+
+Damit kommt das Können aus Physik und Geometrie, nicht aus einer Bewegungsbibliothek.
+Ein Absprung ist nicht „diese zwölf Posen", sondern: Schwerpunkt sinkt um X, Füße
+bleiben verankert, dann streckt sich die Beinkette, bis der Schwerpunkt die
+Absprunggeschwindigkeit hat, dann löst der Kontakt.
+
+**Das Phasenverb-Inventar ist eine feste, benannte Liste** — keine offene Sprache:
+
+| Verb | Parameter |
+|---|---|
+| `stand` | Dauer, Gewichtsverteilung |
+| `crouch` | Absenktiefe, Dauer |
+| `swing_arms` | Richtung, Ausschlag, Dauer |
+| `takeoff` | Absprunggeschwindigkeit, Drehimpuls um eine Achse |
+| `airborne` | Einrollgrad über die Zeit |
+| `land` | Aufsetzfuß oder beide, Abfedertiefe |
+| `step` | Schrittweite, Richtung, welcher Fuß |
+| `reach` | Körperteil, Zielpunkt, Dauer |
+| `turn` | Winkel um die Hochachse, Dauer |
+| `settle` | Nachschwingen, Dauer |
+
+Zehn Verben. Damit lassen sich Salto, Sprung, Schritt, Schuss, Zeigen und Drehen
+darstellen. Was sich damit nicht darstellen lässt, geht über Ebene 2 und 3 — und wird
+als Lücke im Bericht benannt statt stillschweigend falsch gebaut.
+
+**Was der Löser nicht liefert:** Ausdruck. Kopfhaltung, Blickführung, Charakter. Das
+kommt vom Agenten über Ebene 2 und 3, oder über die Stilregeln aus 7.3.
+
+### 6.4 Korrigieren, dann prüfen
+
+Fassung 1 hatte Garantien und Validatoren nebeneinander und damit einen Widerspruch:
+Was garantiert verhindert wird, kann kein Validator je melden.
+
+Auflösung: **Der Löser korrigiert. Der Validator prüft die Nachbedingung.** Ein Löser
+kann scheitern — bei widersprüchlichen Bedingungen, bei unerreichbaren Zielen. Genau
+dann meldet der Validator.
+
+Klare Rangfolge bei Konflikten, von hart nach weich:
+
+1. Gelenkgrenzen — werden nie verletzt
+2. Bodenkontakt — kein Körperteil unter dem Boden
+3. Fußanker — verankerte Füße bleiben stehen
+4. Schwerpunktbahn — wird als Letztes geopfert
+
+Wird eine weichere Bedingung zugunsten einer härteren aufgegeben, steht das im Bericht
+mit Betrag: „Schwerpunktbahn um 6 cm verfehlt, weil sonst das Knie überstreckt würde."
+
+### 6.5 Drehimpuls
+
+In der Flugphase folgt der Schwerpunkt einer Parabel. Die Drehung ist damit **nicht**
+automatisch richtig: Zieht die Figur die Gliedmaßen an, sinkt das Trägheitsmoment und
+sie dreht schneller. Der Löser rechnet das Trägheitsmoment pro Frame aus den
+Segmentmassen und passt die Winkelgeschwindigkeit so an, dass der Drehimpuls konstant
+bleibt.
+
+Ohne diesen Schritt sieht ein Salto falsch aus, obwohl jede Einzelprüfung grün ist.
+
+### 6.6 Die drei Prüfschichten
+
+**Physik** — kennt keine Bewegungsart, gilt immer, phasenabhängig ausgewertet:
+Bodendurchdringung, Selbstdurchdringung (über Bind-Pose-Ruheabstände), Gelenkgrenzen,
+Fußrutschen bei Kontakt, Balance nur bei Bodenkontakt, ballistische Bahn nur im Flug.
+
+**Absicht** — vom Agenten vor dem Bauen festgelegt, vom Menschen bestätigt. Bausteine:
 
 | Baustein | Einheit |
 |---|---|
 | Drehung um eine Achse über einen Frame-Bereich | Grad |
-| Flugphase | Sekunden, Scheitelhöhe in Metern |
-| Ortsveränderung | Meter, Richtung |
+| Flugphase | Sekunden, Scheitelhöhe relativ zur Körperhöhe |
+| Ortsveränderung | Körperhöhen, Richtung |
 | Kontaktwechsel | welcher Fuß, welcher Frame |
-| Abstand zweier Körperteile | Zentimeter, Mindestdauer |
-| Höhe eines Körperteils | Meter |
-| Tempo eines Körperteils | Meter pro Sekunde |
+| Abstand zweier Körperteile | Anteil der Körperhöhe, Mindestdauer |
+| Höhe eines Körperteils | Anteil der Körperhöhe |
+| Tempo eines Körperteils | Körperhöhen pro Sekunde |
 
-Beispiel Rückwärtssalto: Drehung ≥ 350° um die Querachse, Flugphase ≥ 0,4 s, Landung
-auf beiden Füßen, Endposition höchstens 50 cm vom Start.
+Alle Größen relativ zur Körperhöhe, damit sie für jedes Modell gelten.
 
-Der Validator kennt keine Bewegungsart. Er misst Winkel, Zeiten und Abstände.
+**Stil** — bewegungsunabhängig:
 
-**Stil — bewegungsunabhängige Qualität.**
-
-- Bewegungsdichte: Anteil der Frames mit tatsächlicher Veränderung
+- Bewegungsdichte: Anteil der Frames mit Veränderung über einer Schwelle
 - Antizipation: Gegenbewegung vor der Hauptbewegung vorhanden
 - Ruckfreiheit: keine Sprünge in der Beschleunigung
 
-Diese drei hätten jeden Fehler aus Test B gefunden, ohne zu wissen, was ein Salto ist.
+Ausnahmen sind erlaubt und müssen erklärt werden: Ein bewusster Halt oder ein Aufprall
+darf die Ruckprüfung verletzen, wenn eine Phase ihn als solchen ausweist.
 
-### Schicht 6 — Der Mensch
+### 6.7 Der Mensch
 
-Kein Notausgang, sondern Bestandteil des Ablaufs. Drei feste Momente:
+Drei feste Momente, kein Notausgang:
 
-1. **Nach dem Upload:** unsichere Rig-Zuordnungen bestätigen. Der fragliche Knochen
-   leuchtet, Antwort ist ja oder nein.
-2. **Vor dem Bauen:** die Absichtskriterien bestätigen. "Ich baue 360° Rückwärtsdrehung,
-   0,5 s Flug, Landung auf beiden Füßen." Fünf Sekunden statt zwanzig Minuten.
-3. **Bei Geschmacksfragen:** zwei Varianten nebeneinander, beide als Schleife, ein Klick.
+1. **Nach dem Upload** — unsichere Rollen bestätigen. Der fragliche Knochen leuchtet,
+   Antwort ist ja oder nein. Auch die Blickrichtung, wenn die Geometrie mehrdeutig ist.
+2. **Vor dem Bauen** — die Absichtskriterien bestätigen. Fünf Sekunden statt zwanzig
+   Minuten Fehlbau.
+3. **Bei Geschmacksfragen** — zwei Varianten nebeneinander als Schleife, ein Klick.
 
-Alle Fragen in Alltagssprache, alle als Klick oder Regler beantwortbar. Budget:
-standardmäßig drei Fragen pro Auftrag, einstellbar.
+Alle Fragen in Alltagssprache, alle mit Klick oder Regler beantwortbar. Budget: drei
+Fragen pro Auftrag, einstellbar bis null.
 
-Technisch bestätigt durch Test A: Ein Werkzeug kann hängen, bis geklickt wird.
+### 6.8 Sehen
 
-### Schicht 7 — Sehen
+Feste benannte Ansichten im Charakter-Bezugssystem, mehrere in einem Bild, immer
+annotiert mit Achsenkreuz, Bodengitter mit Maßstab, Schwerpunkt, Stützfläche und
+Kontaktpunkten.
 
-Feste, benannte Ansichten im Charakter-Bezugssystem: vorn, hinten, links, rechts, oben,
-dreiviertel. Mehrere Ansichten in einem Aufruf als ein Bild. Immer annotiert mit
-Achsenkreuz, Bodengitter mit Maßstab, Schwerpunkt, Stützpolygon, Kontaktpunkten.
+**An jedem Validierungsbericht hängt automatisch ein Bildstreifen der kritischen
+Frames.** Der Agent bekommt das Bild, ohne danach zu fragen — die direkte Antwort auf
+den gemessenen Befund, dass er von selbst nicht hinschaut.
 
-Aus Test B: Der Agent schaut von selbst nicht hin. Deshalb hängt an jedem
-Validierungsergebnis automatisch ein Bildstreifen der kritischen Frames — er bekommt
-das Bild, ohne danach zu fragen.
+**Diese Schicht steht und fällt mit einer ungeprüften Annahme** (siehe 8.1).
 
-### Schicht 8 — Export
+### 6.9 Export
 
-glTF mit Wurzelbewegung. Ohne Export ist das Ergebnis eine Vorführung, kein Werkzeug,
-und das schlägt direkt auf die Kriterien Execution und Potential Impact.
+glTF mit Wurzelbewegung. Prüfung nicht mit dem eigenen Loader, sondern durch
+unabhängiges Wiedereinlesen und Vergleich der Ereignisse und Gelenkverläufe.
 
-## Werkzeugschnitt
+---
 
-Aus Test A ist bekannt, dass 45 Werkzeuge technisch registrierbar sind. Ob ein Agent
-sie überblickt, ist ungeklärt. Deshalb: wenige, grob geschnittene Werkzeuge. Ein Aufruf
-pro Bewegungsphase, nicht einer pro Knochen. Zielgröße unter zwanzig.
+## 7. Arbeitspakete mit Pflichttests
 
-Werkzeugbeschreibungen sind ein eigenes Arbeitspaket, kein Beiwerk. Sie sind das gesamte
-Handbuch, das der Agent zu sehen bekommt.
+Jedes Paket ist erst fertig, wenn **beide** Tests bestanden sind: der Positivfall zeigt,
+dass es funktioniert, der Negativfall zeigt, dass es Fehler auch findet.
 
-Fehlermeldungen ebenso: nicht "ungültige Eingabe", sondern "Frame 34 liegt außerhalb
-der Timeline von 0 bis 60".
+### AP0 — Vorabtests, blockierend
 
-## Was nicht gebaut wird
+| Test | Positivfall | Negativfall |
+|---|---|---|
+| **A2 Bildwahrnehmung** | Ein Agent bekommt ein Werkzeugergebnis mit Bild und beschreibt korrekt, was darauf zu sehen ist (Figur steht / liegt / ist kopfüber) | Dasselbe Bild wird durch ein anderes ersetzt; die Beschreibung muss sich ändern. Beschreibt er beide gleich, sieht er nichts |
+| **A3 Agentenlast** | Ein Agent wählt aus 16 Werkzeugen bei fünf Aufgaben jeweils das richtige | Bei zwei absichtlich ähnlich beschriebenen Werkzeugen greift er daneben — dann sind die Beschreibungen zu schwach |
 
-- Vierbeiner, Fabelwesen, Modelle ohne erkennbare Zweibeinigkeit. Sie werden erkannt
-  und ehrlich abgelehnt, statt falsch behandelt.
+**A2 blockiert Schicht 6.8.** Wenn ein Agent Bilder in Werkzeugantworten nicht
+wahrnimmt, ist das Gegenmittel gegen den größten gemessenen Fehler wirkungslos, und die
+Architektur braucht einen anderen Weg — etwa eine Textbeschreibung des Bildes, die die
+Seite selbst erzeugt.
+
+### AP1 — Datenverträge
+
+Alle Schemata aus Abschnitt 5 als Datei, je ein gültiges und ein kaputtes Beispiel.
+
+| Test | Positivfall | Negativfall |
+|---|---|---|
+| Schema | gültiges Beispiel wird angenommen | kaputtes wird mit benanntem Feld abgelehnt |
+
+Blockiert alles Weitere. Ohne die Verträge bauen parallele Agents unvereinbare Systeme.
+
+### AP2 — Rig-Vermessung
+
+| Test | Positivfall | Negativfall |
+|---|---|---|
+| Massen | Schwerpunkt der Bind-Pose liegt innerhalb der Standfläche | künstlich verdreifachte Handmasse verschiebt ihn messbar heraus |
+| Radien | Abweichung zur Mesh-Hülle unter 15 % je Segment | ein halbierter Radius wird von der Hüllenprüfung gemeldet |
+| Sohlen | erkannte Sohlenfläche deckt mindestens 60 % der Fußlänge ab | ein Modell mit angehobener Ferse wird als solches erkannt, nicht stillschweigend falsch vermessen |
+| Vorzeichen | jeder messbare Freiheitsgrad bewegt das Kettenende in die benannte Richtung | ein absichtlich invertiertes Vorzeichen wird gemeldet |
+| Twist | wird als `nicht_messbar` gekennzeichnet | wird **nicht** stillschweigend auf 1 gesetzt und als gemessen ausgegeben |
+
+### AP3 — Rig-Erkennung auf fremden Modellen
+
+| Test | Positivfall | Negativfall |
+|---|---|---|
+| Härtetest | Knochennamen durch `bone_000` ersetzt, Achsen gedreht, Maßstab geändert, Twist-Knochen eingefügt — Rollen werden trotzdem korrekt zugeordnet | ein Modell ohne zwei Beine wird abgelehnt, nicht als Mensch behandelt |
+| Fremde Rigs | mindestens drei Modelle aus verschiedenen Quellen, keines davon zur Entwicklung benutzt | bei einem absichtlich mehrdeutigen Rig wird der Mensch gefragt statt geraten |
+
+**Der Testkorpus wird vorher benannt und in zwei Teile getrennt: Entwicklung und
+Abnahme. Wer mit Abnahmemodellen entwickelt, macht den Test wertlos.**
+
+### AP4 — Physikprüfungen
+
+| Test | Positivfall | Negativfall |
+|---|---|---|
+| Boden | Referenzclip ohne Beanstandung | Figur um 5 cm abgesenkt → genau 5 cm werden gemeldet |
+| Durchdringung | Referenzclip ohne Beanstandung | Arm in den Kopf gedreht → Meldung mit Betrag |
+| Balance | ruhig stehende Figur ist im Lot | Hüfte 30 cm zur Seite → Meldung mit Betrag |
+| Rutschen | verankerter Fuß meldet nichts | Fuß um 10 cm versetzt bei Kontakt → 10 cm werden gemeldet |
+| Ballistik | freier Fall wird akzeptiert | Schwerpunkt schwebt konstant → Meldung |
+
+**Hold-out-Pflicht:** Die Referenzclips für die Abnahme dürfen nicht dieselben sein, an
+denen entwickelt wurde. Der heutige Test hat gezeigt, was sonst passiert.
+
+### AP5 — Phasenlöser
+
+| Test | Positivfall | Negativfall |
+|---|---|---|
+| `crouch` | Schwerpunkt sinkt um die verlangte Tiefe, Füße bleiben stehen | verlangte Tiefe unerreichbar → Meldung mit erreichter Tiefe, kein stilles Abschneiden |
+| `takeoff` | Schwerpunkt erreicht die verlangte Geschwindigkeit, Kontakt löst sich | verlangte Geschwindigkeit übersteigt die Streckung → Meldung |
+| `airborne` | Flugbahn ist eine Parabel, Drehung erreicht den Sollwinkel | Einrollen ändert die Drehgeschwindigkeit — bei abgeschalteter Drehimpulskorrektur weicht der Endwinkel messbar ab |
+| `land` | Aufsetzfuß berührt den Boden, Schwerpunkt kommt ins Lot | Landung außerhalb der Streckreichweite → Meldung |
+| Konflikt | widersprüchliche Bedingungen werden nach Rangfolge aufgelöst | die geopferte Bedingung steht mit Betrag im Bericht |
+
+### AP6 — Absichts- und Stilprüfungen
+
+| Test | Positivfall | Negativfall |
+|---|---|---|
+| Absicht | ein echter Salto erfüllt alle Kriterien | eine bewegungslose Timeline besteht die Physikprüfung und fällt durch die Absichtsprüfung |
+| je Baustein | jeder der sieben Bausteine hat einen erfüllten Fall | und einen verletzten, der gemeldet wird |
+| Bewegungsdichte | Referenzclips lösen nichts aus | der Test-B-Clip mit 22 toten Frames wird beanstandet |
+| Antizipation | Referenzsprung besteht | ein Sprung ohne Absenken wird beanstandet |
+| Ruck | Referenzclips bestehen | ein eingefügter Positionssprung wird beanstandet |
+
+**Alle sieben Referenzclips müssen die Stilprüfung ohne Beanstandung bestehen.** Sonst
+wiederholt sich das Fehlalarm-Problem auf einer neuen Ebene.
+
+### AP7 — Werkzeug- und Mensch-Schicht
+
+| Test | Positivfall | Negativfall |
+|---|---|---|
+| Registrierung | 16 Werkzeuge sind über `getTools()` sichtbar | ein Werkzeug ohne Beschreibung wird abgelehnt |
+| Rückfrage | Werkzeug wartet, Klick liefert die Antwort im selben Aufruf | Abbruch oder Neuladen während der Wartezeit beschädigt die Timeline nicht |
+| Undo | Rücknahme stellt den vorigen Zustand her | nach fünf Änderungen und fünf Rücknahmen ist der Zustand bitgleich zum Ausgangszustand |
+| Fehlermeldungen | jede nennt Wert, erlaubten Bereich und nächsten Schritt | eine Stichprobe von zehn Fehlerfällen enthält keine Meldung ohne Zahl |
+
+### AP8 — Ende zu Ende
+
+| Test | Positivfall | Negativfall |
+|---|---|---|
+| Vertikalschnitt | echter Browser-Agent: Modell laden, Rolle bestätigen, Absicht setzen, Salto bauen, Rückfrage beantworten, exportieren | derselbe Auftrag mit abgeschalteter Absichtsprüfung liefert ein schlechteres Ergebnis — messbar, nicht behauptet |
+| Test-B-Vergleich | derselbe Auftrag wie in Test B besteht Absichts- und Stilprüfung | der alte Test-B-Clip besteht sie nicht |
+| Export | Wiedereinlesen mit einem fremden Betrachter zeigt dieselbe Bewegung | ein absichtlich beschädigter Export wird beim Wiedereinlesen bemerkt |
+
+**Kein „sichtbar besser".** Das Kriterium ist: bestandene Absichtsprüfung mit den vorab
+festgelegten Zahlen, bestandene Physik, bestandener Stil — und ein Mensch, der den
+Bildstreifen sieht und die bestellte Bewegung erkennt, ohne dass ihm gesagt wird, was
+sie darstellen soll.
+
+---
+
+## 8. Reihenfolge
+
+1. **AP0** — Bildwahrnehmung und Agentenlast. Blockiert Architekturentscheidungen.
+2. **AP1** — Datenverträge. Blockiert alles Parallele.
+3. **AP4 und AP5 gleichzeitig, auf einem festen bekannten Rig.** Physikprüfungen und
+   Phasenlöser sind das Herz. Sie werden zuerst auf einem Rig gebaut, das sich nicht
+   ändert.
+4. **AP6** — Absicht und Stil, sobald der Löser Bewegung erzeugt.
+5. **AP2 und AP3 parallel dazu** — Rig-Vermessung und -Erkennung, gegen die Verträge
+   gebaut, am Ende untergeschoben.
+6. **AP7** — Werkzeuge und Mensch-Schicht.
+7. **AP8** — Ende zu Ende.
+
+**Begründung für 3 vor 5:** Erst muss bewiesen sein, dass überhaupt gute Bewegung
+entsteht. Rig-Unabhängigkeit auf einer Bewegungsmaschine, die nichts Brauchbares
+liefert, ist wertlos.
+
+---
+
+## 9. Was nicht gebaut wird
+
+- Vierbeiner und Fabelwesen. Sie werden erkannt und begründet abgelehnt.
 - Text-to-Motion-Modelle im Browser. Geprüft: kimodo.cpp liefert das passende Format,
-  hat aber keinen WASM-Build und einen Llama-großen Textencoder. Die Timeline nimmt
-  Rohbewegung von außen entgegen, damit das später andocken kann.
-- Physik-Simulation mit Ragdoll. Die Ballistik wird gerechnet, nicht simuliert.
-- Mehrere Figuren, Requisiten über einen Ball hinaus, Kleidung, Gesichtsanimation.
+  hat aber keinen WASM-Build und einen Llama-großen Textencoder. Die Timeline kann
+  Rohbewegung von außen aufnehmen, damit das später andockt.
+- Ragdoll-Simulation. Ballistik wird gerechnet, nicht simuliert.
+- Ebene 2 als eigene Agentenebene, solange kein Fall gezeigt ist, den Ebene 1 und 3
+  nicht lösen. Inverse Kinematik bleibt zunächst Innenleben des Phasenlösers.
+- Mehrere Figuren, Requisiten, Kleidung, Gesichtsanimation.
+- Zwei Geschmacksvarianten zur Auswahl, bevor eine Variante zuverlässig funktioniert.
 
-## Risiken
+---
 
-**Bewegung sieht korrekt aus, aber tot.** Das größte Risiko, in Test B bereits
-eingetreten. Gegenmittel: Ebene 1 mit Phasen, die Antizipation und Nachschwingen
-enthalten, plus die Stilprüfungen.
+## 10. Risiken
 
-**Der Agent kommt mit den Phasen nicht zurecht.** Muss früh geprüft werden, sobald
-Ebene 1 steht — mit demselben Auftrag wie in Test B, als direkter Vergleich.
+**Der Phasenlöser erzeugt korrekte, aber leblose Bewegung.** Größtes verbleibendes
+Risiko. Frühwarnung: AP5 mit Bildstreifen, nicht nur mit Zahlen. Gegenmittel:
+Stilregeln, Antizipation als Pflichtparameter von `takeoff`, Nachschwingen in `settle`.
 
-**Rig-Erkennung scheitert an fremden Modellen.** Gegenmittel: Testkorpus aus mehreren
-Quellen, plus der Härtetest — Knochennamen entfernen, Achsen und Maßstab ändern,
-Twist-Knochen einbauen. Fällt die Erkennung dann um, war sie ein Namensparser.
+**Bilder kommen beim Agenten nicht an.** Klärt AP0 vor allem anderen.
 
-**Zeit.** Zweieinhalb Tage. Rückfallposition: Wenn der Salto bis Tag drei nicht
-überzeugt, wird eine einfachere Bewegung zur Demo — Sprung mit Landung, Fußballschuss —
-und der Salto als offener Punkt benannt.
+**Die Rig-Erkennung fällt bei fremden Modellen um.** Klärt AP3 mit Hold-out-Modellen.
 
-## Abnahmekriterien
+**Der Löser findet keine Lösung bei widersprüchlichen Bedingungen.** Auflösung über die
+Rangfolge in 6.4, mit ausgewiesenem Betrag statt stillem Scheitern.
 
-| Teil | Nachweis |
+**Der Salto überzeugt am Ende nicht.** Rückfallposition: eine einfachere Bewegung wird
+zur Demo — Sprung mit Landung, Schritt mit Richtungswechsel — und der Salto als offener
+Punkt benannt.
+
+---
+
+## 11. Was Fassung 1 falsch gemacht hat
+
+Zur Nachvollziehbarkeit, damit die Fehler nicht zurückkehren:
+
+| Fehler | Korrektur |
 |---|---|
-| Rig-Profil | Massensumme 1,0; Radien plausibel; Vorzeichenprüfung meldet für jeden Freiheitsgrad die erwartete Richtung |
-| Rig-Erkennung | Härtetest mit anonymisierten Knochennamen und geänderten Achsen besteht |
-| Validatoren Physik | eingebaute Fehler werden mit korrektem Betrag gefunden; Referenz-Mocap erzeugt null Fehlalarme |
-| Validatoren Absicht | ein bewegungsloser Clip besteht die Physikprüfung, fällt aber durch die Absichtsprüfung |
-| Validatoren Stil | der Test-B-Clip mit 22 toten Frames wird beanstandet |
-| Ebene 1 | derselbe Auftrag wie in Test B liefert ein sichtbar besseres Ergebnis |
-| Mensch-Schleife | Werkzeug wartet auf Klick, Antwort kommt im selben Aufruf zurück |
-| Export | exportierter Clip lässt sich wieder laden, Wurzelbewegung und Gelenkverläufe stimmen überein |
-| Gesamt | Ein Mensch, der die Animation sieht, erkennt die bestellte Bewegung |
+| „Keine Zahl wird gesetzt" — im Code standen drei gesetzte Parameter | Parameter benannt, begründet, an einer Stelle, im Bericht ausgegeben |
+| Null Fehlalarme auf Trainingsdaten gemeldet | Hold-out-Pflicht, Ergebnis korrigiert: Boden und Balance echt, Selbstdurchdringung war Überanpassung |
+| Garantien und Validatoren nebeneinander | Löser korrigiert, Validator prüft die Nachbedingung, Rangfolge festgelegt |
+| Phasenlöser in einem Satz | schwerpunktgetriebener Löser mit festem Verb-Inventar, ausformuliert |
+| Gelenkgrenzen ohne Herkunft | deklarierte Ausnahme: anatomisch, skaliert, im Profil gekennzeichnet |
+| Keine Datenverträge | drei Schemata plus Werkzeugkatalog mit sechzehn Einträgen |
+| Bildstreifen als gesetzte Tatsache | als ungeprüfte Annahme markiert, AP0 blockiert |
+| Absolute Toleranzen | alles relativ zur Körperhöhe |
+| Kein Undo | Schnappschuss vor jeder Änderung |
+| Drehimpuls als Nebensache | eigener Abschnitt, Trägheitsmoment pro Frame |
+| „Sichtbar besseres Ergebnis" als Abnahme | ersetzt durch bestandene Absichts-, Physik- und Stilprüfung plus Blindtest am Bild |
+| 350° und 360° widersprüchlich | ein Wert: mindestens 350° |
 
-## Offene Punkte
+---
 
-- Verhalten eines echten Browser-Agenten bei zwanzig Werkzeugen und vielen Aufrufen
-- Ob Fußrutschen in Clips ohne Wurzelbewegung ein Rest-Fehlalarm ist oder korrekt gemeldet wird
-- Winkeldarstellung jenseits von ±170°, wo Drehungen über die Senkrechte kippen
+## 12. Offene Punkte
+
+- Verhalten eines echten Browser-Agenten bei sechzehn Werkzeugen (klärt AP0/A3)
+- Ob Fußrutschen in Clips ohne Wurzelbewegung korrekt gemeldet wird oder ein Restfehler ist
+- Beschaffung von mindestens drei Abnahmemodellen unter freier Lizenz

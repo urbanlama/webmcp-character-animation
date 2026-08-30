@@ -318,6 +318,23 @@ const api = {
   },
 
   /** Tastet jedes Gelenk ab: wohin bewegt sich das Kettenende bei +20 Grad? */
+  recalibrate(clipNames) {
+    const NL = String.fromCharCode(10);
+    const samples = [];
+    for (const name of clipNames) {
+      const clip = referenceClips[name];
+      if (!clip) continue;
+      const mixer = new THREE.AnimationMixer(model);
+      const act = mixer.clipAction(clip); act.play();
+      const n = Math.max(2, Math.round(clip.duration * FPS));
+      for (let f = 0; f < n; f++) { mixer.setTime(f / FPS); model.updateMatrixWorld(true); samples.push(rig.capsules()); }
+      act.stop(); mixer.uncacheRoot(model);
+    }
+    rig.pairTol = calibratePairs(samples);
+    rig.reset(); model.updateMatrixWorld(true);
+    return 'Neu kalibriert auf: ' + clipNames.join(', ') + ' (' + samples.length + ' Frames)';
+  },
+
   sign_report() { return ['Vorzeichenkalibrierung (gemessen, nicht gesetzt):',''].concat(window.__signReport||[]).join(String.fromCharCode(10)); },
 
   probe_joints() {
@@ -381,7 +398,8 @@ new GLTFLoader().load('./assets/Xbot.glb', (gltf) => {
 
   // 2. Aus echter Bewegung lernen, wie nah sich Koerperteile normal kommen
   const samples = [];
-  for (const name of ['idle', 'walk', 'run', 'agree', 'headShake']) {
+  window.__calibClips = window.__calibClips || ['idle', 'walk', 'run', 'agree', 'headShake'];
+  for (const name of window.__calibClips) {
     const clip = referenceClips[name];
     if (!clip) continue;
     const mixer = new THREE.AnimationMixer(model);

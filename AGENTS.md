@@ -9,16 +9,37 @@ Vor der ersten Zeile Code lesen:
 - `docs/challenge.md` — Fristen, Abgabeanforderungen, Bewertungskriterien
 - `docs/superpowers/specs/` — der Design-Plan
 
-## Die eine Regel
+## Die drei Regeln
 
-**Keine Körpergröße wird gesetzt. Jede wird gemessen.**
+### 1. Körpermaße werden gemessen, Verfahrensparameter werden benannt
 
-Radien, Massen, Kontaktpunkte, Gelenkachsen, Blickrichtung, Toleranzen — alles wird aus
-dem geladenen Modell abgeleitet. Wer eine Zahl in den Code tippt, weil sie plausibel
-klingt, baut genau den Fehler ein, den dieses Projekt beheben soll.
+Radien, Massen, Kontaktpunkte, Gelenkachsen, Blickrichtung — alles aus dem geladenen
+Modell. Wer eine Körpergröße in den Code tippt, weil sie plausibel klingt, baut genau
+den Fehler ein, den dieses Projekt beheben soll.
+
+Verfahrensparameter wie Perzentile oder Toleranzen sind unvermeidbar. Sie stehen an
+einer Stelle im Code, mit Begründung, und werden im Rig-Bericht ausgegeben. Unsichtbar
+im Code verstreut sind sie verboten.
 
 Belegt: Geschätzte Körpermaße erzeugten 269 Fehlalarme auf einem Clip, in dem eine Figur
-ruhig dasteht. Gemessene erzeugten null.
+ruhig dasteht.
+
+### 2. Kein Test ohne Negativfall
+
+Ein Test, der nur bestätigt, dass etwas grün ist, ist wertlos. Zu jedem Test gehört ein
+absichtlich kaputter Fall, der rot werden **muss**. Wird er nicht rot, ist der Test
+kaputt, nicht der Code.
+
+### 3. Kalibrierungsdaten und Testdaten sind getrennt
+
+Wer aus Daten lernt, darf nicht mit denselben Daten prüfen.
+
+Belegt: Auf allen fünf Referenzclips kalibriert ergab null Fehlalarme. Auf zwei
+kalibriert und gegen die anderen drei geprüft ergab 150, 132 und 183. Der Erfolg war
+Überanpassung.
+
+Zusatz: **Zahlen ohne Bild sind unvollständig.** Widersprechen sich Zahl und Bild,
+gewinnt das Bild und der Test gilt als nicht bestanden.
 
 ## Weitere Regeln
 
@@ -38,6 +59,14 @@ ist.
 
 **Fehlerfreiheit ist kein Erfolg.** Es braucht neben der Fehlerprüfung eine
 Erfolgsprüfung. Eine Animation, in der nichts passiert, besteht jede Fehlerprüfung.
+
+**Der Löser korrigiert, der Validator prüft die Nachbedingung.** Nicht beides
+gleichzeitig als Garantie und als Prüfung behandeln — ein Löser kann scheitern, und
+genau dann muss der Validator etwas melden.
+
+**Alle Toleranzen relativ zur Körperhöhe.** Absolute Zentimeterwerte in Schwellen sind
+ein Fehler: Für eine 60 cm große Figur bedeuten 50 cm etwas anderes als für eine
+2,40 m große.
 
 ## Aufbau des Repos
 
