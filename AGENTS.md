@@ -16,10 +16,12 @@ Vier verschiedene Dinge, damit sie nicht verwechselt werden:
 |---|---|---|
 | **Leiter** | die Claude-Code-Sitzung, die die Arbeit verteilt und zusammenführt | dein Terminal |
 | **Bautrupp** | GLM und Qwen, per Befehl aufgerufen | siehe unten |
-| **Opus-Helfer** | eine Claude-Unterinstanz, die auf Opus läuft statt auf dem Sitzungsmodell | `.claude/agents/opus.md` |
 | **Nutzer-Agent** | der, der später die fertige Seite bedient — bei der Jury im Browser | nicht bei uns |
 
-Der Nutzer-Agent ist der, für den wir bauen. Die anderen drei bauen.
+Der Nutzer-Agent ist der, für den wir bauen. Die anderen bauen.
+
+Der Leiter läuft auf Opus und behält die Übersicht. Er baut nicht selbst, solange er
+delegieren kann.
 
 ---
 
@@ -81,7 +83,18 @@ etwas anderes als für eine 2,40 m große.
 
 ## Arbeitsverteilung
 
-Der Leiter entscheidet, wer was bekommt.
+# Wenig Zeit heißt viele Agents.
+
+Das ist die wichtigste Regel dieser Datei. Wer einen Auftrag rausgibt und dann wartet,
+bis das Ergebnis kommt, verschenkt die Zeit, die wir nicht haben. Aufträge gehen
+**gleichzeitig** raus, immer wenn sie nicht voneinander abhängen — und das ist fast
+immer der Fall, sobald die Datenformate stehen.
+
+Der Leiter bleibt bei Opus, verteilt, prüft und führt zusammen. Er baut nur selbst, was
+sich nicht delegieren lässt.
+
+Praktisch: mehrere Aufrufe in einem Rutsch starten, im Hintergrund laufen lassen,
+danach einsammeln. Nicht einer nach dem anderen.
 
 **GLM 5.3 Flash über Ollama** — erste Wahl für die Bauarbeit. Kontingent zuerst
 ausschöpfen, es verfällt sonst. Höchstens drei gleichzeitig.
@@ -99,9 +112,8 @@ cmdc -p "<Auftrag>" -m "Qwen/Qwen3.8-Flash" --effort xhigh -t --max-turns 60
 `cmdc`, nicht `cmd` — `cmd` ist Windows' eigene Eingabeaufforderung.
 Falls Ollama leerläuft: `cmdc -m "zai-org/GLM-5.3"`.
 
-**Opus-Helfer** — für Kritisches, für die Oberfläche und für alles, was zweimal
-fehlgeschlagen ist. Über das Agent-Werkzeug, Typ `opus`. Die Aufgabe steht im Auftrag;
-die Agent-Definition setzt nur das Modell.
+**Claude-Unterinstanzen** — für Kritisches, für die Oberfläche und für alles, was
+zweimal fehlgeschlagen ist. Über das Agent-Werkzeug. Auch die laufen parallel.
 
 Beide externen Modelle sind stark. Sie brauchen eine klare Aufgabe, keine Anleitung in
 Einzelschritten — aber sie sehen die Sitzung des Leiters nicht. Ein Auftrag muss ohne
@@ -167,7 +179,7 @@ Nur für Agentenverhalten, laufen von Hand:
 |---|---|---|
 | Werkzeugwahl | findet er bei fünf Aufgaben das passende Werkzeug? | GLM, gegengeprüft mit Qwen |
 | Bildwahrnehmung | erkennt er, was auf dem Bild zu sehen ist? | derselbe Weg |
-| Vertikalschnitt | schafft er den Ablauf von Modell laden bis Export? | Opus-Helfer |
+| Vertikalschnitt | schafft er den Ablauf von Modell laden bis Export? | eine Claude-Unterinstanz |
 
 Der Agent darf dabei den Quellcode nicht lesen. Auch diese Tests haben einen
 Negativfall: Beim Bildtest muss ein zweites, anderes Bild zu einer anderen Antwort
@@ -184,7 +196,6 @@ AGENTS.md              diese Datei
 CLAUDE.md              Verweis hierher
 docs/plan.md           der Design-Plan mit Arbeitspaketen
 docs/challenge.md      offizielle Wettbewerbsfakten
-.claude/agents/opus.md setzt nur das Modell, keine Rolle
 spikes/                Wegwerfcode aus Vorabtests, nicht Teil des Produkts
 ```
 
