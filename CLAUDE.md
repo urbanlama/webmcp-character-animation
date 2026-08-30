@@ -1,6 +1,7 @@
 # CLAUDE.md
 
-Die Arbeitsanweisungen für dieses Projekt stehen in **[AGENTS.md](AGENTS.md)**.
-Lies sie, bevor du etwas anfasst.
+Die Arbeitsanweisungen stehen in **[AGENTS.md](AGENTS.md)**. Lies sie, bevor du etwas
+anfasst.
 
-Eine Quelle für alle Werkzeuge — Claude Code, Codex und andere lesen dieselbe Datei.
+Eine Quelle für alle Werkzeuge — Claude Code, Command Code, kimi-code und andere lesen
+dieselbe Datei.
