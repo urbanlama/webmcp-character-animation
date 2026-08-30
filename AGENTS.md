@@ -123,6 +123,17 @@ erkennt, dass es fertig ist.
 **Zwei Agents bearbeiten nie gleichzeitig dieselbe Datei.** Gemeinsame Dateien —
 Schemata, Werkzeugkatalog — gehören dem Leiter.
 
+## Schwarzes Brett
+
+`BRETT.md` ist die gemeinsame Pinnwand. Dort steht, was andere wissen müssen: geänderte
+Formate, widerlegte Annahmen, Sackgassen, belegte Dateien, fertige Teile.
+
+Jeder Auftrag endet mit einem Blick aufs Brett und, falls es etwas zu melden gibt, mit
+einem Eintrag. Form und Regeln stehen in der Datei.
+
+Nicht hineinschreiben, was nur einen selbst betrifft. Ein Brett, auf dem alles steht,
+liest niemand.
+
 ---
 
 ## Abnahmetests
@@ -187,12 +198,31 @@ führen.
 
 ---
 
+## Auskunft ohne den Leiter zu stören
+
+Der Leiter läuft oft lange und soll nicht unterbrochen werden. Für Zwischenfragen gibt
+es eine zweite, getrennte Sitzung im selben Ordner.
+
+Wer als Auskunft gestartet wird — erkennbar daran, dass die Frage nach dem Stand des
+Projekts kommt und kein Auftrag vorliegt — hält sich an drei Punkte:
+
+**Nichts ändern.** Keine Datei schreiben, keinen Agenten starten, nichts committen.
+Auskunft heißt lesen und berichten. Sonst kollidiert man mit dem Leiter.
+
+**Quellen in dieser Reihenfolge:** `BRETT.md` für das Aktuelle, `git log --oneline` für
+den Verlauf, `test/report/` für den Zustand der Prüfungen, `docs/plan.md` für den
+Sollzustand. Wenn Hintergrundprozesse laufen, deren Ausgabedateien.
+
+**Antworten mit Zahlen.** Nicht "läuft gut", sondern: welche Pakete fertig sind, welche
+Tests grün sind, was zuletzt im Brett stand, was gerade offen ist.
+
 ## Aufbau des Repos
 
 ```
 README.md              was das Projekt ist, für Menschen
 VISION.md              das Ziel in kurz
 AGENTS.md              diese Datei
+BRETT.md               gemeinsame Pinnwand, alle schreiben rein
 CLAUDE.md              Verweis hierher
 docs/plan.md           der Design-Plan mit Arbeitspaketen
 docs/challenge.md      offizielle Wettbewerbsfakten
