@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>Test B – Kann ein Agent mit Messfeedback animieren?</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#262d38; --fg:#e6edf3; --dim:#8b949e; --ok:#3fb950; --bad:#f85149; --accent:#58a6ff; }
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 ui-monospace,Consolas,monospace;padding:16px}
+  h1{font-size:16px;margin:0 0 12px}
+  .wrap{display:grid;grid-template-columns:1fr 380px;gap:14px;align-items:start}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}
+  canvas{display:block;border-radius:6px;background:#11161d;width:100%;height:auto}
+  #report{height:520px;overflow:auto;white-space:pre-wrap;font-size:12px}
+  .bar{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+  button{background:#21262d;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:7px 13px;font:inherit;cursor:pointer}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  input[type=range]{flex:1;min-width:160px}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .dim{color:var(--dim)}
+</style>
+<script type="importmap">
+{ "imports": { "three": "./assets/three.module.min.js", "three/addons/": "./" } }
+</script>
+</head>
+<body>
+<h1>Test B – Bewegungsumgebung mit Messfeedback <span class="dim" id="head"></span></h1>
+<div class="wrap">
+  <div class="panel">
+    <canvas id="view" width="960" height="600"></canvas>
+    <div class="bar">
+      <button id="bPlay">Abspielen</button>
+      <input type="range" id="scrub" min="0" max="0" value="0">
+      <span id="fnum" class="dim">Frame 0</span>
+    </div>
+  </div>
+  <div class="panel">
+    <div id="report" class="dim">bereit …</div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from './assets/GLTFLoader.js';
+import { Rig, JOINTS } from './rig.js';
+import { measureFrame, analyze, THRESHOLDS } from './validators.js';
+import { buildBodyProfile, calibratePairs, calibrateSigns } from './calibrate.js';
+
+const canvas = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(960, 600, false);
+renderer.shadowMap.enabled = true;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x11161d);
+
+const cam = new THREE.PerspectiveCamera(38, 960 / 600, 0.1, 100);
+const VIEWS = {
+  side:    { pos: [4.2, 1.4, 0.0], look: [0, 0.95, 0] },
+  front:   { pos: [0.0, 1.4, 4.2], look: [0, 0.95, 0] },
+  quarter: { pos: [3.2, 1.9, 3.0], look: [0, 0.95, 0] },
+  wide:    { pos: [7.0, 2.4, 5.0], look: [0, 0.9, 0] }
+};
+function setView(name) {
+  const v = VIEWS[name] || VIEWS.side;
+  cam.position.set(...v.pos); cam.lookAt(...v.look);
+}
+setView('side');
+
+scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x28303c, 2.1));
+const sun = new THREE.DirectionalLight(0xffffff, 2.4);
+sun.position.set(4, 8, 5); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -4; sun.shadow.camera.right = 4;
+sun.shadow.camera.top = 4; sun.shadow.camera.bottom = -4;
+scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0x2a3340, roughness: 0.95 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
+scene.add(ground);
+const grid = new THREE.GridHelper(20, 40, 0x3d4c5e, 0x2c3644);
+grid.position.y = 0.001; scene.add(grid);
+
+// Schwerpunkt-Marker
+const comDot = new THREE.Mesh(new THREE.SphereGeometry(0.035, 16, 12), new THREE.MeshBasicMaterial({ color: 0xffcc44 }));
+scene.add(comDot);
+const comDrop = new THREE.Mesh(new THREE.SphereGeometry(0.028, 12, 8), new THREE.MeshBasicMaterial({ color: 0xff7744 }));
+scene.add(comDrop);
+
+const FPS = 30;
+let rig = null, model = null;
+let timeline = { frames: 60, keys: new Map() };   // frame -> { pose, root }
+let cache = null;   // gemessene Frames
+let referenceClips = {};
+let profile = null;
+
+// ---------- Interpolation ----------
+
+function lerpPose(a, b, t) {
+  const out = {};
+  const names = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+  for (const j of names) {
+    const A = (a && a[j]) || {}, B = (b && b[j]) || {};
+    const dofs = new Set([...Object.keys(A), ...Object.keys(B)]);
+    out[j] = {};
+    for (const d of dofs) {
+      const va = Number(A[d]) || 0, vb = Number(B[d]) || 0;
+      out[j][d] = va + (vb - va) * t;
+    }
+  }
+  return out;
+}
+function lerpRoot(a, b, t) {
+  const o = {};
+  for (const k of ['x', 'y', 'z', 'tilt', 'turn', 'roll']) {
+    const va = Number((a || {})[k]) || 0, vb = Number((b || {})[k]) || 0;
+    o[k] = va + (vb - va) * t;
+  }
+  return o;
+}
+const ease = (t, mode) =>
+  mode === 'ease'    ? t * t * (3 - 2 * t)
+: mode === 'easeIn'  ? t * t
+: mode === 'easeOut' ? 1 - (1 - t) * (1 - t)
+: t;
+
+function poseAt(frame) {
+  const keys = [...timeline.keys.keys()].sort((a, b) => a - b);
+  if (keys.length === 0) return { pose: {}, root: {} };
+  if (frame <= keys[0]) { const k = timeline.keys.get(keys[0]); return { pose: k.pose, root: k.root }; }
+  if (frame >= keys[keys.length - 1]) { const k = timeline.keys.get(keys[keys.length - 1]); return { pose: k.pose, root: k.root }; }
+  let i = 0; while (i < keys.length - 1 && keys[i + 1] <= frame) i++;
+  const f0 = keys[i], f1 = keys[i + 1];
+  const A = timeline.keys.get(f0), B = timeline.keys.get(f1);
+  const t = ease((frame - f0) / (f1 - f0), B.easing || A.easing || 'linear');
+  return { pose: lerpPose(A.pose, B.pose, t), root: lerpRoot(A.root, B.root, t) };
+}
+
+function applyFrame(frame) {
+  const { pose, root } = poseAt(frame);
+  rig.apply(pose, root);
+  return { pose, root };
+}
+
+// ---------- Messen ----------
+
+function measureAll() {
+  const frames = [];
+  for (let f = 0; f < timeline.frames; f++) {
+    const { pose } = applyFrame(f);
+    frames.push(measureFrame(rig, timeline.keys.has(f) ? pose : null));
+  }
+  cache = frames;
+  return analyze(frames, FPS);
+}
+
+function reportText(res, limit = 40) {
+  const L = [];
+  L.push(`Frames: ${timeline.frames} bei ${FPS} fps (${(timeline.frames / FPS).toFixed(2)} s)`);
+  L.push(`Keyframes: ${[...timeline.keys.keys()].sort((a, b) => a - b).join(', ') || '(keine)'}`);
+  L.push(`Phasen: ${res.phases.map(p => `${p.state} ${p.from}-${p.to}`).join('  |  ')}`);
+  L.push('');
+  if (res.total === 0) {
+    L.push('KEINE VERSTOESSE. Alle Pruefungen bestanden.');
+  } else {
+    L.push(`VERSTOESSE: ${res.total}  (${Object.entries(res.byKind).map(([k, v]) => k + ' ' + v).join(', ')})`);
+    L.push('');
+    for (const it of res.issues.slice(0, limit)) L.push(`  Frame ${String(it.frame).padStart(3)}  [${it.kind}] ${it.msg}\n        -> ${it.fix}`);
+    if (res.issues.length > limit) L.push(`  … und ${res.issues.length - limit} weitere`);
+  }
+  return L.join('\n');
+}
+
+// ---------- Anzeige ----------
+
+let playing = false, playFrame = 0;
+function draw(frame) {
+  if (!rig) return;
+  applyFrame(frame);
+  const com = rig.centerOfMass();
+  comDot.position.copy(com);
+  comDrop.position.set(com.x, 0.01, com.z);
+  renderer.render(scene, cam);
+  document.getElementById('fnum').textContent = 'Frame ' + frame;
+  document.getElementById('scrub').value = frame;
+}
+document.getElementById('scrub').addEventListener('input', (e) => { playing = false; draw(+e.target.value); });
+document.getElementById('bPlay').addEventListener('click', () => { playing = !playing; });
+(function loop() {
+  requestAnimationFrame(loop);
+  if (playing && rig) { playFrame = (playFrame + 1) % timeline.frames; draw(playFrame); }
+})();
+
+// ---------- Öffentliche API für den Agenten ----------
+
+const api = {
+  describe_rig() {
+    const j = rig.describe();
+    const lines = ['Skelett: Humanoid, aufrecht. Boden bei y=0. Blickrichtung +Z. Hoehe 1.75 m.',
+      'Alle Winkel in Grad, gemessen als Abweichung von der T-Pose (0 = T-Pose).',
+      'Die Wurzel (root) verschiebt die ganze Figur: x/y/z in Metern, tilt/turn/roll in Grad.',
+      'In der T-Pose steht die Huefte 1.04 m ueber dem Boden.',
+      '', 'Gelenke:'];
+    for (const name in j) {
+      const parts = Object.entries(j[name].limits).map(([d, l]) => `${d} ${l[0]}..${l[1]}`);
+      lines.push(`  ${name.padEnd(12)} ${parts.join(', ')}`);
+    }
+    lines.push('', 'Schwellwerte der Pruefung:');
+    lines.push(`  Bodendurchdringung erlaubt bis ${THRESHOLDS.groundTol * 100} cm`);
+    lines.push(`  Selbstdurchdringung erlaubt bis ${THRESHOLDS.selfTol * 100} cm`);
+    lines.push(`  Fussrutschen bei Kontakt erlaubt bis ${THRESHOLDS.slipTol * 100} cm pro Frame`);
+    lines.push(`  Schwerpunkt darf ${THRESHOLDS.balanceTol * 100} cm ueber die Stuetzflaeche hinaus`);
+    lines.push(`  In der Flugphase muss die senkrechte Beschleunigung -9.81 m/s2 betragen (Toleranz ${THRESHOLDS.gravityTol})`);
+    return lines.join('\n');
+  },
+
+  set_timeline(frames) { timeline.frames = Math.max(2, Math.min(600, frames | 0)); document.getElementById('scrub').max = timeline.frames - 1; return `Timeline: ${timeline.frames} Frames bei ${FPS} fps`; },
+
+  set_key(frame, pose, root, easing) {
+    frame = Math.max(0, Math.min(timeline.frames - 1, frame | 0));
+    timeline.keys.set(frame, { pose: pose || {}, root: root || {}, easing: easing || 'ease' });
+    return `Keyframe ${frame} gesetzt (${Object.keys(pose || {}).length} Gelenke).`;
+  },
+
+  clear_keys() { timeline.keys.clear(); return 'Alle Keyframes geloescht.'; },
+
+  validate(limit) { const r = measureAll(); return reportText(r, limit || 40); },
+
+  measure(frame) {
+    const { pose } = applyFrame(frame);
+    const m = measureFrame(rig, pose);
+    return JSON.stringify(m, null, 1);
+  },
+
+  /** Ballistische Hilfe: berechnet die Wurzelbahn einer Flugphase. */
+  flight(fromFrame, toFrame, takeoff) {
+    const t0 = fromFrame / FPS;
+    const dur = (toFrame - fromFrame) / FPS;
+    const g = 9.81;
+    const k0 = timeline.keys.get(fromFrame);
+    const start = k0 ? k0.root : { x: 0, y: 0, z: 0 };
+    const vy = takeoff && takeoff.vy != null ? takeoff.vy : (g * dur) / 2;
+    const vz = takeoff && takeoff.vz != null ? takeoff.vz : 0;
+    const vx = takeoff && takeoff.vx != null ? takeoff.vx : 0;
+    const out = [];
+    for (let f = fromFrame; f <= toFrame; f++) {
+      const t = (f - fromFrame) / FPS;
+      out.push({ frame: f, x: +(start.x + vx * t).toFixed(4), y: +(start.y + vy * t - 0.5 * g * t * t).toFixed(4), z: +(start.z + vz * t).toFixed(4) });
+    }
+    return { apex: +(vy * vy / (2 * g)).toFixed(3), duration: +dur.toFixed(3), path: out };
+  },
+
+  render_strip(frames, view) {
+    setView(view || 'side');
+    const W = 320, H = 400;
+    const list = frames.slice(0, 12);
+    const out = document.createElement('canvas');
+    out.width = W * list.length; out.height = H;
+    const ctx = out.getContext('2d');
+    const tmp = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    tmp.setPixelRatio(1); tmp.setSize(W, H, false);
+    tmp.shadowMap.enabled = true;
+    const c2 = new THREE.PerspectiveCamera(38, W / H, 0.1, 100);
+    const v = VIEWS[view || 'side']; c2.position.set(...v.pos); c2.lookAt(...v.look);
+    list.forEach((f, i) => {
+      applyFrame(f);
+      const com = rig.centerOfMass();
+      comDot.position.copy(com); comDrop.position.set(com.x, 0.01, com.z);
+      tmp.render(scene, c2);
+      ctx.drawImage(tmp.domElement, i * W, 0);
+      ctx.fillStyle = '#58a6ff'; ctx.font = '16px monospace';
+      ctx.fillText('f' + f, i * W + 8, 22);
+    });
+    tmp.dispose();
+    setView('side');
+    return out.toDataURL('image/png');
+  },
+
+  /** Referenz-Mocap messen: prüft die Validatoren auf Fehlalarm. */
+  check_reference(clipName, fixRootMotion) {
+    const clip = referenceClips[clipName];
+    if (!clip) return 'Unbekannter Clip. Verfuegbar: ' + Object.keys(referenceClips).join(', ');
+    const mixer = new THREE.AnimationMixer(model);
+    const action = mixer.clipAction(clip); action.play();
+    const n = Math.max(2, Math.round(clip.duration * FPS));
+    const basePos = model.position.clone();
+
+    // Durchlauf 1: Kontaktdrift messen (In-Place-Clips haben keine Wurzelbewegung)
+    let drift = [{ x: 0, z: 0 }];
+    if (fixRootMotion) {
+      let prev = null, cx = 0, cz = 0;
+      for (let f = 0; f < n; f++) {
+        mixer.setTime(f / FPS); model.updateMatrixWorld(true);
+        const cps = rig.contactPoints().filter((c) => c.pos.y < (rig.profile.contactHeight || 0.05));
+        if (prev && cps.length) {
+          let dx = 0, dz = 0, k = 0;
+          for (const c of cps) { const p = prev.find((q) => q.id === c.id); if (p) { dx += c.pos.x - p.x; dz += c.pos.z - p.z; k++; } }
+          if (k) { cx -= dx / k; cz -= dz / k; }
+        }
+        prev = cps.map((c) => ({ id: c.id, x: c.pos.x, z: c.pos.z }));
+        drift.push({ x: cx, z: cz });
+      }
+    }
+
+    const frames = [];
+    for (let f = 0; f < n; f++) {
+      mixer.setTime(f / FPS);
+      if (fixRootMotion) model.position.set(basePos.x - drift[f].x, basePos.y, basePos.z - drift[f].z);
+      model.updateMatrixWorld(true);
+      frames.push(measureFrame(rig, null));
+    }
+    action.stop(); mixer.uncacheRoot(model);
+    model.position.copy(basePos);
+    rig.reset(); model.updateMatrixWorld(true);
+    const res = analyze(frames, FPS);
+    return `Referenzclip "${clipName}"${fixRootMotion ? ' (mit rekonstruierter Vorwaertsbewegung)' : ''} (${n} Frames, ${clip.duration.toFixed(2)} s)` + String.fromCharCode(10) +
+           `Verstoesse: ${res.total} ${res.total === 0 ? '(sauber – keine Fehlalarme)' : '(' + Object.entries(res.byKind).map(([k, v]) => k + ' ' + v).join(', ') + ')'}` + String.fromCharCode(10) +
+           res.issues.slice(0, 8).map(i => `  Frame ${i.frame} [${i.kind}] ${i.msg}`).join(String.fromCharCode(10));
+  },
+
+  /** Tastet jedes Gelenk ab: wohin bewegt sich das Kettenende bei +20 Grad? */
+  sign_report() { return ['Vorzeichenkalibrierung (gemessen, nicht gesetzt):',''].concat(window.__signReport||[]).join(String.fromCharCode(10)); },
+
+  probe_joints() {
+    const NL = String.fromCharCode(10);
+    const ends = {
+      pelvis:'mixamorigHead', spine_low:'mixamorigHead', spine_mid:'mixamorigHead', spine_top:'mixamorigHead',
+      neck:'mixamorigHeadTop_End', head:'mixamorigHeadTop_End',
+      shoulder_l:'mixamorigLeftHand', arm_l:'mixamorigLeftHand', elbow_l:'mixamorigLeftHand', hand_l:'mixamorigLeftHandMiddle3',
+      shoulder_r:'mixamorigRightHand', arm_r:'mixamorigRightHand', elbow_r:'mixamorigRightHand', hand_r:'mixamorigRightHandMiddle3',
+      hip_l:'mixamorigLeftToe_End', knee_l:'mixamorigLeftToe_End', ankle_l:'mixamorigLeftToe_End', toes_l:'mixamorigLeftToe_End',
+      hip_r:'mixamorigRightToe_End', knee_r:'mixamorigRightToe_End', ankle_r:'mixamorigRightToe_End', toes_r:'mixamorigRightToe_End'
+    };
+    const dir = (d) => {
+      const parts = [];
+      if (Math.abs(d.z) > 0.02) parts.push(d.z > 0 ? 'vorne' : 'hinten');
+      if (Math.abs(d.y) > 0.02) parts.push(d.y > 0 ? 'hoch' : 'runter');
+      if (Math.abs(d.x) > 0.02) parts.push(d.x > 0 ? 'nach links' : 'nach rechts');
+      return parts.length ? parts.join(' + ') : 'kaum Bewegung';
+    };
+    const out = ['Achsenpruefung: +20 Grad auf jeden Freiheitsgrad, gemessen am Kettenende.', ''];
+    for (const j in JOINTS) {
+      const endName = ends[j]; if (!endName) continue;
+      for (const dof in JOINTS[j].dof) {
+        rig.apply({}, {}); const before = rig.worldPos(endName).clone();
+        rig.apply({ [j]: { [dof]: 20 } }, {}); const after = rig.worldPos(endName).clone();
+        const d = after.sub(before);
+        out.push(`  ${(j + '.' + dof).padEnd(18)} +20 Grad  ->  ${dir(d)}   (dx ${d.x.toFixed(3)}  dy ${d.y.toFixed(3)}  dz ${d.z.toFixed(3)})`);
+      }
+    }
+    rig.apply({}, {});
+    return out.join(NL);
+  },
+
+  state() {
+    return {
+      frames: timeline.frames, fps: FPS,
+      keys: [...timeline.keys.keys()].sort((a, b) => a - b),
+      referenceClips: Object.keys(referenceClips)
+    };
+  }
+};
+window.api = api;
+
+// ---------- Laden ----------
+
+new GLTFLoader().load('./assets/Xbot.glb', (gltf) => {
+  model = gltf.scene;
+  model.traverse(o => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
+  scene.add(model);
+  for (const c of gltf.animations) referenceClips[c.name] = c;
+  rig = new Rig(model);
+
+  // 1. Koerpergeometrie aus dem Mesh messen
+  profile = buildBodyProfile(rig);
+  rig.setProfile(profile);
+  window.__profile = profile;
+
+  // 1b. Vorzeichen der Freiheitsgrade messen, damit die Namen stimmen
+  const sc = calibrateSigns(rig);
+  window.__signReport = sc.report;
+
+  // 2. Aus echter Bewegung lernen, wie nah sich Koerperteile normal kommen
+  const samples = [];
+  for (const name of ['idle', 'walk', 'run', 'agree', 'headShake']) {
+    const clip = referenceClips[name];
+    if (!clip) continue;
+    const mixer = new THREE.AnimationMixer(model);
+    const act = mixer.clipAction(clip); act.play();
+    const n = Math.max(2, Math.round(clip.duration * FPS));
+    for (let f = 0; f < n; f++) {
+      mixer.setTime(f / FPS);
+      model.updateMatrixWorld(true);
+      samples.push(rig.capsules());
+    }
+    act.stop(); mixer.uncacheRoot(model);
+  }
+  rig.pairTol = calibratePairs(samples);
+  rig.reset(); model.updateMatrixWorld(true);
+
+  api.set_timeline(60);
+  document.getElementById('head').textContent =
+    `– ${rig.bones.size} Knochen, Referenzclips: ${Object.keys(referenceClips).join(', ')}`;
+  document.getElementById('report').textContent = 'Modell geladen. Warte auf Werkzeugaufrufe.';
+  draw(0);
+  window.__ready = true;
+}, undefined, (e) => { document.getElementById('report').textContent = 'LADEFEHLER: ' + e; window.__error = String(e); });
+</script>
+</body>
+</html>

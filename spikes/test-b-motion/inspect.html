@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="de">
+<head><meta charset="utf-8"><title>Skelett auslesen</title>
+<style>body{background:#0e1116;color:#e6edf3;font:13px ui-monospace,Consolas,monospace;padding:20px}</style>
+<script type="importmap">
+{ "imports": { "three": "./assets/three.module.min.js", "three/addons/": "./" } }
+</script>
+</head>
+<body>
+<pre id="out">lade …</pre>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from './assets/GLTFLoader.js';
+
+window.__ready = false;
+const out = document.getElementById('out');
+
+new GLTFLoader().load('./assets/Xbot.glb', (gltf) => {
+  const root = gltf.scene;
+  root.updateWorldMatrix(true, true);
+
+  const bones = [];
+  let skinned = null;
+  root.traverse(o => {
+    if (o.isBone) bones.push(o);
+    if (o.isSkinnedMesh && !skinned) skinned = o;
+  });
+
+  const wp = new THREE.Vector3();
+  const info = bones.map(b => {
+    b.getWorldPosition(wp);
+    return {
+      name: b.name,
+      parent: b.parent && b.parent.isBone ? b.parent.name : '(root)',
+      children: b.children.filter(c => c.isBone).map(c => c.name),
+      world: [+wp.x.toFixed(4), +wp.y.toFixed(4), +wp.z.toFixed(4)],
+      localPos: [+b.position.x.toFixed(4), +b.position.y.toFixed(4), +b.position.z.toFixed(4)]
+    };
+  });
+
+  const box = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3());
+
+  window.__rig = {
+    boneCount: bones.length,
+    skinnedMeshName: skinned ? skinned.name : null,
+    vertexCount: skinned ? skinned.geometry.attributes.position.count : 0,
+    animationClips: gltf.animations.map(a => ({ name: a.name, duration: +a.duration.toFixed(3), tracks: a.tracks.length })),
+    bbox: { min: box.min.toArray().map(v => +v.toFixed(4)), max: box.max.toArray().map(v => +v.toFixed(4)), size: size.toArray().map(v => +v.toFixed(4)) },
+    bones: info
+  };
+  window.__ready = true;
+  out.textContent = JSON.stringify(window.__rig, null, 1);
+}, undefined, (e) => { out.textContent = 'FEHLER: ' + e; window.__error = String(e); window.__ready = true; });
+</script>
+</body>
+</html>

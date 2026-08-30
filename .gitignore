@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.*
+*.log
+
+# Wegwerf-Artefakte aus den Spikes
+spikes/**/shots/
+spikes/**/_check.mjs
+spikes/**/_c.mjs
