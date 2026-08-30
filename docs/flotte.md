@@ -51,6 +51,12 @@ falsch, weil nur der Positivfall geprüft wurde.
 
 Verweise auf `AGENTS.md`, dort stehen die drei Regeln.
 
+## Abnahmetests
+
+Wie sie aufgebaut sind, wer sie ausführt und wie man sie aufruft: `docs/tests.md`.
+Kurz: Die meisten laufen ohne Agent deterministisch im Browser. Nur Tests, die
+Agentenverhalten prüfen, brauchen einen — dann über die Wege oben.
+
 ## Dateibesitz
 
 Zwei Agents dürfen nie gleichzeitig dieselbe Datei bearbeiten. Gemeinsame Dateien —
@@ -63,4 +69,3 @@ Schemata, Werkzeugkatalog — gehören dir und werden nur von dir geändert.
 | `glm53.cmd` über kimi-code | antwortet |
 | `cmdc -m "Qwen/Qwen3.8-Flash"` | antwortet |
 | `cmdc -m "zai-org/GLM-5.3"` | antwortet |
-| Ollama-Cloud-API direkt | antwortet; Inhalt in `content`, Gedankenkette getrennt in `reasoning` |

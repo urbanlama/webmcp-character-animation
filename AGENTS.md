@@ -9,6 +9,7 @@ Vor der ersten Zeile Code lesen:
 - `docs/challenge.md` — Fristen, Abgabeanforderungen, Bewertungskriterien
 - `docs/superpowers/specs/` — der Design-Plan
 - `docs/flotte.md` — wer welche Aufgabe bekommt und wie man ihn beauftragt
+- `docs/tests.md` — wie Abnahmetests aufgebaut sind und laufen
 
 ## Die drei Regeln
 
@@ -75,7 +76,8 @@ Opus baut die Rechenlogik im Kern und alles Sichtbare. Der Rest der Bauarbeit ge
 GLM 5.3 Flash über Ollama (zuerst ausschöpfen, höchstens drei gleichzeitig) und an
 Qwen 3.8 Flash über Command Code (beliebig viele).
 
-Kein Auftrag ohne Abnahmetest mit Negativfall. Aufrufe in `docs/flotte.md`.
+Kein Auftrag ohne Abnahmetest mit Negativfall. Aufrufe in `docs/flotte.md`, Aufbau
+der Tests in `docs/tests.md`.
 
 ## Aufbau des Repos
 
@@ -85,6 +87,7 @@ AGENTS.md                    diese Datei
 CLAUDE.md                    Verweis hierher
 docs/challenge.md            offizielle Wettbewerbsfakten
 docs/flotte.md               Arbeitsteilung und Aufrufe der Agents
+docs/tests.md                Abnahmetests: Aufbau, Aufruf, Hold-out-Pflicht
 docs/superpowers/specs/      Design-Plan
 .claude/agents/              Opus-Subagents: kern, oberflaeche, festgefahren
 spikes/                      Wegwerfcode aus Vorabtests, nicht Teil des Produkts
