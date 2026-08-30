@@ -8,6 +8,7 @@ Vor der ersten Zeile Code lesen:
 - `VISION.md` — was gebaut wird und warum
 - `docs/challenge.md` — Fristen, Abgabeanforderungen, Bewertungskriterien
 - `docs/superpowers/specs/` — der Design-Plan
+- `docs/flotte.md` — wer welche Aufgabe bekommt und wie man ihn beauftragt
 
 ## Die drei Regeln
 
@@ -68,6 +69,16 @@ genau dann muss der Validator etwas melden.
 ein Fehler: Für eine 60 cm große Figur bedeuten 50 cm etwas anderes als für eine
 2,40 m große.
 
+## Arbeitsteilung
+
+Kritische Rechenlogik und alles Sichtbare baut Opus, über die Subagents `kern`,
+`oberflaeche` und `festgefahren` in `.claude/agents/`. Abgegrenzte Arbeitspakete gehen
+an Qwen 3.8 Flash über Command Code und an GLM 5.3 Flash über Ollama — beides starke
+Modelle, die echte Pakete bekommen, keinen Kleinkram.
+
+Kein Auftrag an ein externes Modell ohne Abnahmetest mit Negativfall. Einzelheiten und
+getestete Befehlszeilen in `docs/flotte.md`.
+
 ## Aufbau des Repos
 
 ```
@@ -75,7 +86,9 @@ VISION.md                    Idee, Problem, Anspruch
 AGENTS.md                    diese Datei
 CLAUDE.md                    Verweis hierher
 docs/challenge.md            offizielle Wettbewerbsfakten
+docs/flotte.md               Arbeitsteilung und Aufrufe der Agents
 docs/superpowers/specs/      Design-Plan
+.claude/agents/              Opus-Subagents: kern, oberflaeche, festgefahren
 spikes/                      Wegwerfcode aus Vorabtests, nicht Teil des Produkts
   test-a-webmcp/             gemessene WebMCP-Grenzen -> ERGEBNIS.md
   test-b-motion/             gescheiterter Animationsversuch mit rohen Keyframes
