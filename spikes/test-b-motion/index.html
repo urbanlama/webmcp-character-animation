@@ -54,17 +54,40 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x11161d);
 
 const cam = new THREE.PerspectiveCamera(38, 960 / 600, 0.1, 100);
+
+// Blickrichtungen, keine Positionen. Abstand und Hoehe kommen aus der Groesse
+// des geladenen Modells -- eingetippte Kamerawerte passen nur zu der einen
+// Figur, fuer die sie getippt wurden.
 const VIEWS = {
-  side:    { pos: [4.2, 1.4, 0.0], look: [0, 0.95, 0] },
-  front:   { pos: [0.0, 1.4, 4.2], look: [0, 0.95, 0] },
-  quarter: { pos: [3.2, 1.9, 3.0], look: [0, 0.95, 0] },
-  wide:    { pos: [7.0, 2.4, 5.0], look: [0, 0.9, 0] }
+  front:   { dir: [0.00, 0.16, 1.00] },
+  side:    { dir: [1.00, 0.16, 0.00] },
+  quarter: { dir: [0.72, 0.30, 0.70] },
+  wide:    { dir: [0.80, 0.28, 0.60], zoom: 1.7 }
 };
-function setView(name) {
-  const v = VIEWS[name] || VIEWS.side;
-  cam.position.set(...v.pos); cam.lookAt(...v.look);
+
+// Vorlaeufig, bis ein Modell geladen ist.
+let frameBox = { center: new THREE.Vector3(0, 0.9, 0), height: 1.8 };
+
+function measureFrameBox(obj) {
+  const box = new THREE.Box3().setFromObject(obj);
+  const size = new THREE.Vector3(), center = new THREE.Vector3();
+  box.getSize(size); box.getCenter(center);
+  frameBox = { center: center, height: Math.max(size.y, 0.01) };
 }
-setView('side');
+
+function fitCamera(c, name) {
+  const v = VIEWS[name] || VIEWS.front;
+  const dir = new THREE.Vector3(v.dir[0], v.dir[1], v.dir[2]).normalize();
+  // halbe Koerperhoehe plus 24 % Rand, umgerechnet in Abstand bei diesem Blickwinkel
+  const dist = (frameBox.height * 0.62) / Math.tan(c.fov * Math.PI / 360) * (v.zoom || 1);
+  c.position.copy(frameBox.center).addScaledVector(dir, dist);
+  c.lookAt(frameBox.center);
+}
+
+// Startansicht ist die Vorderansicht: die Figur schaut den Betrachter an.
+// +Z ist vorne, das ist die Konvention aus rig.js; im Produkt wird sie gemessen.
+function setView(name) { fitCamera(cam, name); }
+setView('front');
 
 scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x28303c, 2.1));
 const sun = new THREE.DirectionalLight(0xffffff, 2.4);
@@ -260,7 +283,7 @@ const api = {
     tmp.setPixelRatio(1); tmp.setSize(W, H, false);
     tmp.shadowMap.enabled = true;
     const c2 = new THREE.PerspectiveCamera(38, W / H, 0.1, 100);
-    const v = VIEWS[view || 'side']; c2.position.set(...v.pos); c2.lookAt(...v.look);
+    fitCamera(c2, view || 'side');
     list.forEach((f, i) => {
       applyFrame(f);
       const com = rig.centerOfMass();
@@ -271,7 +294,7 @@ const api = {
       ctx.fillText('f' + f, i * W + 8, 22);
     });
     tmp.dispose();
-    setView('side');
+    setView('front');
     return out.toDataURL('image/png');
   },
 
@@ -384,6 +407,8 @@ new GLTFLoader().load('./assets/Xbot.glb', (gltf) => {
   model = gltf.scene;
   model.traverse(o => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
   scene.add(model);
+  measureFrameBox(model);
+  setView('front');
   for (const c of gltf.animations) referenceClips[c.name] = c;
   rig = new Rig(model);
 
