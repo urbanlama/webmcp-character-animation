@@ -121,6 +121,7 @@ LEITUNG.md        für die Sitzung, die verteilt
 BRETT.md          gemeinsame Pinnwand
 CLAUDE.md         Verweis auf AGENTS.md
 docs/plan.md      Datenformate, Werkzeugkatalog, Architektur
+docs/umsetzung.md Arbeitspakete: was jedes braucht, besitzt, woran es abgenommen wird
 docs/challenge.md offizielle Wettbewerbsfakten
 spikes/           Wegwerfcode aus Vorabtests, nicht Teil des Produkts
 ```

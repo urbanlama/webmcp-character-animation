@@ -2,33 +2,9 @@
 
 Beitrag zur OpenAI WebMCP Challenge. Abgabe: 3. September 2026, 13:00 PT.
 
-Fassung 2. Die erste Fassung wurde von zwei unabhängigen Prüfern zerlegt; alle Funde
-sind eingearbeitet. Was sich geändert hat, steht am Ende unter „Was Fassung 1 falsch
-gemacht hat".
-
----
-
-## 0. Wie in diesem Projekt geprüft wird
-
-Diese Regeln stehen ganz oben, weil ihre Verletzung heute bereits zwei falsche
-Ergebnisse erzeugt hat.
-
-**Kein Test ohne Negativfall.** Ein Test, der nur bestätigt, dass etwas grün ist, ist
-wertlos. Zu jedem Test gehört ein absichtlich kaputter Fall, der rot werden **muss**.
-Wird er nicht rot, ist der Test kaputt, nicht der Code.
-
-**Kalibrierungsdaten und Testdaten sind getrennt.** Wer aus Daten lernt, darf nicht mit
-denselben Daten prüfen. Belegt: Auf allen fünf Referenzclips kalibriert ergab null
-Fehlalarme; auf zwei kalibriert und gegen die anderen drei geprüft ergab 150, 132 und
-183. Der Erfolg war Überanpassung.
-
-**Zahlen ohne Bild sind unvollständig.** Jeder Abnahmetest, der ein Bewegungsergebnis
-bewertet, erzeugt zusätzlich einen Bildstreifen. Wenn Zahlen und Bild sich
-widersprechen, gewinnt das Bild und der Test gilt als nicht bestanden.
-
-**Ein Ergebnis ist erst dann ein Ergebnis, wenn der Weg dahin geprüft ist.** Nicht „der
-Wert ist 0,03", sondern „der Wert ist 0,03, und bei einem eingebauten Fehler von 0,05
-meldet dasselbe Verfahren 0,05".
+Hier stehen die technischen Festlegungen: was gemessen wurde, welche Datenformate
+gelten, wie die Teile zusammenspielen. Wie gearbeitet und geprüft wird, steht in
+`AGENTS.md`. Welches Paket wann startklar ist, in `docs/umsetzung.md`.
 
 ---
 
@@ -144,12 +120,10 @@ versetzten Messpunkt.
 
 **Körpermaße werden gemessen, Verfahrensparameter werden benannt.**
 
-Die erste Fassung sagte „keine Zahl wird gesetzt" und war damit sachlich falsch — im
-Code standen 0,90 als Radiusperzentil, 3,5 % als Sohlentoleranz und 1,5 cm als
-Kontaktzuschlag. Solche Parameter sind unvermeidlich. Sie dürfen nur nicht unsichtbar
-sein.
+Verfahrensparameter wie Perzentile und Toleranzen sind unvermeidlich. Sie dürfen nur
+nicht unsichtbar sein.
 
-Deshalb: Alle Verfahrensparameter stehen an einer Stelle im Code, mit Begründung, und
+Alle Verfahrensparameter stehen an einer Stelle im Code, mit Begründung, und
 werden im Rig-Bericht ausgegeben. Wer einen davon ändert, muss die Abnahmetests erneut
 bestehen.
 
@@ -252,7 +226,7 @@ semantische Rolle nutzbar.
 
 **Quelle der Wahrheit sind `phases` und `overrides`.** `solved` ist abgeleitet und darf
 jederzeit verworfen werden. Damit ist eindeutig, was beim Neuberechnen überschrieben
-wird — Fassung 1 ließ das offen.
+wird.
 
 **Rotationen intern immer als Quaternion.** Eingaben in Grad werden beim Eintritt
 umgerechnet. Eine 360°-Drehung wird als Achse-plus-Winkel über die Phasendauer
@@ -351,8 +325,8 @@ Bühnen-vorne und Charakter-vorne.
 
 ### 6.3 Der Phasenlöser — das Herz
 
-Fassung 1 sagte nur „das System erzeugt daraus Posen". Das war die größte Lücke. Hier
-die Entscheidung:
+Wie aus Phasen tatsächlich Posen werden — die Stelle, an der ein Plan sonst „das System
+erzeugt daraus Posen" sagt und aufhört:
 
 **Phasen sind keine gespeicherten Posen. Phasen sind Parametersätze für einen
 schwerpunktgetriebenen Löser.**
@@ -397,8 +371,8 @@ kommt vom Agenten über Ebene 2 und 3, oder über die Stilregeln aus 7.3.
 
 ### 6.4 Korrigieren, dann prüfen
 
-Fassung 1 hatte Garantien und Validatoren nebeneinander und damit einen Widerspruch:
-Was garantiert verhindert wird, kann kein Validator je melden.
+Garantien und Validatoren nebeneinander wären ein Widerspruch: Was garantiert verhindert
+wird, kann kein Validator je melden.
 
 Auflösung: **Der Löser korrigiert. Der Validator prüft die Nachbedingung.** Ein Löser
 kann scheitern — bei widersprüchlichen Bedingungen, bei unerreichbaren Zielen. Genau
@@ -476,7 +450,8 @@ Kontaktpunkten.
 Frames.** Der Agent bekommt das Bild, ohne danach zu fragen — die direkte Antwort auf
 den gemessenen Befund, dass er von selbst nicht hinschaut.
 
-**Diese Schicht steht und fällt mit einer ungeprüften Annahme** (siehe 8.1).
+Dass ein Agent Bilder in Werkzeugantworten überhaupt wahrnimmt, war die Annahme, auf der
+diese Schicht steht. Sie ist geprüft: `spikes/test-a2-image/ERGEBNIS.md`.
 
 ### 6.9 Export
 
@@ -485,133 +460,7 @@ unabhängiges Wiedereinlesen und Vergleich der Ereignisse und Gelenkverläufe.
 
 ---
 
-## 7. Arbeitspakete mit Pflichttests
-
-Jedes Paket ist erst fertig, wenn **beide** Tests bestanden sind: der Positivfall zeigt,
-dass es funktioniert, der Negativfall zeigt, dass es Fehler auch findet.
-
-### AP0 — Vorabtests, blockierend
-
-| Test | Positivfall | Negativfall |
-|---|---|---|
-| **A2 Bildwahrnehmung** | Ein Agent bekommt ein Werkzeugergebnis mit Bild und beschreibt korrekt, was darauf zu sehen ist (Figur steht / liegt / ist kopfüber) | Dasselbe Bild wird durch ein anderes ersetzt; die Beschreibung muss sich ändern. Beschreibt er beide gleich, sieht er nichts |
-| **A3 Agentenlast** | Ein Agent wählt aus 16 Werkzeugen bei fünf Aufgaben jeweils das richtige | Bei zwei absichtlich ähnlich beschriebenen Werkzeugen greift er daneben — dann sind die Beschreibungen zu schwach |
-
-**A2 blockiert Schicht 6.8.** Wenn ein Agent Bilder in Werkzeugantworten nicht
-wahrnimmt, ist das Gegenmittel gegen den größten gemessenen Fehler wirkungslos, und die
-Architektur braucht einen anderen Weg — etwa eine Textbeschreibung des Bildes, die die
-Seite selbst erzeugt.
-
-### AP1 — Datenverträge
-
-Alle Schemata aus Abschnitt 5 als Datei, je ein gültiges und ein kaputtes Beispiel.
-
-| Test | Positivfall | Negativfall |
-|---|---|---|
-| Schema | gültiges Beispiel wird angenommen | kaputtes wird mit benanntem Feld abgelehnt |
-
-Blockiert alles Weitere. Ohne die Verträge bauen parallele Agents unvereinbare Systeme.
-
-### AP2 — Rig-Vermessung
-
-| Test | Positivfall | Negativfall |
-|---|---|---|
-| Massen | Schwerpunkt der Bind-Pose liegt innerhalb der Standfläche | künstlich verdreifachte Handmasse verschiebt ihn messbar heraus |
-| Radien | Abweichung zur Mesh-Hülle unter 15 % je Segment | ein halbierter Radius wird von der Hüllenprüfung gemeldet |
-| Sohlen | erkannte Sohlenfläche deckt mindestens 60 % der Fußlänge ab | ein Modell mit angehobener Ferse wird als solches erkannt, nicht stillschweigend falsch vermessen |
-| Vorzeichen | jeder messbare Freiheitsgrad bewegt das Kettenende in die benannte Richtung | ein absichtlich invertiertes Vorzeichen wird gemeldet |
-| Twist | wird als `nicht_messbar` gekennzeichnet | wird **nicht** stillschweigend auf 1 gesetzt und als gemessen ausgegeben |
-
-### AP3 — Rig-Erkennung auf fremden Modellen
-
-| Test | Positivfall | Negativfall |
-|---|---|---|
-| Härtetest | Knochennamen durch `bone_000` ersetzt, Achsen gedreht, Maßstab geändert, Twist-Knochen eingefügt — Rollen werden trotzdem korrekt zugeordnet | ein Modell ohne zwei Beine wird abgelehnt, nicht als Mensch behandelt |
-| Fremde Rigs | mindestens drei Modelle aus verschiedenen Quellen, keines davon zur Entwicklung benutzt | bei einem absichtlich mehrdeutigen Rig wird der Mensch gefragt statt geraten |
-
-**Der Testkorpus wird vorher benannt und in zwei Teile getrennt: Entwicklung und
-Abnahme. Wer mit Abnahmemodellen entwickelt, macht den Test wertlos.**
-
-### AP4 — Physikprüfungen
-
-| Test | Positivfall | Negativfall |
-|---|---|---|
-| Boden | Referenzclip ohne Beanstandung | Figur um 5 cm abgesenkt → genau 5 cm werden gemeldet |
-| Durchdringung | Referenzclip ohne Beanstandung | Arm in den Kopf gedreht → Meldung mit Betrag |
-| Balance | ruhig stehende Figur ist im Lot | Hüfte 30 cm zur Seite → Meldung mit Betrag |
-| Rutschen | verankerter Fuß meldet nichts | Fuß um 10 cm versetzt bei Kontakt → 10 cm werden gemeldet |
-| Ballistik | freier Fall wird akzeptiert | Schwerpunkt schwebt konstant → Meldung |
-
-**Hold-out-Pflicht:** Die Referenzclips für die Abnahme dürfen nicht dieselben sein, an
-denen entwickelt wurde. Der heutige Test hat gezeigt, was sonst passiert.
-
-### AP5 — Phasenlöser
-
-| Test | Positivfall | Negativfall |
-|---|---|---|
-| `crouch` | Schwerpunkt sinkt um die verlangte Tiefe, Füße bleiben stehen | verlangte Tiefe unerreichbar → Meldung mit erreichter Tiefe, kein stilles Abschneiden |
-| `takeoff` | Schwerpunkt erreicht die verlangte Geschwindigkeit, Kontakt löst sich | verlangte Geschwindigkeit übersteigt die Streckung → Meldung |
-| `airborne` | Flugbahn ist eine Parabel, Drehung erreicht den Sollwinkel | Einrollen ändert die Drehgeschwindigkeit — bei abgeschalteter Drehimpulskorrektur weicht der Endwinkel messbar ab |
-| `land` | Aufsetzfuß berührt den Boden, Schwerpunkt kommt ins Lot | Landung außerhalb der Streckreichweite → Meldung |
-| Konflikt | widersprüchliche Bedingungen werden nach Rangfolge aufgelöst | die geopferte Bedingung steht mit Betrag im Bericht |
-
-### AP6 — Absichts- und Stilprüfungen
-
-| Test | Positivfall | Negativfall |
-|---|---|---|
-| Absicht | ein echter Salto erfüllt alle Kriterien | eine bewegungslose Timeline besteht die Physikprüfung und fällt durch die Absichtsprüfung |
-| je Baustein | jeder der sieben Bausteine hat einen erfüllten Fall | und einen verletzten, der gemeldet wird |
-| Bewegungsdichte | Referenzclips lösen nichts aus | der Test-B-Clip mit 22 toten Frames wird beanstandet |
-| Antizipation | Referenzsprung besteht | ein Sprung ohne Absenken wird beanstandet |
-| Ruck | Referenzclips bestehen | ein eingefügter Positionssprung wird beanstandet |
-
-**Alle sieben Referenzclips müssen die Stilprüfung ohne Beanstandung bestehen.** Sonst
-wiederholt sich das Fehlalarm-Problem auf einer neuen Ebene.
-
-### AP7 — Werkzeug- und Mensch-Schicht
-
-| Test | Positivfall | Negativfall |
-|---|---|---|
-| Registrierung | 16 Werkzeuge sind über `getTools()` sichtbar | ein Werkzeug ohne Beschreibung wird abgelehnt |
-| Rückfrage | Werkzeug wartet, Klick liefert die Antwort im selben Aufruf | Abbruch oder Neuladen während der Wartezeit beschädigt die Timeline nicht |
-| Undo | Rücknahme stellt den vorigen Zustand her | nach fünf Änderungen und fünf Rücknahmen ist der Zustand bitgleich zum Ausgangszustand |
-| Fehlermeldungen | jede nennt Wert, erlaubten Bereich und nächsten Schritt | eine Stichprobe von zehn Fehlerfällen enthält keine Meldung ohne Zahl |
-
-### AP8 — Ende zu Ende
-
-| Test | Positivfall | Negativfall |
-|---|---|---|
-| Vertikalschnitt | echter Browser-Agent: Modell laden, Rolle bestätigen, Absicht setzen, Salto bauen, Rückfrage beantworten, exportieren | derselbe Auftrag mit abgeschalteter Absichtsprüfung liefert ein schlechteres Ergebnis — messbar, nicht behauptet |
-| Test-B-Vergleich | derselbe Auftrag wie in Test B besteht Absichts- und Stilprüfung | der alte Test-B-Clip besteht sie nicht |
-| Export | Wiedereinlesen mit einem fremden Betrachter zeigt dieselbe Bewegung | ein absichtlich beschädigter Export wird beim Wiedereinlesen bemerkt |
-
-**Kein „sichtbar besser".** Das Kriterium ist: bestandene Absichtsprüfung mit den vorab
-festgelegten Zahlen, bestandene Physik, bestandener Stil — und ein Mensch, der den
-Bildstreifen sieht und die bestellte Bewegung erkennt, ohne dass ihm gesagt wird, was
-sie darstellen soll.
-
----
-
-## 8. Reihenfolge
-
-1. **AP0** — Bildwahrnehmung und Agentenlast. Blockiert Architekturentscheidungen.
-2. **AP1** — Datenverträge. Blockiert alles Parallele.
-3. **AP4 und AP5 gleichzeitig, auf einem festen bekannten Rig.** Physikprüfungen und
-   Phasenlöser sind das Herz. Sie werden zuerst auf einem Rig gebaut, das sich nicht
-   ändert.
-4. **AP6** — Absicht und Stil, sobald der Löser Bewegung erzeugt.
-5. **AP2 und AP3 parallel dazu** — Rig-Vermessung und -Erkennung, gegen die Verträge
-   gebaut, am Ende untergeschoben.
-6. **AP7** — Werkzeuge und Mensch-Schicht.
-7. **AP8** — Ende zu Ende.
-
-**Begründung für 3 vor 5:** Erst muss bewiesen sein, dass überhaupt gute Bewegung
-entsteht. Rig-Unabhängigkeit auf einer Bewegungsmaschine, die nichts Brauchbares
-liefert, ist wertlos.
-
----
-
-## 9. Was nicht gebaut wird
+## 7. Was nicht gebaut wird
 
 - Vierbeiner und Fabelwesen. Sie werden erkannt und begründet abgelehnt.
 - Text-to-Motion-Modelle im Browser. Geprüft: kimodo.cpp liefert das passende Format,
@@ -625,13 +474,13 @@ liefert, ist wertlos.
 
 ---
 
-## 10. Risiken
+## 8. Risiken
 
 **Der Phasenlöser erzeugt korrekte, aber leblose Bewegung.** Größtes verbleibendes
 Risiko. Frühwarnung: AP5 mit Bildstreifen, nicht nur mit Zahlen. Gegenmittel:
 Stilregeln, Antizipation als Pflichtparameter von `takeoff`, Nachschwingen in `settle`.
 
-**Bilder kommen beim Agenten nicht an.** Klärt AP0 vor allem anderen.
+**Der Agent verliert bei sechzehn Werkzeugen die Übersicht.** Klärt A3.
 
 **Die Rig-Erkennung fällt bei fremden Modellen um.** Klärt AP3 mit Hold-out-Modellen.
 
@@ -644,29 +493,8 @@ Punkt benannt.
 
 ---
 
-## 11. Was Fassung 1 falsch gemacht hat
+## 9. Offene Punkte
 
-Zur Nachvollziehbarkeit, damit die Fehler nicht zurückkehren:
-
-| Fehler | Korrektur |
-|---|---|
-| „Keine Zahl wird gesetzt" — im Code standen drei gesetzte Parameter | Parameter benannt, begründet, an einer Stelle, im Bericht ausgegeben |
-| Null Fehlalarme auf Trainingsdaten gemeldet | Hold-out-Pflicht, Ergebnis korrigiert: Boden und Balance echt, Selbstdurchdringung war Überanpassung |
-| Garantien und Validatoren nebeneinander | Löser korrigiert, Validator prüft die Nachbedingung, Rangfolge festgelegt |
-| Phasenlöser in einem Satz | schwerpunktgetriebener Löser mit festem Verb-Inventar, ausformuliert |
-| Gelenkgrenzen ohne Herkunft | deklarierte Ausnahme: anatomisch, skaliert, im Profil gekennzeichnet |
-| Keine Datenverträge | drei Schemata plus Werkzeugkatalog mit sechzehn Einträgen |
-| Bildstreifen als gesetzte Tatsache | als ungeprüfte Annahme markiert, AP0 blockiert |
-| Absolute Toleranzen | alles relativ zur Körperhöhe |
-| Kein Undo | Schnappschuss vor jeder Änderung |
-| Drehimpuls als Nebensache | eigener Abschnitt, Trägheitsmoment pro Frame |
-| „Sichtbar besseres Ergebnis" als Abnahme | ersetzt durch bestandene Absichts-, Physik- und Stilprüfung plus Blindtest am Bild |
-| 350° und 360° widersprüchlich | ein Wert: mindestens 350° |
-
----
-
-## 12. Offene Punkte
-
-- Verhalten eines echten Browser-Agenten bei sechzehn Werkzeugen (klärt AP0/A3)
+- Verhalten eines echten Browser-Agenten bei sechzehn Werkzeugen (klärt A3)
 - Ob Fußrutschen in Clips ohne Wurzelbewegung korrekt gemeldet wird oder ein Restfehler ist
 - Beschaffung von mindestens drei Abnahmemodellen unter freier Lizenz

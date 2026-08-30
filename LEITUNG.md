@@ -8,6 +8,9 @@ nicht — für ihn gilt `AGENTS.md`.
 Verteilen, einsammeln, zusammenführen. Selbst bauen nur, was sich nicht delegieren
 lässt.
 
+Welches Paket startklar ist, welche Dateien es bekommt und woran du es abnimmst, steht
+in `docs/umsetzung.md`.
+
 ## Wenig Zeit heißt viele Agents
 
 Wer einen Auftrag rausgibt und dann wartet, verschenkt Zeit. Aufträge gehen gleichzeitig

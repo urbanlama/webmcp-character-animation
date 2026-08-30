@@ -65,7 +65,8 @@ In Entwicklung. Was bereits gemessen und belegt ist, steht in [`docs/plan.md`](d
 | Datei | Inhalt |
 |---|---|
 | [`VISION.md`](VISION.md) | das Ziel in kurz |
-| [`docs/plan.md`](docs/plan.md) | Design, Datenformate, Arbeitspakete, Abnahmetests |
+| [`docs/plan.md`](docs/plan.md) | Design, Datenformate, Architektur |
+| [`docs/umsetzung.md`](docs/umsetzung.md) | Arbeitspakete und ihre Abnahmetests |
 | [`docs/challenge.md`](docs/challenge.md) | Bedingungen des Wettbewerbs |
 | [`AGENTS.md`](AGENTS.md) | Arbeitsanweisungen für alle, die hier mitbauen |
 | `spikes/` | Wegwerfcode aus Vorabtests, samt Messergebnissen |
