@@ -50,15 +50,39 @@ Server-Prozess kann das nicht — er hat keine Oberfläche, vor der du sitzt.
 
 ## Stand
 
-In Entwicklung. Was bereits gemessen und belegt ist, steht in [`docs/plan.md`](docs/plan.md):
+Stand vom 31. August 2026. Getestet mit `node --test "src/**/*.test.mjs"` und den
+Browser-Tests über Playwright: 186 Tests, davon 185 grün (173 Node-Tests: 172 grün,
+1 rot; 13 Browser-Tests, alle grün). Der rote Test liegt in `src/rig/detect.test.mjs`
+(Schulter-/Arm-Rollen um je ein Glied verschoben) und wird an anderer Baustelle
+bearbeitet.
 
-- Werkzeuge lassen sich nach dem Upload zur Laufzeit erzeugen
-- Messberichte bis 512 KB kommen in 5 Millisekunden durch
-- Ein Werkzeug kann auf den Klick eines Menschen warten und mit dessen Antwort
-  weiterarbeiten
-- Bilder funktionieren in Werkzeugantworten, zusammen mit Text
-- Gemessene Körpergeometrie beseitigt Fehlalarme, die geschätzte erzeugt: 269 auf einem
-  Clip, in dem eine Figur ruhig dasteht, gegenüber null
+Gemessen und belegt:
+
+- **Vermessung am Xbot** (67 Knochen, 28 374 Vertices): 18 Gelenke, 14 Segmente,
+  8 Sohlenpunkte, 0 Warnungen, Körperhöhe 1,8093 m. Mit denselben Zahlen besteht das
+  Profil `validateRigProfile`.
+- **Phasenlöser**: eine haltbare Hocke erreicht 25,9 cm Tiefe — 14,3 % der
+  Körperhöhe; darüber hinaus meldet der Löser den nicht haltbaren Rest mit Betrag.
+  Ein Sprung liefert 3,23 m Schwerpunktweg und 360,0° Wurzeldrehung.
+- **Werkzeugkatalog**: 16 Werkzeuge. Ein Agent (Qwen 3.8 Flash), der nur Namen und
+  Beschreibungen sieht, wählt bei zehn Alltagsanfragen 10 von 10 Mal das richtige
+  Werkzeug (`spikes/test-a3-load/AGENTENTEST.md`).
+- **glTF-Export**: wird unabhängig wieder eingelesen und geprüft; eine Ortsveränderung
+  von 2 m überlebt den Export (`src/export/gltf.test.mjs`).
+- **WebMCP-Transport** (Chrome 151): Werkzeuge lassen sich nach dem Upload zur Laufzeit
+  erzeugen (gemessen 5 → 45, alle aufrufbar); Antworten bis 512 KB kommen in
+  5 Millisekunden vollständig durch; ein Werkzeug kann auf den Klick des Menschen
+  warten und die Antwort im selben Aufruf liefern (gemessen 3,1 s); Bilder funktionieren
+  neben Text in derselben Antwort.
+- **Gemessene Körpergeometrie schlägt geschätzte**: geschätzte Radien, Massen und
+  Kontaktpunkte erzeugten 269 Fehlalarme auf einem Clip, in dem die Figur ruhig steht;
+  nach der Umstellung auf Vermessung verschwanden Bodendurchdringung und Balancefehler
+  vollständig.
+
+Nicht fertig ist: das Verhalten eines echten Browser-Agenten am laufenden Produkt, die
+Demonstrationsbewegung als abspielbarer Clip für den Wettbewerb, und der Abschluss des
+Workflows „Upload → Vermessung → Phasen auftragen → Export“ in der Oberfläche. Details
+dazu stehen in [`docs/abgabe.md`](docs/abgabe.md), Abschnitt „Not finished“.
 
 ## Aufbau
 

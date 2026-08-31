@@ -6,6 +6,9 @@ Hier stehen die technischen Festlegungen: was gemessen wurde, welche Datenformat
 gelten, wie die Teile zusammenspielen. Wie gearbeitet und geprüft wird, steht in
 `AGENTS.md`. Welches Paket wann startklar ist, in `docs/umsetzung.md`.
 
+Änderungsordnung: Abschnitt 5 mit allem, was dazugehört (5.1–5.6), ändert nur die
+Leitung — Absprache über `BRETT.md`, bevor eine Änderung fällt.
+
 ---
 
 ## 1. Bewertungskriterien der Challenge
@@ -287,6 +290,72 @@ Feste Liste, sechzehn Werkzeuge. Kein Werkzeug pro Knochen.
 
 Jede Werkzeugbeschreibung nennt das Bezugssystem, in dem sie arbeitet, und die
 Einheiten ihrer Parameter.
+
+### 5.5 Werkzeugbeschreibungen
+
+Der vollständige Text jeder Werkzeugbeschreibung. Bezugssystem überall dasselbe und in
+`describe_world` benannt: **oben = +Y, Charakter-vorne = +Z (gemessen, siehe AP2),
+links = +X**. Positionen in Metern in Weltkoordinaten, Winkel in Grad, Dauern in
+Sekunden, Frames ganzzahlig, Anteile relativ zur Körperhöhe siehe jeweilige Angabe.
+Bühne-vorne und Charakter-vorne sind zwei verschiedene Richtungen; wo Werkzeuge eine
+Richtung nehmen, ist es die Charakter-Richtung, es sei denn, der Parametername enthält
+`stage`.
+
+1. `describe_world` — „Liefert den Weltvertrag: oben, vorne, links, Bodenhöhe, Maßstab
+   und Figurgröße“. Parameter: keine.
+2. `describe_rig` — „Liefert Rollen, Gelenke, Freiheitsgrade mit Achsen, Vorzeichen und
+   Grenzwerten sowie alle Zuordnungen mit Konfidenz unter 1 und ihre Vermessungsquelle“.
+   Parameter: keine.
+3. `describe_body` — „Liefert das gemessene Körperprofil: Segmente mit Radius und Masse
+   in Metern und Kilogramm, Sohlenpunkte in Knochen-lokalen Metern, Ruheabstände in
+   Metern und alle Verfahrensparameter mit Begründung“. Parameter: keine.
+4. `probe_joint` — „Beugt ein Gelenk probeweise um einen Winkel in Grad und liefert
+   Vorher/Nachher als Bild. Das Vorzeichen wirkt in dem in describe_rig genannten
+   Bezugssystem des Gelenks“. Parameter: `{joint: string, angleDeg: number (-90..90)}`.
+5. `confirm_role` — „Bestätigt oder korrigiert eine Zuordnung von Rolle zu Knochen;
+   gilt nach Bestätigung als gemessen“. Parameter: `{role: string, bone: string}`.
+6. `set_intent` — „Legt die Erfolgskriterien der Bewegung fest. Alle Längen in Anteilen
+   der Körperhöhe, alle Winkel in Grad, alle Zeiten in Sekunden. Wird vor dem Bauen vom
+   Menschen bestätigt“. Parameter: `{checks: [{kind, ...}, ...]}` je Baustein aus 7.2.
+7. `set_duration` — „Setzt die Gesamtlänge der Animation in Frames bei der im Timeline-
+   Vertrag genannten Framerate“. Parameter: `{frameCount: int (12..600)}`.
+8. `add_phase` — „Legt eine Bewegungsphase an. Zeiten in Frames, Phase-Parameter in den
+   Einheiten des Verbs (Tiefe in Anteilen der Körperhöhe, Geschwindigkeit in
+   Körperhöhen pro Sekunde, Winkel in Grad). detail: siehe Verb-Tabelle 6.3“.
+   Parameter: `{verb, from, to, params}`.
+9. `edit_phase` — „Ändert oder entfernt eine bestehende Phase. dieselben Einheiten wie
+   add_phase. Änderungen sind über undo rücknehmbar“. Parameter: `{id, from?, to?,
+   params?, remove?}`.
+10. `set_target` — „Setzt für einen einzelnen Frame ein Ziel für einen Endeffektor oder
+    den Schwerpunkt, in Metern, Weltkoordinaten des Weltvertrags. Wird vom Löser
+    angestrebt und kann ihm nicht gelingen; das steht dann im Bericht“. Parameter:
+    `{frame: int, part: string, pos: [m,m,m]}`.
+11. `set_joint` — „Setzt für einen einzelnen Frame einen Gelenkwinkel in Grad, Vorzeichen
+    und Achse wie in describe_rig“. Parameter: `{frame: int, joint: string, angleDeg:
+    number, channel: 'bend'|'twist'|'swing'}`.
+12. `undo` — „Nimmt die letzte Änderung an Phasen oder Overrides zurück“. Parameter:
+    keine.
+13. `validate` — „Prüft die gesamte Timeline phasenabhängig und liefert den vollständigen
+    Bericht mit einem Bildstreifen der kritischen Frames. alle Zahlen in den Einheiten
+    des Weltvertrags (Meter, Grad, Sekunden)“. Parameter: keine.
+14. `look` — „Erzeugt einen Bildstreifen aus gewählten Frames und benannten Ansichten im
+    Charakter-Bezugssystem (front/side/quarter/top), immer annotiert. Frames ganzzahlig
+    im Timeline-Bezug“. Parameter: `{frames: [int, ...], views: [string, ...]}`.
+15. `ask_human` — „Stellt dem Menschen eine Frage mit Antwortmöglichkeiten und wartet auf
+    einen Klick; die Antwort kommt im selben Aufruf zurück. Budget: siehe UI-Anzeige“.
+    Parameter: `{question: string, options: [string, ...]}`.
+16. `export_clip` — „Exportiert die Timeline als glTF mit Wurzelbewegung in Meter,
+    Y-oben, Charakter-vorne +Z. Rotationen als Quaternionen“. Parameter: keine.
+
+**Fehlermeldungen aller Werkzeuge** nennen Wert, erlaubten Bereich und nächsten Schritt,
+z. B. „frame 640 liegt außerhalb der Timeline von 0 bis 599; setze frameCount zuerst
+mit set_duration“.
+
+### 5.6 A3-Attrappe
+
+Für die Agentenlast-Prüfung (A3) genügt eine statische Seite, die nur den Katalog aus
+5.5 über `document.modelContext.registerTool` registriert und jede Ausführung mit einer
+token-echten Attrappen-Antwort beantwortet.
 
 ---
 

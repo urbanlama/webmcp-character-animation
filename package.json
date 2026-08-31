@@ -1,0 +1,15 @@
+{
+  "name": "webmcp-challenge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agentengesteuerte Charakteranimation im Browser — Beitrag zur OpenAI WebMCP Challenge",
+  "scripts": {
+    "test": "node --test \"src/**/*.test.mjs\" && node tools/browser-test.mjs",
+    "start": "node tools/serve.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.55.0",
+    "three": "^0.180.0"
+  }
+}

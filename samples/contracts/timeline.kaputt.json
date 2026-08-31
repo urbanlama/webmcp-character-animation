@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "fps": 30,
+  "frameCount": 90,
+  "rotationFormat": "quaternion",
+  "phases": [
+    { "id": "p1", "verb": "crouch", "from": 0, "to": 12, "params": { "depth": 0.35 } },
+    { "id": "p2", "verb": "takeoff", "from": 12, "to": 18, "params": { "vy": 4.2, "spinX": -360 } },
+    { "id": "p3", "verb": "airborne", "from": 18, "to": 66, "params": { "tuckEnd": 0.55 } },
+    { "id": "p4", "verb": "land", "from": 66, "to": 78, "params": { "foot": "beide", "depth": 0.28 } },
+    { "id": "p5", "verb": "settle", "from": 78, "to": 97, "params": { "dauer": 0.4 } }
+  ],
+  "overrides": {}
+}

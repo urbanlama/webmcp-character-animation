@@ -1,0 +1,27 @@
+{
+  "frameCount": 90,
+  "phases": [
+    { "state": "kontakt", "from": 0, "to": 18 },
+    { "state": "flug", "from": 19, "to": 44 }
+  ],
+  "physics": {
+    "passed": true,
+    "issues": [
+      { "kind": "boden", "frame": 34, "value": 0.048, "unit": "m", "part": "foot_r",
+        "message": "foot_r steckt 4,8 cm im Boden", "fix": "Wurzel anheben oder Bein strecken" }
+    ]
+  },
+  "intent": {
+    "passed": true,
+    "checks": [
+      { "name": "drehung", "required": ">=350", "measured": 358.2, "unit": "grad", "passed": true }
+    ]
+  },
+  "style": {
+    "passed": true,
+    "issues": []
+  },
+  "images": [
+    { "view": "side", "frames": [0, 12, 24, 34, 48], "ref": "strip_side_0-12-24-34-48.png" }
+  ]
+}

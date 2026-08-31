@@ -59,20 +59,48 @@ an eine Claude-Unterinstanz auf Opus, oder das Paket ist falsch zugeschnitten.
 
 ## Wer arbeitet für dich
 
-**GLM 5.3 Flash über Ollama** — erste Wahl, Kontingent zuerst ausschöpfen, höchstens
-drei gleichzeitig.
+Alle drei Kanäle sind am 31. August 2026 an derselben Aufgabe gemessen worden. Alle drei
+lösten sie physikalisch korrekt, auf identische Zahlen. Der Unterschied liegt im Aufwand,
+nicht in der Richtigkeit.
+
+**Qwen 3.8 Flash über Command Code — das Arbeitspferd.** Beliebig viele parallel.
+Kompakteste Ergebnisse, disziplinierter Werkzeugeinsatz, beendet sich selbst mit
+brauchbarem Bericht. 143 s, 38 Werkzeugaufrufe, 129 Zeilen.
 
 ```bash
-/c/Users/maxbl/bin/glm53.cmd -p "<Auftrag>"
+cmdc -p "Lies die Datei C:\pfad\auftrag.md vollstaendig und arbeite den darin beschriebenen Auftrag ab." \
+     -m "Qwen/Qwen3.8-Flash" --effort xhigh --tools-all --yolo --max-turns 60
 ```
 
-**Qwen 3.8 Flash über Command Code** — danach und daneben, beliebig viele parallel.
+**GLM 5.3 Flash über Kimi Code — zweite Wahl, HÖCHSTENS DREI GLEICHZEITIG.**
+Gleichwertig in der Qualität, etwas schneller (112 s), aber die Zahl ist eine harte
+Grenze.
 
 ```bash
-cmdc -p "<Auftrag>" -m "Qwen/Qwen3.8-Flash" --effort xhigh -t --max-turns 60
+/c/Users/maxbl/bin/glm53.cmd -p "Lies die Datei <pfad> vollstaendig und arbeite den darin beschriebenen Auftrag ab."
 ```
 
-`cmdc`, nicht `cmd`. Falls Ollama leer ist: `cmdc -m "zai-org/GLM-5.3"`.
+**GLM 5.3 über `cmdc` — nur als Notnagel.** Richtig, aber verschwenderisch: 366
+Werkzeugaufrufe für dieselbe Aufgabe, bei der Qwen mit 26 auskam, und nach zehn Minuten
+noch nicht fertig.
+
+### Die vier Regeln, ohne die kein externer Lauf funktioniert
+
+Jede einzelne davon hat schon einen Lauf gekostet:
+
+1. **Auftrag als Datei, Kommandozeile nur ein Einzeiler.** Mehrzeiliger Text über
+   `cmd.exe` kommt nur bis zum ersten Zeilenumbruch an. Ein Agent ohne Auftrag liest
+   `AGENTS.md`, findet `LEITUNG.md`, hält sich für die Leitung und verteilt eigene
+   Unteraufträge.
+2. **Windows-Pfade, niemals Unix-Pfade.** `C:\Users\...`, nicht `/c/Users/...`. Über
+   `cmdc` scheitert sonst der erste Werkzeugaufruf und der Lauf stirbt wortlos.
+3. **`--tools-all` bei `cmdc`.** Im `-p`-Modus hält Command Code Werkzeuge zurück. `-t`
+   ist `--trust` und regelt nur den Berechtigungsdialog, nicht die Werkzeuge.
+4. **`--effort` ist je Modell verschieden.** Qwen kennt `low, medium, xhigh`, GLM kennt
+   `low, high, max`. Ein falscher Wert bricht sofort ab, ohne den Auftrag zu lesen.
+
+Jeder externe Auftrag beginnt mit einer Rollensperre: kein `LEITUNG.md` lesen, keine
+Unteraufträge, keine fremden Dateien, kein `package.json`.
 
 **Claude-Unterinstanzen** über das Agent-Werkzeug — für Kritisches, für die Oberfläche
 und für Festgefahrenes. Auch die parallel.

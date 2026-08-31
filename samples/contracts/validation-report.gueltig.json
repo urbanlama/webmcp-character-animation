@@ -1,0 +1,25 @@
+{
+  "frameCount": 90,
+  "phases": [
+    { "state": "kontakt", "from": 0, "to": 18 },
+    { "state": "flug", "from": 19, "to": 44 },
+    { "state": "kontakt", "from": 45, "to": 90 }
+  ],
+  "physics": {
+    "passed": true,
+    "issues": []
+  },
+  "intent": {
+    "passed": true,
+    "checks": [
+      { "name": "drehung", "required": ">=350", "measured": 358.2, "unit": "grad", "passed": true }
+    ]
+  },
+  "style": {
+    "passed": true,
+    "issues": []
+  },
+  "images": [
+    { "view": "side", "frames": [0, 12, 24, 36, 48], "ref": "strip_side_0-12-24-36-48.png" }
+  ]
+}

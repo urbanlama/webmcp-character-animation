@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "source": { "file": "Xbot.glb", "boneCount": 67, "vertexCount": 12473 },
+  "world": {
+    "up": "y",
+    "forward": "z",
+    "left": "x",
+    "groundY": 0.0,
+    "height": 1.5968,
+    "unitsPerMeter": 1.0
+  },
+  "bones": [
+    { "id": "mixamorigHips", "parent": null, "bindWorld": [0.0, 1.0401, 0.0] },
+    { "id": "mixamorigLeftUpLeg", "parent": "mixamorigHips", "bindWorld": [0.0890, 1.0200, 0.0] },
+    { "id": "mixamorigLeftLeg", "parent": "mixamorigLeftUpLeg", "bindWorld": [0.0912, 0.5300, 0.0100] },
+    { "id": "mixamorigLeftFoot", "parent": "mixamorigLeftLeg", "bindWorld": [0.0912, 0.1050, 0.0150] }
+  ],
+  "roles": {
+    "pelvis": { "bone": "mixamorigHips", "confidence": 1.0 },
+    "foot_l": { "bone": "mixamorigLeftFoot", "confidence": 0.97 }
+  },
+  "joints": {
+    "hip_l": {
+      "bone": "mixamorigLeftUpLeg",
+      "dof": { "flex": { "axis": "x", "sign": -1, "limit": [-30, 130] } },
+      "signSource": "gemessen",
+      "limitSource": "anatomisch"
+    }
+  },
+  "segments": [
+    { "id": "thigh_l", "from": "mixamorigLeftUpLeg", "to": "mixamorigLeftLeg",
+      "radius": 0.0858, "mass": 0.1372, "volume": 0.0121 }
+  ],
+  "soles": [
+    { "id": "sole_l", "bone": "mixamorigLeftFoot", "local": [0.03, -0.05, 0.11] }
+  ],
+  "restDistances": {},
+  "params": { "radiusPercentile": 0.90, "soleTolerance": 0.035, "contactMargin": 0.015 },
+  "warnings": []
+}

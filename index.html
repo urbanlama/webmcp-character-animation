@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>WebMCP Challenge — Szene</title>
+<style>
+  :root { --bg:#0e1116; --fg:#e6edf3; --dim:#8b949e; --bad:#f85149; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5 ui-monospace,Consolas,monospace; }
+  header { display:flex; gap:12px; align-items:center; padding:10px 14px; border-bottom:1px solid #262d38; }
+  canvas { display:block; }
+  #status { color:var(--dim); }
+  #error { display:none; margin:10px 14px; padding:10px 12px; border:1px solid var(--bad); border-radius:6px; color:var(--bad); white-space:pre-wrap; }
+  #stage { text-align:center; flex:1 1 auto; min-width:0; }
+
+  /* Rückfrage (plan.md 6.7) steht neben der Leinwand, nicht darüber.
+     Grund: Bodenkontakt, Standfläche und Fußanker sind die Größen, an denen der
+     Mensch die Bewegung beurteilt — ein Overlay über den Füßen verdeckt genau
+     das, worüber gefragt wird. Ein Overlay am rechten Rand ginge bei 1440 px
+     gut aus und bei 1024 px nicht mehr; im eingebauten Browser der
+     ChatGPT-Desktop-App ist mit schmalen Fenstern zu rechnen (challenge.md).
+     Deshalb teilen sich beide den Platz, statt sich zu überlagern.
+
+     frameCamera bleibt unangetastet: die Leinwand behält ihre 960×720 Pixel und
+     ihr Seitenverhältnis, CSS skaliert sie nur gleichmäßig herunter. */
+  #buehne { display:flex; gap:16px; align-items:flex-start; padding:0 16px; }
+  #view { max-width:100%; height:auto; }
+  #seite { flex:0 0 clamp(300px, 30vw, 420px); display:flex; flex-direction:column; gap:12px; }
+  /* Solange weder Frage noch Spur etwas zeigen, nimmt die Spalte keinen Platz. */
+  #seite:not(:has(> section:not([hidden]))) { display:none; }
+  #frage[hidden], #spur[hidden] { display:none; }
+  #frage, #spur {
+    background:#161c25; border:1px solid #3b4b63; border-radius:10px;
+    padding:14px 16px; box-shadow:0 10px 30px #0009;
+  }
+  #frage { max-height:calc(100vh - 120px); overflow:auto; }
+  /* Unter 720 px reicht die Breite für zwei Spalten nicht mehr: dann
+     untereinander, Frage zuerst — beantwortet werden muss sie so oder so. */
+  @media (max-width: 719px) {
+    #buehne { flex-direction:column; align-items:stretch; }
+    #seite { flex:none; order:-1; }
+  }
+  #frage-text { margin:0 0 12px; white-space:pre-wrap; font-size:14px; }
+  #frage-optionen { display:grid; gap:10px; }
+  #frage-optionen.varianten { grid-template-columns:1fr 1fr; }
+  #frage-optionen.liste { grid-template-columns:1fr; }
+  .frage-karte {
+    font:inherit; color:var(--fg); background:#1d2531; cursor:pointer;
+    border:1px solid #3b4b63; border-radius:8px; padding:12px 14px; text-align:left;
+  }
+  .frage-karte:hover, .frage-karte:focus { border-color:#6ea8fe; outline:none; }
+  .frage-karte.variante { display:flex; flex-direction:column; gap:6px; min-height:72px; }
+  .frage-karte .marke { color:var(--dim); font-size:11px; letter-spacing:.08em; text-transform:uppercase; }
+  .frage-karte .titel { font-size:14px; }
+  #frage-hinweis { margin:10px 0 0; color:var(--bad); }
+  #frage-fuss { display:flex; align-items:center; gap:12px; margin-top:12px; }
+  #frage-budget { color:var(--dim); }
+  #frage-abbruch {
+    font:inherit; color:var(--dim); background:none; cursor:pointer;
+    border:1px solid #3b4b63; border-radius:6px; padding:5px 10px;
+  }
+
+  /* Agentenspur: der Mensch soll sehen, dass gearbeitet wird — nicht mitlesen.
+     Deshalb ruhig, klein, ohne Farbe außer beim abgelehnten Aufruf. */
+  #spur-titel { margin:0 0 8px; font-size:11px; font-weight:normal; color:var(--dim);
+    letter-spacing:.08em; text-transform:uppercase; }
+  #spur-liste { margin:0; padding:0; list-style:none; }
+  .spur-zeile { display:grid; grid-template-columns:auto 1fr; gap:2px 8px; padding:4px 0;
+    border-top:1px solid #222a35; }
+  .spur-zeile:first-child { border-top:none; }
+  .spur-zeile .zeit { color:var(--dim); font-variant-numeric:tabular-nums; }
+  .spur-zeile .werkzeug { color:var(--fg); }
+  .spur-zeile .ergebnis { grid-column:2; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .spur-zeile.fehler .werkzeug, .spur-zeile.fehler .ergebnis { color:var(--bad); }
+</style>
+<!-- Alle Pfade relativ zum Dokument, keiner ab Wurzel. Die Seite muss auch unter
+     einem Unterpfad ausgeliefert werden können (…/webmcp/), sonst lädt three.js
+     dort nicht und die Seite ist tot. Geprüft in tools/browser-test.mjs. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.min.js",
+    "three/addons/": "./vendor/"
+  }
+}
+</script>
+<script>
+// Fehleroberfläche der Seite — läuft VOR dem Modul, weil genau das der
+// nachgewiesene Fehlerfall war: ein nicht auflösbares Modul im Import-Graphen
+// hindert das Seitenmodul daran, auch nur ausgeführt zu werden. Dann ist weit
+// und breit kein Handler registriert, die Datei-Auswahl tut sichtbar nichts.
+// Ein kaputter Weg muss sich also melden, bevor irgendetwas anderes passiert.
+window.__boot = { fehlerr: [], bereit: false, start: performance.now() };
+window.addEventListener('error', (e) => {
+  const ziel = e.target;
+  // Nur eigene Skripte und Module; Icon- und Bild-Fehlschläge sind kein Ladefehler.
+  if (!ziel || (ziel.tagName !== 'SCRIPT' && ziel.tagName !== 'LINK')) return;
+  const url = ziel.src || ziel.href || '';
+  if (!/\/(vendor|src)\//.test(url)) return;
+  window.__boot.fehlerr.push(url);
+  meldeModulFehler();
+}, true);
+
+function meldeModulFehler() {
+  const feld = document.getElementById('error');
+  const status = document.getElementById('status');
+  if (!feld) return;
+  feld.textContent = `Modul nicht geladen (${window.__boot.fehlerr.length} Stück): ` +
+    window.__boot.fehlerr.join(', ');
+  feld.style.display = 'block';
+  if (status) status.textContent = 'Kein Modell geladen';
+}
+
+// Wächter: meldet sich, wenn das Seitenmodul gar nicht erst ausgeführt wurde.
+// Ohne ihn bleibt ein kaputter Import-Graph unsichtbar — der nachgewiesene Fall.
+setTimeout(() => {
+  if (window.__boot.bereit || window.__boot.fehlerr.length > 0) return;
+  window.__boot.fehlerr.push('(kein Modul-Skript ausgeführt)');
+  meldeModulFehler();
+}, 5000);
+</script>
+</head>
+<body>
+<header>
+  <input type="file" id="file" accept=".glb,.gltf">
+  <span id="status">Kein Modell geladen</span>
+</header>
+<div id="error" role="alert"></div>
+<div id="buehne">
+  <div id="stage"><canvas id="view" width="960" height="720"></canvas></div>
+  <aside id="seite">
+    <section id="frage" hidden></section>
+    <section id="spur" hidden></section>
+  </aside>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { loadGLB, validateLoadedModel, getBounds } from './src/scene/load.js';
+import { frameCamera } from './src/scene/view.js';
+import { createToolLayer } from './src/tools/index.js';
+import { mounteFragePanel } from './src/ui/frage-panel.js';
+import { mounteSpur, spurKontext } from './src/ui/agentenspur.js';
+import { createKnochenLeuchten } from './src/ui/knochen-leuchten.js';
+import { frageRollenAb } from './src/ui/rollen-bestaetigung.js';
+
+const canvas = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(960, 720, false);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x11161d);
+
+const camera = new THREE.PerspectiveCamera(38, 960 / 720, 0.05, 100);
+// Vorläufige Ansicht; nach dem Laden übernimmt frameCamera aus der Bounding Box.
+camera.position.set(0, 1, 4);
+camera.lookAt(0, 1, 0);
+
+scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x28303c, 2.1));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(3, 6, 4);
+scene.add(sun);
+
+const stage = document.getElementById('stage');
+const statusEl = document.getElementById('status');
+const errorEl = document.getElementById('error');
+
+let model = null;
+// Marker für den fraglichen Knochen (plan.md 6.7, Moment 1). Gehört zum
+// geladenen Modell und geht mit ihm.
+let leuchten = null;
+
+function showError(message) {
+  errorEl.textContent = message;
+  errorEl.style.display = 'block';
+}
+function clearError() {
+  errorEl.textContent = '';
+  errorEl.style.display = 'none';
+}
+
+function removeFromScene() {
+  if (leuchten) {
+    leuchten.abmelden();
+    leuchten = null;
+  }
+  if (model) {
+    scene.remove(model);
+    model = null;
+  }
+}
+
+function describeBox(box) {
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  return `${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)} m`;
+}
+
+/**
+ * Baut die geladene Datei in die Szene ein: Skelett prüfen, einhängen,
+ * Kamera aus der Bounding Box rahmen, Status melden.
+ * Wird auch von __scene.refit() nach Skalierung erneut aufgerufen.
+ */
+function presentModel(gltf, fileName) {
+  removeFromScene();
+  model = gltf.scene;
+  scene.add(model);
+
+  const check = validateLoadedModel(gltf);
+  const box = getBounds(model);
+
+  frameCamera(camera, model);
+  leuchten = createKnochenLeuchten({ scene, model });
+
+  statusEl.textContent =
+    `${fileName} — ${check.boneCount} Knochen — Bounding Box ${describeBox(box)}`;
+}
+
+/**
+ * Mensch-Moment 1 aus plan.md 6.7: unsichere Rollen bestätigen, sobald ein
+ * Modell steht. Die Schwellen (sicher ab 0,90, gefragt ab 0,50) und die Fragen
+ * selbst kommen aus src/rig/detect.js; hier wird nur gefragt und angezeigt.
+ *
+ * Zwei Dinge bleiben bewusst außen vor: Ohne Werkzeugschicht gibt es keinen
+ * Agenten, der die Bestätigung braucht — dann wird nicht gefragt. Und eine
+ * gescheiterte Erkennung landet in der Spur, nicht im Fehlerfeld: geladen ist
+ * das Modell trotzdem, das Fehlerfeld gehört dem Upload.
+ */
+async function bestaetigeUnsichereRollen(gltf) {
+  if (!window.__tools || !window.__ui) return null;
+  let profil = null;
+  try {
+    const { detectRig } = await import('./src/rig/detect.js');
+    profil = detectRig(gltf);
+  } catch (err) {
+    window.__ui.spur.notiere({
+      name: 'Rollenerkennung', fehler: true, text: err.message
+    });
+    return null;
+  }
+
+  const offene = profil.questions?.length ?? 0;
+  if (offene === 0) {
+    window.__ui.spur.notiere({
+      name: 'Rollenerkennung',
+      text: `${Object.keys(profil.roles ?? {}).length} Rollen sicher zugeordnet, 0 Rückfragen`
+    });
+    return null;
+  }
+
+  const ergebnis = await window.__ui.rollenAbfragen(profil);
+  window.__ui.spur.notiere({ name: 'Rollenerkennung', text: ergebnis.meldung });
+  return ergebnis;
+}
+
+async function loadFile(file) {
+  clearError();
+  if (!file) return;
+  try {
+    const buffer = await file.arrayBuffer();
+    const gltf = await loadGLB(buffer);
+    presentModel(gltf, file.name);
+    await bestaetigeUnsichereRollen(gltf);
+  } catch (err) {
+    removeFromScene();
+    statusEl.textContent = 'Kein Modell geladen';
+    showError(`Ladefehler: ${err.message}`);
+  }
+}
+
+document.getElementById('file').addEventListener('change', (e) => {
+  loadFile(e.target.files[0]);
+});
+
+// Für Playwright-Tests und für andere Skripte der Seite. refit() rahmt die
+// Kamera nach einer Skalierung des Modells erneut aus der Bounding Box aus —
+// kein eingetippter Abstand.
+window.__scene = {
+  scene,
+  camera,
+  renderer,
+  get model() { return model; },
+  refit() {
+    if (!model) throw new Error('refit(): kein Modell geladen, 0 Objekte in der Szene');
+    frameCamera(camera, model);
+  },
+};
+
+// Renderlauf. Ohne ihn wird die Szene nie gezeichnet — die Leinwand bliebe
+// schwarz, auch wenn das Modell längst hängt und die Kamera richtig steht.
+function render() {
+  renderer.render(scene, camera);
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+// Werkzeugschicht (AP7): genau einmal registrieren, und zwar nur bei einem
+// echten document.modelContext. Ohne ihn bleibt der normale Upload unverändert —
+// ohne Kontext gibt es keinen Empfänger für die Werkzeuge, also bleibt die
+// Schicht weg.
+window.__tools = null;
+window.__ui = null;
+if (document.modelContext && typeof document.modelContext.registerTool === 'function') {
+  // Die Spur hängt sich zwischen Schicht und Kontext: sie umwickelt jedes
+  // registrierte execute und reicht es unverändert weiter. src/tools/ bleibt
+  // unangetastet, der Agent sieht denselben Werkzeugkatalog wie vorher.
+  const spur = mounteSpur({ wurzel: document.getElementById('spur') });
+  window.__tools = await createToolLayer({
+    modelContext: spurKontext(document.modelContext, spur)
+  });
+
+  // Sichtbare Hälfte der Rückfrage (plan.md 6.7): ohne sie wartet ask_human auf
+  // einen Klick, den niemand sehen und deshalb niemand geben kann.
+  mounteFragePanel({ ask: window.__tools.ask, wurzel: document.getElementById('frage') });
+
+  window.__ui = {
+    spur,
+    get leuchten() { return leuchten; },
+    /** Mensch-Moment 1 aus plan.md 6.7, auch einzeln aufrufbar. */
+    rollenAbfragen: (profil) => frageRollenAb({
+      profil, ask: window.__tools.ask, rufe: window.__tools.rufe, leuchten
+    }),
+  };
+}
+
+window.__boot.bereit = true;
+window.__ready = true;
+</script>
+</body>
+</html>
