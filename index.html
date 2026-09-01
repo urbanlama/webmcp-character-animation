@@ -92,6 +92,7 @@
     flex:0 0 auto; display:flex; align-items:center; gap:20px;
     height:56px; padding:0 var(--rand);
     border-bottom:1px solid var(--linie);
+    position:relative;
   }
   #marke-name { font-size:13px; font-weight:600; letter-spacing:.01em; white-space:nowrap; }
   #kopf-rechts { margin-left:auto; display:flex; align-items:center; gap:18px; min-width:0; }
@@ -111,6 +112,22 @@
   }
   #datei-knopf:hover { color:var(--schrift); border-color:var(--still); }
   #file:focus-visible + #datei-knopf { outline:2px solid var(--ruf); outline-offset:2px; }
+
+  /* Die Ansicht ist eine Wahl der Bühne, keine Nebenfunktion. Deshalb sitzt
+     sie genau zwischen Produktname und Dateiaktion, nicht in einem Seitenmenü. */
+  #ansicht { position:absolute; left:50%; transform:translateX(-50%); }
+  .ansicht-insel {
+    display:flex; align-items:center; gap:2px; padding:3px;
+    background:var(--bett); border:1px solid var(--linie-hell); border-radius:999px;
+  }
+  .ansicht-knopf {
+    font:inherit; font-size:11.5px; color:var(--still); cursor:pointer;
+    background:transparent; border:0; border-radius:999px; padding:4px 14px;
+    transition:color .15s, background .15s;
+  }
+  .ansicht-knopf:hover { color:var(--schrift); }
+  .ansicht-knopf.aktiv { color:var(--schrift); background:var(--linie-hell); }
+  .ansicht-knopf:focus-visible { outline:2px solid var(--ruf); outline-offset:2px; }
 
   /* ── Fehler ───────────────────────────────────────────────────────────────
      Der einzige Ort, an dem die Seite laut wird. Deshalb keine Fläche und kein
@@ -144,6 +161,7 @@
     font-family:var(--mono); font-variant-numeric:tabular-nums;
   }
   #massstab[hidden] { display:none; }
+  body.welt-ansicht #massstab { display:none !important; }
 
   /* ── Hinweis auf die Bedienung ────────────────────────────────────────────
      Die Leinwand ist ab jetzt bedienbar, und das sieht man ihr nicht an. Der
@@ -431,6 +449,11 @@
     }
     #einstieg-titel { font-size:23px; }
   }
+  @media (max-width: 620px) {
+    :root { --rand:14px; }
+    #status { display:none; }
+    .ansicht-knopf { padding:4px 11px; }
+  }
   @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
 </style>
 <!-- Alle Pfade relativ zum Dokument, keiner ab Wurzel. Die Seite muss auch unter
@@ -485,6 +508,7 @@ setTimeout(() => {
   <!-- Nur der Name. Dass die Seite WebMCP spricht, sagt der Zähler in der
        rechten Spalte mit einer Zahl — zweimal dasselbe wäre einmal zu viel. -->
   <span id="marke-name">Rig Studio</span>
+  <div id="ansicht"></div>
   <div id="kopf-rechts">
     <span id="status">No model loaded</span>
     <input type="file" id="file" accept=".glb,.gltf" aria-label="Open a rigged GLB file">
@@ -542,6 +566,7 @@ import { createBodengitter } from './src/ui/bodengitter.js';
 import { mounteHoehenmassstab } from './src/ui/hoehenmassstab.js';
 import { mounteKamerasteuerung } from './src/ui/kamerasteuerung.js';
 import { mounteAbspieler } from './src/ui/abspieler.js';
+import { ANSICHT_EDITOR, ANSICHT_WELT, frameFuerAnsicht, mounteAnsichtsumschalter } from './src/ui/ansichtsmodus.js';
 import { stellePose } from './src/render/strip.js';
 import { mounteVerbindung } from './src/ui/verbindung.js';
 import { KATALOG_GROESSE } from './src/tools/catalog.js';
@@ -549,6 +574,8 @@ import { KATALOG_GROESSE } from './src/tools/catalog.js';
 const canvas = document.getElementById('view');
 const leinwand = document.getElementById('leinwand');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 // Derselbe Ton wie die Seite (--grund): die Leinwand hat keinen sichtbaren
@@ -564,13 +591,26 @@ camera.lookAt(0, 1, 0);
 // Fuehrungslicht von schraeg vorn und ein schwaches Gegenlicht, das die
 // Silhouette von der Flaeche loest. Die Figur ist das einzige Helle im
 // Bild und muss diese Rolle auch tragen koennen.
-scene.add(new THREE.HemisphereLight(0xc8d6ff, 0x1a1a1e, 1.5));
+const studioLicht = new THREE.Group();
+studioLicht.add(new THREE.HemisphereLight(0xc8d6ff, 0x1a1a1e, 1.5));
 const fuehrung = new THREE.DirectionalLight(0xfff4e8, 2.4);
 fuehrung.position.set(3, 6, 5);
-scene.add(fuehrung);
+studioLicht.add(fuehrung);
 const gegenlicht = new THREE.DirectionalLight(0x9fb4ff, 1.1);
 gegenlicht.position.set(-4, 3, -4);
-scene.add(gegenlicht);
+studioLicht.add(gegenlicht);
+scene.add(studioLicht);
+
+// Die Welt ist keine zweite Animation und keine zweite Three-Szene. Sie ist
+// nur die ruhige, räumliche Beleuchtung derselben Figur und derselben Frames.
+const weltLicht = new THREE.Group();
+weltLicht.visible = false;
+weltLicht.add(new THREE.HemisphereLight(0xe8edf2, 0x66717d, 1.35));
+const weltSonne = new THREE.DirectionalLight(0xfff7ec, 1.9);
+weltSonne.castShadow = true;
+weltSonne.shadow.mapSize.set(2048, 2048);
+weltLicht.add(weltSonne);
+scene.add(weltLicht);
 
 const stage = document.getElementById('stage');
 const statusEl = document.getElementById('status');
@@ -591,6 +631,158 @@ let leuchten = null;
 // Bodengitter auf der gemessenen Bodenebene. Gehört ebenfalls zum Modell:
 // ohne Modell gibt es keine gemessene Ebene, auf die es sich legen könnte.
 let boden = null;
+let weltBoden = null;
+let ansicht = ANSICHT_EDITOR;
+let ersterBewegungsFrame = null;
+
+function entferneWeltBoden() {
+  if (!weltBoden) return;
+  scene.remove(weltBoden);
+  weltBoden.traverse((objekt) => {
+    objekt.geometry?.dispose?.();
+    if (Array.isArray(objekt.material)) objekt.material.forEach((m) => m.dispose?.());
+    else {
+      objekt.material?.map?.dispose?.();
+      objekt.material?.dispose?.();
+    }
+  });
+  weltBoden = null;
+}
+
+/** Das Raster ist eine Textur AUF dem Boden, nicht ein zweites Linienobjekt
+ * darüber. Dadurch bleibt es bei jeder Kameraposition geometrisch Teil der
+ * Fläche und wird mit ihren Perspektiv- und Nebelwerten ausgeblendet. */
+function weltRasterTextur() {
+  const leinwand = document.createElement('canvas');
+  leinwand.width = 1024;
+  leinwand.height = 1024;
+  const ctx = leinwand.getContext('2d');
+  if (!ctx) throw new Error('Welt-Raster nicht erzeugbar: 0 Canvas-2D-Kontexte verfügbar');
+  const schritte = 8;
+  const zelle = leinwand.width / schritte;
+  ctx.clearRect(0, 0, leinwand.width, leinwand.height);
+  ctx.strokeStyle = 'rgba(69, 79, 90, 0.52)';
+  ctx.lineWidth = 2;
+  for (let i = 0; i <= schritte; i += 1) {
+    const p = Math.round(i * zelle) + 0.5;
+    ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, leinwand.height); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(leinwand.width, p); ctx.stroke();
+  }
+  const textur = new THREE.CanvasTexture(leinwand);
+  textur.wrapS = THREE.RepeatWrapping;
+  textur.wrapT = THREE.RepeatWrapping;
+  // 20 Kacheln mit je 8 Zellen ergeben bei jeder Körpergröße ein feines,
+  // aber lesbares Bodenraster statt riesiger Debug-Quadrate.
+  textur.repeat.set(20, 20);
+  textur.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return textur;
+}
+
+/**
+ * Die Präsentationswelt skaliert mit dem geladenen Körper. Sie ist absichtlich
+ * nur Boden, Licht und Raum: keine zweite Datenhaltung, keine zweite Figur.
+ */
+function baueWeltBoden({ groundY, hoehe }) {
+  entferneWeltBoden();
+  if (!(Number.isFinite(groundY) && Number.isFinite(hoehe) && hoehe > 0)) return;
+
+  const groesse = hoehe * 36;
+  const gruppe = new THREE.Group();
+  gruppe.name = 'welt-buehne';
+  const flaeche = new THREE.Mesh(
+    new THREE.PlaneGeometry(groesse, groesse),
+    new THREE.MeshStandardMaterial({ color: 0x9098a1, roughness: 1, metalness: 0 }),
+  );
+  flaeche.name = 'welt-boden';
+  flaeche.rotation.x = -Math.PI / 2;
+  flaeche.position.y = groundY - hoehe * 0.001;
+  flaeche.receiveShadow = true;
+  gruppe.add(flaeche);
+
+  const raster = new THREE.Mesh(
+    new THREE.PlaneGeometry(groesse, groesse),
+    new THREE.MeshBasicMaterial({
+      map: weltRasterTextur(), transparent: true, opacity: 0.72,
+      depthWrite: false, fog: true,
+    }),
+  );
+  raster.name = 'welt-raster';
+  raster.rotation.x = -Math.PI / 2;
+  // Ein Zehntelmillimeter über derselben Fläche verhindert Z-Fighting, ohne
+  // dass das Raster als eigene schwebende Ebene lesbar werden kann.
+  raster.position.y = groundY + hoehe * 0.00005;
+  gruppe.add(raster);
+
+  const halbSchatten = hoehe * 5;
+  weltSonne.position.set(hoehe * 2.5, hoehe * 5, hoehe * 3);
+  weltSonne.shadow.camera.left = -halbSchatten;
+  weltSonne.shadow.camera.right = halbSchatten;
+  weltSonne.shadow.camera.top = halbSchatten;
+  weltSonne.shadow.camera.bottom = -halbSchatten;
+  weltSonne.shadow.camera.near = hoehe * 0.01;
+  weltSonne.shadow.camera.far = hoehe * 12;
+  weltSonne.shadow.camera.updateProjectionMatrix();
+
+  gruppe.visible = ansicht === ANSICHT_WELT;
+  scene.add(gruppe);
+  weltBoden = gruppe;
+}
+
+/** Die Welt startet bewusst nicht frontal wie das Messbild, sondern leicht
+ * erhöht und seitlich: Nur so werden Boden, Schatten und Vorwärtsbewegung als
+ * Raum gelesen. Danach gehört die Orbit-Kamera wieder dem Menschen. */
+function rahmeWelt() {
+  if (!model) return;
+  const rahmen = steuerung.starteNeu();
+  const groesse = new THREE.Vector3();
+  rahmen.box.getSize(groesse);
+  const hoehe = groesse.y;
+  if (!(hoehe > 0)) return;
+  // Die gemessene Vorwärtsachse wird nur seitlich gedreht. So bleibt die
+  // Ansicht unabhängig vom Modell klar lesbar, aber zeigt echte Tiefe statt
+  // wieder die frontale Arbeitsansicht.
+  const richtung = rahmen.forward.vector.clone()
+    .applyAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 6).normalize();
+  const ziel = rahmen.center.clone();
+  ziel.y = rahmen.box.min.y + hoehe * 0.58;
+  const abstand = hoehe * 2.7;
+  camera.fov = 45;
+  steuerung.controls.target.copy(ziel);
+  camera.position.copy(ziel)
+    .addScaledVector(richtung, abstand)
+    .add(new THREE.Vector3(0, hoehe * 1.5, 0));
+  camera.lookAt(ziel);
+  steuerung.controls.update();
+}
+
+function setzeAnsicht(neu) {
+  ansicht = neu === ANSICHT_WELT ? ANSICHT_WELT : ANSICHT_EDITOR;
+  const istWelt = ansicht === ANSICHT_WELT;
+  document.body.classList.toggle('welt-ansicht', istWelt);
+  scene.background.set(istWelt ? 0xa8adb2 : 0x0e0e10);
+  if (istWelt && model) {
+    const hoehe = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).y;
+    // Der Boden soll vor seinem geometrischen Ende im Horizont verschwinden,
+    // nicht als rechteckige Kante gegen den Himmel laufen.
+    scene.fog = new THREE.Fog(0xa8adb2, hoehe * 2, hoehe * 10);
+  } else {
+    scene.fog = null;
+  }
+  studioLicht.visible = !istWelt;
+  weltLicht.visible = istWelt;
+  if (weltBoden) weltBoden.visible = istWelt;
+  const editorGitter = scene.getObjectByName('bodengitter');
+  if (editorGitter) editorGitter.visible = !istWelt;
+  bediensatzEl.textContent = istWelt
+    ? 'Drag to orbit · Scroll to zoom · Right-drag to pan · Real movement in world space'
+    : 'Drag to orbit · Scroll to zoom · Right-drag to pan · Editor keeps horizontal travel in place';
+  if (istWelt) rahmeWelt();
+  else {
+    steuerung.zurueck();
+    massstab.neuZeichnen();
+  }
+  return ansicht;
+}
 
 // Der Höhenmaßstab an der Figur — die Signatur der Seite. Er liest nur die
 // Kamera und die gemessene Bodenebene; die Szene selbst bleibt unberührt.
@@ -630,6 +822,7 @@ const steuerung = mounteKamerasteuerung({
 // fps und frameCount kommen aus dem Sitzungszustand der Werkzeugschicht
 // (window.__tools.store, plan.md 5.2): die Timeline-Framerate ist die des
 // Stores, nicht eine getippte Zahl.
+const bediensatzEl = document.getElementById('bediensatz');
 const abspieler = mounteAbspieler({
   wurzel: document.getElementById('abs-leiste'),
   holeBewegung: () => {
@@ -655,18 +848,27 @@ const abspieler = mounteAbspieler({
       throw new Error('0 geloeste Frames: der Loeser hat nichts geliefert, '
         + 'es gibt nichts abzuspielen');
     }
+    ersterBewegungsFrame = frames[0];
     return { frames, fps: z.fps, frameCount: z.frameCount };
   },
   stelleFrame: (frame) => {
     if (!model) throw new Error('0 Modelle geladen: Frame ' + (frame?.frame ?? '?') + ' nicht stellbar');
-    stellePose(model, frame);
+    stellePose(model, frameFuerAnsicht(ansicht, frame, ersterBewegungsFrame));
   },
 });
 window.__abspieler = abspieler;
 
-const bediensatzEl = document.getElementById('bediensatz');
-bediensatzEl.textContent =
-  'Drag to orbit · Scroll to zoom · Right-drag to pan · Double-click or R to reset the measured view';
+const ansichtsumschalter = mounteAnsichtsumschalter({
+  wurzel: document.getElementById('ansicht'),
+  beimWechsel: (neu) => {
+    setzeAnsicht(neu);
+    const stand = abspieler.stand();
+    // Der Umschalter ist ein bewusster Blickwechsel. Der angehaltene aktuelle
+    // Frame bleibt derselbe, nur seine Darstellung wechselt sofort mit.
+    if (stand.bereit) abspieler.anfahren(stand.index);
+  },
+});
+window.__ansicht = ansichtsumschalter;
 
 // Zwei Wege zurueck auf die gemessene Ansicht, beide ueber dieselbe Messung.
 canvas.addEventListener('dblclick', () => steuerung.zurueck());
@@ -763,6 +965,7 @@ function removeFromScene() {
     boden.aus();
     boden = null;
   }
+  entferneWeltBoden();
   massstab.aus();
   // Ohne Modell gibt es keine gemessene Ansicht, zu der eine Drehung
   // zurueckfuehren koennte — dann ist die Leinwand auch nicht bedienbar.
@@ -793,6 +996,11 @@ function presentModel(gltf, fileName) {
   removeFromScene();
   model = gltf.scene;
   scene.add(model);
+  model.traverse((objekt) => {
+    if (!objekt.isMesh) return;
+    objekt.castShadow = true;
+    objekt.receiveShadow = false;
+  });
 
   const check = validateLoadedModel(gltf);
   const box = getBounds(model);
@@ -817,6 +1025,8 @@ function presentModel(gltf, fileName) {
   // Der Maßstab trägt die gemessene Körperhöhe an der Figur ab. Beide Werte
   // kommen aus derselben Messung wie das Bodengitter — nichts davon getippt.
   const stand = boden.stand();
+  baueWeltBoden(stand);
+  setzeAnsicht(ansicht);
   massstab.zeige({ model, groundY: stand.groundY, hoehe: stand.hoehe });
 
   // Körperhöhe zuerst: sie ist der Wert, um den sich alles dreht, und steht
