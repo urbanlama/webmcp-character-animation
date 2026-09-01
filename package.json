@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Agentengesteuerte Charakteranimation im Browser — Beitrag zur OpenAI WebMCP Challenge",
   "scripts": {
-    "test": "node --test \"src/**/*.test.mjs\" && node tools/browser-test.mjs",
+    "test": "node --test \"src/**/*.test.mjs\" \"tests/e2e/**/*.test.mjs\" && node tools/browser-test.mjs",
     "start": "node tools/serve.mjs"
   },
   "devDependencies": {

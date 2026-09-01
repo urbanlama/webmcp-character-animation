@@ -13,7 +13,7 @@ import { baueWerkzeuge } from './handlers.js';
 import { attrappenPorts } from './ports.js';
 import { createAskBroker, BUDGET_STANDARD } from '../ui/ask-human.js';
 
-export { KATALOG, KATALOG_GROESSE, VERBEN, INTENT_ARTEN, ANSICHTEN } from './catalog.js';
+export { KATALOG, KATALOG_GROESSE, KATALOG_SICHTBAR, KISTE, VERBEN, INTENT_ARTEN, ANSICHTEN } from './catalog.js';
 export { createStore, leererZustand, fingerabdruck } from './state.js';
 export { createAskBroker } from '../ui/ask-human.js';
 export { attrappenPorts } from './ports.js';
@@ -24,19 +24,25 @@ export { attrappenPorts } from './ports.js';
  * @param {object} [opt.ports]        Anschluesse; Standard sind die Attrappen
  * @param {number} [opt.budget]       Fragen pro Auftrag, plan.md 6.7
  * @param {object} [opt.zustand]      Startzustand, z. B. aus einer Sitzung
+ * @param {boolean} [opt.werkzeugkiste] fertige Bewegungen (add_phase, edit_phase)
+ *        und Endeffektor-Ziele (set_target) fuer den Agenten sichtbar machen.
+ *        Standard aus: siehe KISTE in catalog.js — mit ihnen im Katalog baut der
+ *        Agent keine einzige eigene Haltung mehr. Sie bleiben ueber rufe()
+ *        aufrufbar, damit Tests und Oberflaeche sie weiter benutzen koennen.
  */
 export async function createToolLayer({
   modelContext = null,
   ports = attrappenPorts(),
   budget = BUDGET_STANDARD,
-  zustand = leererZustand()
+  zustand = leererZustand(),
+  werkzeugkiste = false
 } = {}) {
   const store = createStore(zustand);
   const ask = createAskBroker({ budget });
   const registry = createRegistry({ modelContext });
 
   for (const werkzeug of baueWerkzeuge({ store, ask, ports })) {
-    await registry.registriere(werkzeug);
+    await registry.registriere(werkzeug, { sichtbar: werkzeugkiste || !werkzeug.kiste });
   }
 
   return {

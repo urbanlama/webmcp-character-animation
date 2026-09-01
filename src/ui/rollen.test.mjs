@@ -87,7 +87,7 @@ test('Rollen, Positivfall: der Klick legt die unsichere Zuordnung über confirm_
   const bestaetigt = schicht.store.lies().roleConfirmations;
   assert.equal(bestaetigt.foot_l, 'mixamorigLeftFoot');
   assert.equal(bestaetigt.foot_r, 'mixamorigRightFoot');
-  assert.match(ergebnis.meldung, /2 von 2/);
+  assert.match(ergebnis.meldung, /2 of 2/);
   assert.deepEqual(leuchten.aktiv, [], 'nach der letzten Frage leuchtet nichts mehr');
 });
 
@@ -157,7 +157,7 @@ test('Rollen: ohne Alternative bekommt der Mensch eine Ablehnung statt einer Sch
   assert.equal(ergebnis.offen, 1);
   assert.equal(Object.keys(schicht.store.lies().roleConfirmations).length, 0,
     'nach einer Ablehnung steht keine Zuordnung im Zustand');
-  assert.equal(ABLEHNUNG, 'Nein, Rolle offen lassen');
+  assert.equal(ABLEHNUNG, 'No — leave this role open');
 });
 
 test('Rollen: die Seitenfrage legt beide Seiten auf einmal fest', async () => {

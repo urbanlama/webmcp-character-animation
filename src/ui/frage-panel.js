@@ -19,6 +19,35 @@
 //
 // Die Klassennamen (frage-karte, varianten, liste) haben ihr Aussehen im
 // <style> von index.html; hier steht nur der Aufbau.
+//
+// import weiter unten: PANEL_BREITE_MAX für Befund 2 unten.
+
+/**
+ * Text der Budgetanzeige, docs/plan.md 6.7: drei Rueckfragen je Auftrag,
+ * einstellbar bis 0. Rollen- und Absichtbestätigungen sind Pflichtfragen
+ * ("kein Notausgang") und verbrauchen das Budget bewusst nicht — der Broker
+ * zählt sie nicht (src/ui/ask-human.js, `pflicht`), und die Anzeige darf nicht
+ * so tun, als wären sie verbraucht. Befund aus der Browser-Sichtprüfung:
+ * zehn Rollenfragen zeigen unverändert „Noch 3 von 3 Fragen frei." — der
+ * verbrauchte Stand ist korrekt, aber die Anzeige verschweigt den Grund.
+ * Deshalb nennt sie ihn immer.
+ *
+ * @param {{budget: number, verbraucht: number, uebrig: number}} stand
+ *        aus Broker.abonniere() / Broker.stand()
+ * @returns {string}
+ */
+export function budgetText(stand) {
+  if (!stand || !Number.isInteger(stand.budget) || !Number.isInteger(stand.uebrig)) {
+    throw new Error(`budgetText: 1 brauchbarer Stand mit budget und uebrig erwartet, `
+      + `bekam ${JSON.stringify(stand)} — Rollen- und Absichtfragen zählen nicht, `
+      + 'budget/uebrig müssen ganze Zahlen sein');
+  }
+  const hinweis = 'Role and intent confirmations cost no budget.';
+  return stand.uebrig > 0
+    ? `${stand.uebrig} of ${stand.budget} questions left — ${hinweis}`
+    : `${stand.budget - stand.uebrig} of ${stand.budget} questions used, `
+      + `none left — ${hinweis}`;
+}
 
 /**
  * Haengt das Panel an einen vorhandenen Container.
@@ -29,6 +58,33 @@
  * @param {Window}      [opt.fenster] fuer den Neuladen-Abbruch; Standard window
  * @returns {{ abmelden: () => void }}
  */
+// src/ui/frage-panel.js kennt kein Layout und kein CSS — es baut nur den
+// Aufbau. Drei Messfehler aus der Browser-Sichtprüfung wurden deshalb hier am
+// Panel selbst mit Inline-Stilen behoben, weil index.html einem anderen Paket
+// gehört und die Panelbreite die Leinwandgröße steuert:
+//
+//   Befund 2: Das Panel wächst mit jeder Frage, die Figur wurde von 490 px auf
+//   430 px Breite kleiner. Grund: #seite hat `flex: 0 0 clamp(300px,30vw,420px)`
+//   in index.html — mit `box-sizing: content-box` sind die 420 px Grenze aber
+//   nur der *Inhalt*, und der Rahmen (2 × 1 px) plus Abstand (2 × 16 px) kommen
+//   oben drauf. Wächst der Inhalt, wächst die Spalte über 420 px hinaus und
+//   presst `#stage` über `flex: 1 1 auto` zusammen. Mit border-box ist 420 px
+//   die Obergrenze inklusive Rahmen und Abstand, die Leinwand behält 960 px.
+//   Die feste Breite sitzt auf dem Container (#seite) und nicht am #frage-
+//   Panel, weil #spur dieselbe Spalte teilt und mitwachsen würde.
+//
+//   Befund 3: Der Spur-Text „10 von 10 unsicheren Zuordn…" lief aus seinem
+//   Feld. Grund: `.spur-zeile .ergebnis` hat in index.html
+//   `white-space: nowrap; text-overflow: ellipsis` im Zweispalten-Grid —
+//   einnowrapener Text erzwingt die Zeile auf volle Textlänge, drückt damit
+//   die Panelbreite (Befund 2) und wird trotzdem bei `overflow: hidden`
+//   abgeschnitten. Der Text bricht jetzt um (siehe agentenspur.js).
+//
+// Beides passiert ohne die Kamera: frameCamera rahmt aus der Bounding Box und
+// folgt der Leinwandgröße von selbst, src/scene/view.js bleibt unberührt.
+
+import { PANEL_BREITE_MAX } from './panel-masse.js';
+
 export function mounteFragePanel({ ask, wurzel, fenster = globalThis }) {
   if (!ask || typeof ask.abonniere !== 'function') {
     throw new Error('mounteFragePanel: 0 Broker uebergeben, erwartet 1 ask aus createAskBroker()');
@@ -52,7 +108,7 @@ export function mounteFragePanel({ ask, wurzel, fenster = globalThis }) {
   const abbruch = dok.createElement('button');
   abbruch.id = 'frage-abbruch';
   abbruch.type = 'button';
-  abbruch.textContent = 'Abbrechen';
+  abbruch.textContent = 'Cancel';
 
   const budget = dok.createElement('span');
   budget.id = 'frage-budget';
@@ -64,6 +120,20 @@ export function mounteFragePanel({ ask, wurzel, fenster = globalThis }) {
   wurzel.setAttribute('role', 'dialog');
   wurzel.setAttribute('aria-live', 'polite');
   wurzel.hidden = true;
+
+  // Befund 2: feste Spaltenbreite, siehe Kommentarblock oben. box-sizing und
+  // die Höhe sitzen an der Spalte (wurzel.parentElement = #seite), weil Spur
+  // und Frage sich dieselbe Spalte teilen und beide mitwachsen würden.
+  const spalte = wurzel.parentElement;
+  if (spalte) {
+    spalte.style.boxSizing = 'border-box';
+    spalte.style.maxWidth = `${PANEL_BREITE_MAX}px`;
+    spalte.style.overflowY = 'auto';
+    spalte.style.maxHeight = 'calc(100vh - 120px)';
+  }
+  // Auch das Panel selbst: Rahmen + Abstand dürfen die 420 px nicht sprengen.
+  wurzel.style.boxSizing = 'border-box';
+
   wurzel.replaceChildren(text, optionen, hinweis, fuss);
 
   /** Eine Antwortmoeglichkeit als Knopf. Bei zwei Stueck ist sie eine Variante. */
@@ -117,7 +187,13 @@ export function mounteFragePanel({ ask, wurzel, fenster = globalThis }) {
     optionen.replaceChildren(
       ...frage.options.map((o, i) => baueKnopf(o, i, alsVarianten))
     );
-    budget.textContent = `Noch ${stand.uebrig} von ${stand.budget} Fragen frei.`;
+    // Befund aus der Sichtprüfung (Browser): zehn Fragen hintereinander zeigten
+    // unverändert „Noch 3 von 3 Fragen frei." — zeichne() lief hier bei jeder
+    // Frage ohne Ausnahme, der Text war einfach immer derselbe, weil Pflicht-
+    // fragen (Rollen, Absicht) das Budget bewusst nicht verbrauchen. Der
+    // verbrauchte Stand ist also richtig — die Anzeige musste nur ehrlich
+    // dazusagen, dass diese Fragen nicht zählen. budgetText() nennt beides.
+    budget.textContent = budgetText(stand);
     hinweis.hidden = true;
     wurzel.hidden = false;
     optionen.firstElementChild?.focus();

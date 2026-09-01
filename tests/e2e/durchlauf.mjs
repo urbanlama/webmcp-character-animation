@@ -49,6 +49,68 @@ export const ABSICHT_KATALOG = [
   { kind: 'part_height', part: 'com', minAnteil: 0.4 },
 ];
 
+/** Dieselben sieben Bausteine aus plan.md 6.6, wie die PRÜFSCHICHT sie nennt
+ *  (src/validate/intent.js). plan.md 6.6 gibt die Bausteine sachlich vor, aber
+ *  keine Bezeichner — AP7 hat sie englisch vergeben, AP6 deutsch. Diese Tabelle
+ *  ist deshalb keine Bequemlichkeit, sondern das Protokoll einer offenen
+ *  Nahtstelle: solange sie gebraucht wird, meldet der Lauf sie als Haken. */
+export const ABSICHT_NAMEN = {
+  rotation: 'drehung',
+  airtime: 'flugphase',
+  travel: 'ortsveraenderung',
+  contact_change: 'kontaktwechsel',
+  clearance: 'abstand',
+  part_height: 'hoehe',
+  part_speed: 'tempo',
+};
+
+/** Übersetzt die Kriterien aus der Werkzeugsprache in die Prüfsprache und
+ *  sagt dabei, wie viele Namen übersetzt werden mussten. Übersetzt wird NUR
+ *  der Bezeichner `kind`; kein Sollwert und keine Einheit wird angefasst. */
+export function absichtFuerPruefung(checks = []) {
+  const uebersetzt = [];
+  const kriterien = checks.map((c) => {
+    const ziel = ABSICHT_NAMEN[c.kind];
+    if (!ziel || ziel === c.kind) return c;
+    uebersetzt.push(`${c.kind} → ${ziel}`);
+    return { ...c, kind: ziel };
+  });
+  return { kriterien, uebersetzt };
+}
+
+/** Frame-Form für die Prüfschichten. BRETT.md legt fest, dass jeder gelöste
+ *  Frame `positions`, `com`, `contact` und `anchored` trägt — src/validate/
+ *  physics.js liest genau das. src/validate/style.js liest stattdessen
+ *  `bones`. Beide meinen dieselbe Tabelle { Knochen-id: [x,y,z] } in Metern.
+ *  Der Lauf spiegelt sie deshalb unter beiden Namen und zählt, wie oft. Kein
+ *  Wert wird gerechnet, nichts wird umgerechnet — nur derselbe Verweis. */
+export function framesFuerPruefung(frames = []) {
+  let gespiegelt = 0;
+  const raus = frames.map((f) => {
+    if (f && !f.bones && f.positions) { gespiegelt++; return { ...f, bones: f.positions }; }
+    return f;
+  });
+  return { frames: raus, gespiegelt };
+}
+
+/** Bildstreifen-Platzhalter für Umgebungen ohne WebGL (Node).
+ *
+ *  Der Bericht darf laut plan.md 5.3 nicht ohne Bildverweis rausgehen, und
+ *  diese Regel wird hier NICHT aufgeweicht: der Platzhalter liefert einen
+ *  Verweis, der schon im Text sagt, dass nichts gerendert wurde
+ *  (`platzhalter://kein-bild/...`), und die Ansicht heißt `platzhalter`, nicht
+ *  `side`. Wer den Bericht liest, kann ihn nicht mit einem Bild verwechseln.
+ *  Schritt 7 gilt damit weiter als NICHT gelaufen — nur die Kette reißt nicht. */
+export function platzhalterStreifen(grund) {
+  return (auswahl) => [{
+    view: 'platzhalter',
+    frames: auswahl.map((f) => f.frame),
+    ref: `platzhalter://kein-bild/${auswahl.length}-frames?grund=${encodeURIComponent(grund)}`,
+    gerendert: false,
+    grund,
+  }];
+}
+
 /** Schrittliste des Wegs, in der Reihenfolge des Auftrags. */
 export const SCHRITTE = [
   { id: '1', name: 'Modell laden', datei: 'src/scene/load.js', paket: 'AP0' },
@@ -134,6 +196,7 @@ export async function durchlauf(umgebung = {}) {
   /** Gemeinsames Ende: Schritt notieren und aus der Folge springen. */
   const schluss = (id, typ, meldung) => {
     notier(id, typ === 'abgebrochen' ? 'abgebrochen' : 'nicht verfügbar', meldung);
+    ergebnis.gestopptBei = id;
     return new LaufEnde(typ, meldung);
   };
   /** Ein Teil ist da, liefert aber Daten, die seinen Vertrag nicht erfüllen. */
@@ -373,7 +436,19 @@ export async function durchlauf(umgebung = {}) {
 
     let geloest;
     try {
-      geloest = await loeser.modul[loeser.name](timeline);
+      // Die Signatur ist loeserabhaengig. Wer drei oder mehr Parameter nimmt,
+      // bekommt Profil und Skelett dazu — sonst landet die Timeline im ersten
+      // Parameter und wird als RigProfile geprueft, was sie nicht ist.
+      const fn = loeser.modul[loeser.name];
+      if (fn.length >= 3) {
+        // Der Loeser braucht ein aufgebautes Skelett. Es entsteht aus dem
+        // gemessenen Profil und der Bind-Pose der Szene; beides liegt vor.
+        const kin = await import(moduleUrl('src/solver/kinematik.js'));
+        const skel = kin.baueSkeleton(profil, kin.erfasseBind(gltf.scene));
+        geloest = await fn(profil, skel, timeline);
+      } else {
+        geloest = await fn(timeline);
+      }
     } catch (err) {
       throw schluss('5', 'abgebrochen', `${loeser.datei}:${loeser.name} — ${err.message}`);
     }
@@ -417,23 +492,71 @@ export async function durchlauf(umgebung = {}) {
         scene: umgebung.scene, profile: profil, frames, frameCount: timeline.frameCount,
       })
       : null;
+    // Kein WebGL-Kontext (Node): Schritt 7 ist damit nicht gelaufen und wird
+    // auch nicht so gemeldet. Der Lauf geht trotzdem weiter — mit einem
+    // Platzhalter, der sich als solcher ausweist. Ein fehlendes Bild ist ein
+    // Grund, den Bericht zu kennzeichnen, kein Grund, Schritt 8 nie zu prüfen.
+    let streifen;
     if (typeof renderer?.streifen !== 'function') {
-      throw schluss('7', 'nicht verfügbar',
-        `noch nicht verfügbar: Bildstreifen (src/render/strip.js), 0 WebGL-Kontext in `
-        + `${umgebungsname} — createStripRenderer braucht eine gerenderte Szene`);
+      const grund = `noch nicht verfügbar: Bildstreifen (src/render/strip.js), 0 WebGL-Kontext `
+        + `in ${umgebungsname} — createStripRenderer braucht eine gerenderte Szene; der Lauf `
+        + `setzt für Schritt 6 einen ausgewiesenen Platzhalter ein (0 gerenderte Bilder)`;
+      notier('7', 'nicht verfügbar', grund, { gerendertBilder: 0, platzhalter: 1 });
+      streifen = platzhalterStreifen(grund);
+    } else {
+      streifen = (auswahl) => renderer.streifen({
+        frames: auswahl.map((f) => f.frame), views: ['side', 'front'],
+      });
+      notier('7', 'gelaufen', null, { quelle: 'src/render/strip.js:createStripRenderer' });
     }
-    const streifen = (auswahl) => renderer.streifen({
-      frames: auswahl.map((f) => f.frame), views: ['side', 'front'],
-    });
-    notier('7', 'gelaufen', null, { quelle: 'src/render/strip.js:createStripRenderer' });
 
     // ── 6 weiter: Bericht aus drei Prüfschichten plus Bildstreifen ───────────
+    const frameForm = framesFuerPruefung(frames);
+    if (frameForm.gespiegelt > 0) {
+      hake(`Gelöste Frames heißen für die Prüfschichten verschieden: `
+        + `${frameForm.gespiegelt} von ${frames.length} Frames mussten ihre Knochentabelle `
+        + `zusätzlich als "bones" tragen — src/validate/physics.js liest "positions" `
+        + `(so steht es in BRETT.md), src/validate/style.js liest "bones"`);
+    }
+    const timelineFuerBericht = { ...timeline, solved: { ...timeline.solved, frames: frameForm.frames } };
+
+    // Die Werkzeugschicht gibt die Absichtskriterien in IHREN Namen heraus
+    // (src/tools/catalog.js:INTENT_ARTEN) — das sind die verbindlichen, weil
+    // der Agent genau sie sieht. Erwartet die Prüfschicht heute noch andere,
+    // übersetzt der Lauf im zweiten Anlauf und meldet, dass er es musste.
+    //
+    // Der erste Anlauf geht bewusst UNÜBERSETZT los: sobald
+    // src/validate/intent.js auf die Katalognamen nachgezogen hat, trägt er,
+    // die Übersetzung entfällt von selbst und der Haken hört auf. Niemand muss
+    // hier nachziehen, und niemand kann vergessen, sie wieder auszubauen.
+    const berichtBauen = (kriterien) => berichtBau.modul.baueValidationReport({
+      profile: profil, timeline: timelineFuerBericht, intent: kriterien,
+      stil: {}, strip: streifen,
+    });
+
     let bericht;
     try {
-      bericht = berichtBau.modul.baueValidationReport({
-        profile: profil, timeline, intent: zustand.intent?.checks ?? [],
-        stil: {}, strip: streifen,
-      });
+      const roh = zustand.intent?.checks ?? [];
+      try {
+        bericht = berichtBauen(roh);
+      } catch (ersterVersuch) {
+        const absichtCheck = absichtFuerPruefung(roh);
+        // Nur bei genau diesem Grund ein zweiter Anlauf: die Prüfschicht kennt
+        // den Bezeichner nicht. Jede andere Ablehnung ist ein Befund und wird
+        // nicht durch Umbenennen weggeräumt.
+        if (!/kind = |Bausteine/.test(ersterVersuch.message) || absichtCheck.uebersetzt.length === 0) {
+          throw ersterVersuch;
+        }
+        // Der Haken wird VOR dem zweiten Anlauf gesetzt: scheitert der aus
+        // einem anderen Grund, darf die Namensdivergenz nicht mit ihm
+        // untergehen — sie war da, unabhängig davon, wie es weitergeht.
+        hake(`Absichts-Bausteine heißen auf beiden Seiten anders: `
+          + `${absichtCheck.uebersetzt.length} von ${absichtCheck.kriterien.length} Bezeichnern `
+          + `mussten übersetzt werden (${absichtCheck.uebersetzt.join(', ')}) — verbindlich sind `
+          + `die Namen aus src/tools/catalog.js:INTENT_ARTEN, src/validate/intent.js zieht nach; `
+          + `plan.md 6.6 gibt die Bausteine vor, aber keine Bezeichner`);
+        bericht = berichtBauen(absichtCheck.kriterien);
+      }
     } catch (err) {
       throw schluss('6', 'abgebrochen', `src/validate/report.js:baueValidationReport — ${err.message}`);
     }
@@ -496,10 +619,11 @@ export async function durchlauf(umgebung = {}) {
   }
   ergebnis.schritte.sort((a, b) => SCHRITTE.findIndex((s) => s.id === a.id)
     - SCHRITTE.findIndex((s) => s.id === b.id));
-  // Der Lauf endet an dem Schritt, der ihn gestoppt hat — nicht an einem, der
-  // nur nie dran war.
-  ergebnis.endeteBei = ergebnis.schritte
-    .find((s) => s.status === 'nicht verfügbar' || s.status === 'abgebrochen')?.id ?? null;
+  // Der Lauf endet an dem Schritt, der ihn GESTOPPT hat — nicht an einem, der
+  // nur nie dran war, und nicht an einem, der zwar nichts liefern konnte, den
+  // Lauf aber weiterlaufen ließ (Schritt 7 ohne WebGL).
+  ergebnis.endeteBei = ergebnis.gestopptBei ?? null;
+  delete ergebnis.gestopptBei;
   ergebnis.kamBis = [...ergebnis.schritte].reverse()
     .find((s) => s.status === 'gelaufen')?.id ?? null;
   ergebnis.zahlen = zusammenfassen(ergebnis);
@@ -530,9 +654,12 @@ function zusammenfassen(e) {
  */
 export function berichtText(e) {
   const z = e.zahlen;
+  const ende = e.endeteBei !== null
+    ? `endet bei Schritt ${e.endeteBei}`
+    : 'läuft bis zum Ende durch';
   const zeilen = [
     `Vertikalschnitt (${e.umgebung}): kam bis Schritt ${e.kamBis ?? '—'}, `
-    + `endet bei Schritt ${e.endeteBei ?? '—'} — ${z.gelaufen} von ${z.schritteGesamt} `
+    + `${ende} — ${z.gelaufen} von ${z.schritteGesamt} `
     + `Schritten gelaufen, ${z.nichtVerfuegbar} nicht verfügbar, ${z.abgelehnt} abgelehnt, `
     + `${z.abgebrochen} abgebrochen, ${z.nichtErreicht} nicht erreicht.`,
   ];

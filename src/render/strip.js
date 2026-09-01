@@ -103,6 +103,57 @@ export const LICHT_RICHTUNG = 2.2;
 /** Stufen, mit denen die Panelauflösung gesenkt wird, bis das Budget hält. */
 export const SKALA_STUFEN = [1, 0.72, 0.5];
 
+/** BENANNTER VERFAHRENSPARAMETER (kein Körpermaß — AGENTS.md, Regel 1): höchste
+ *  Panelzahl eines Streifens, damit ein Aufruf zuverlässig unter der Zeitgrenze
+ *  bleibt. Gemessen an Xbot.glb im headless Chromium mit SwiftShader — dem
+ *  SLOW-Fall, mit Grafikkarte wird es schneller (spikes/tmp-strip-zeit.mjs,
+ *  31.08.2026):
+ *    12 Frames × 1 Ansicht    251 ms  (12 Panels, volle Panelgröße)
+ *     6 Frames × 2 Ansichten  249 ms  (12 Panels, PNG 437 KB, volle Größe)
+ *    12 Frames × 2 Ansichten 1133 ms (24 Panels — die Budgettreppe in
+ *                                     bildeStreifen rendert denselben Streifen
+ *                                     bis zu 3-mal, je Panel rund 47 ms)
+ *    12 Frames × 4 Ansichten 2151 ms (48 Panels — scheitert zusätzlich am
+ *                                     Bytebudget, 554 553 Byte > 524 288)
+ *  24 Panels sind der größte gemessene Fall, der mit sicherem Abstand unter
+ *  der Grenze liegt und sicher ins Bytebudget passt. Darüber werden die Frames
+ *  JE ANSICHT gekürzt — im Panelrechteck ändert sich nichts, nur die Spaltenzahl.
+ *  Wird der Wert geändert: erneut gegen Xbot messen und die Zahlen hier
+ *  fortschreiben. */
+export const PANELS_ZEIT_MAX = 24;
+
+/** Die Zeitgrenze selbst, Auftragsvorgabe "verlässlich unter zwei Sekunden".
+ *  Steht im Bericht, wenn gekürzt wurde, und im Grenztest (Reihe Zeitgrenze). */
+export const STRIPE_ZEIT_MS = 2000;
+
+/** Harte Zeitgrenze je bildeStreifen()/streifen()-Aufruf in Millisekunden.
+ *
+ *  BENANNTER VERFAHRENSPARAMETER, gemessen an Xbot.glb (headless Chromium,
+ *  SwiftShader, spikes/tmp-strip-zeit.mjs, 31.08.2026):
+ *    12 Frames × 1 Ansicht   251 ms   (12 Mesh-Panels, voller Skala)
+ *     6 Frames × 2 Ansichten 249 ms   (12 Panels, voller Skala, PNG 437 KB)
+ *    12 Frames × 2 Ansichten 1133 ms  (24 Panels — Budgettreppe rendert
+ *                                      denselben Streifen bis zu 3-mal)
+ *    12 Frames × 4 Ansichten >2151 ms und dann abgelehnt (PNG > 512 KB)
+ *  Ein Panel kostet auf der CPU rund 20 ms Rendern plus Codieren; der Rest
+ *  ist Plan+Bild über die drei SKALA_STUFEN hinweg. Grenze 2000 ms: doppelt
+ *  so lang wie der gemessene Worst Case, der durchkommt — und die Obergrenze
+ *  des Auftrags ("ein Aufruf verlässlich unter zwei Sekunden"). Der Werkzeug-
+ *  Timeout AUFRUF_MAX_MS (src/tools/registry.js, 20 000 ms) wird dadurch nie
+ *  erreicht: Die Grenze kürzt VOR dem Rendern und beantwortet in Sekunden. */
+export const STRIPE_ZEIT_LIMIT_MS = 2000;
+
+/** Ziel, unter dem ein Aufruf zurückkommen muss — dieselbe Zahl wie im Auftrag.
+ *  Der Grenztest (src/render/strip.test.mjs, Reihe Zeitgrenze) hält sie scharf. */
+export const STRIPE_ZIEL_MS = 2000;
+
+/** Halbe Breite eines Maßstabsetiketts in Pixeln. Begrenzt, wie nah eine Zahl an
+ *  den Panelrand rücken darf, ohne abgeschnitten zu werden: das längste Etikett
+ *  ist „0,00 m" mit 6 Zeichen, ein Zeichen dieser Monospace-Größe ist höchstens
+ *  6 px breit, die Hälfte davon ist 18 px. PANEL_BREITE_PX ist eine Panelgröße,
+ *  keine Körpermaß — derselbe Charakter wie die übrigen Werte hier. */
+export const ETIKETT_HALB_PX = 18;
+
 /** Die fünf Gruppen, ohne die ein Panel nicht ausgeliefert wird. */
 export const PFLICHT_ANNOTATIONEN = [
   'achsenkreuz', 'bodengitter', 'schwerpunkt', 'stuetzflaeche', 'kontaktpunkte',
@@ -137,6 +188,10 @@ export const FARBE = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function fehler(text) { throw new Error('Bildstreifen abgelehnt: ' + text); }
+
+/** Millisekundenzahl für Fehlermeldungen — gerundet, mit Nachkommastelle 0,
+ *  damit die Meldung eine Zahl nennt (AGENTS.md, Handwerkliches). */
+function msZahl(ms) { return Math.round(ms); }
 
 /** Zahl mit deutschem Dezimalkomma — auch das Bild ist Handbuch für den Agenten.
  *  Kleine Beträge werden zu 0, nicht zu "-0,00". */
@@ -557,6 +612,105 @@ function pruefeFrames(profile, system, frames, opts) {
   });
 }
 
+/** Wie viel Luft um die gemessene Bewegungs-Bounding-Box mindestens bleibt,
+ *  Anteil der Körperhöhe: Ohne Puffer läge die äußerste Knochenposition exakt
+ *  auf der Panelkante — von der Kontur um Knochendicke und Segmentradius bliebe
+ *  dann nichts zu sehen. */
+export const RAHMEN_LUFT_ANTEIL = 0.10;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rahmung über die Bewegung
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Misst den Bewegungsbereich: die äußersten Positionen aller Körperteile über
+ * alle übergebenen Frames. GEMESSEN (AGENTS.md, Regel 1) — aus den Weltpunkten,
+ * die der Aufrufer mitbringt: Knochenpositionen, Schwerpunkt und Sohlenpunkte.
+ * Der Sohlenpunkt liegt an der Fußunterseite, der Schwerpunkt im Körperkern —
+ * die Knochen liefern ohnehin die äußersten Ränder, beide werden mitgenommen,
+ * damit nichts Gemessenes fehlt.
+ *
+ * @param {object[]} frames geprüfte Frames (je `wo` mit Weltpositionen)
+ * @param {object} system charakterSystem(profile) — nur für die Fehlermeldung
+ * @returns {{min:[number,number,number], max:[number,number,number]}}
+ */
+function bewegungsBereich(frames, system) {
+  if (!Array.isArray(frames) || frames.length === 0) {
+    fehler(`Bewegungsbereich nicht messbar: ${Array.isArray(frames) ? frames.length : 0} `
+      + `Frames übergeben, mindestens 1 nötig`);
+  }
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  const nimm = (p) => {
+    for (let a = 0; a < 3; a++) {
+      if (p[a] < min[a]) min[a] = p[a];
+      if (p[a] > max[a]) max[a] = p[a];
+    }
+  };
+  for (const f of frames) {
+    for (const p of Object.values(f.wo)) nimm(p);
+    nimm(f.com);
+    for (const s of f.sohlen) nimm(s.welt);
+  }
+  return { min, max };
+}
+
+/**
+ * Ein orthografisches Framing über ALLE übergebenen Punktfelder, in der
+ * Bildebene der Ansicht (X = rechts ins Bild, Y = hoch ins Bild): je Richtung
+ * der größte Bedarf der Felder plus Luft, der Maßstab danach so, dass der
+ * weite Richtung ins Panel passt. Alle Panels derselben Ansicht bekommen
+ * DASSELBE Ergebnis — der Streifen bleibt vergleichbar (plan.md 6.8).
+ *
+ * @param {Array<{min:[number,number,number], max:[number,number,number]}>} felder
+ *        z. B. [bewegungsBereich(...), {min: anker, max: anker}] — der Bind-
+ *        Anker gehört als Punkt mit hinein, an ihm hängen Achsenkreuz und
+ *        Maßstabsbalken, beide müssen sichtbar bleiben
+ * @param {{X:number[], Y:number[], blick:number[], sag:string}} basis kamerabasis()
+ * @param {number} panelBreite px
+ * @param {number} panelHoehe px
+ * @param {number} luftMeter Puffer um das Feld, Anteil der Körperhöhe
+ * @returns {{ziel: number[], pxProMeter: number}}
+ */
+function panelKamera(felder, basis, panelBreite, panelHoehe, luftMeter) {
+  const spanX = [];
+  const spanY = [];
+  for (const f of felder) {
+    // Alle 8 Ecken der wellen-achsigen Bounding-Box projizieren: die Ansichten
+    // liegen im Charakter-System (quarter blickt schräg), dort hängt der
+    // äußerste Bildrand an Ecken wie (links, vorn) — nicht an min/max allein.
+    for (const x of [f.min[0], f.max[0]]) {
+      for (const y of [f.min[1], f.max[1]]) {
+        for (const z of [f.min[2], f.max[2]]) {
+          const p = [x, y, z];
+          spanX.push(dot(p, basis.X));
+          spanY.push(dot(p, basis.Y));
+        }
+      }
+    }
+  }
+  if (spanX.some((x) => !Number.isFinite(x)) || spanY.some((y) => !Number.isFinite(y))) {
+    fehler(`Bewegungsbereich enthält einen nicht endlichen Punkt — Rahmung nicht möglich `
+      + `(min = ${JSON.stringify(felder[0]?.min)}, max = ${JSON.stringify(felder[0]?.max)})`);
+  }
+  const bedarfX = Math.max(...spanX) - Math.min(...spanX) + 2 * luftMeter;
+  const bedarfY = Math.max(...spanY) - Math.min(...spanY) + 2 * luftMeter;
+  if (!(bedarfX > 0) || !(bedarfY > 0)) {
+    fehler(`Bewegungsbereich nicht rahmbar: ${zahl(bedarfX, 4)} × ${zahl(bedarfY, 4)} m `
+      + `Breite × Höhe in der Bildebene — von einer Figur ohne Ausdehnung gibt es kein Bild`);
+  }
+  // Der Maßstab folgt dem WEITEN Bedarf: die andere Richtung hat dann Luft und
+  // der Maßstabsbalken bleibt lesbar.
+  const pxProMeter = Math.min(panelBreite / bedarfX, panelHoehe / bedarfY);
+
+  // Ziel: Mitte des Rahmens in beiden Bildrichtungen. Nur die Anteile entlang
+  // X und Y sind im orthografischen Bild sichtbar; die Tiefe des Ziels legt
+  // nur das Nah/Far-Fenster von kameraFuerPan fest und ist hier gleichgültig.
+  const mitteX = (Math.max(...spanX) + Math.min(...spanX)) / 2;
+  const mitteY = (Math.max(...spanY) + Math.min(...spanY)) / 2;
+  return { ziel: add(skalar(basis.X, mitteX), skalar(basis.Y, mitteY)), pxProMeter };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Zeichengruppen — jeweils Primitives in Pixelkoordinaten
 // ─────────────────────────────────────────────────────────────────────────────
@@ -575,9 +729,21 @@ const text = (g, p, s, farbe, groesse, anker = 'links') =>
  * werden. Mit Szenen wird es als 3D-Liniensatz vor das Mesh gezeichnet (tiefer-
  * getestet, also hinter dem Körper sichtbar); ohne Szene wird es in jedes Panel
  * projiziert.
+ *
+ * Die Reichweite folgt der Rahmung (Aufgabe 2): die Kamera legt den Maßstab nach
+ * der Bewegung fest, das Raster muss mindestens das sichtbare Stück Bodenebene
+ * abdecken — sonst steht die getragene Figur auf einer leeren Fläche.
+ *
+ * @param {object} system charakterSystem(profile)
+ * @param {number[]} anker Bind-Anker
+ * @param {number} schritt Gitterschritt in Metern
+ * @param {number} reichweiteMeter abzudeckender Radius um den Anker, gemessen
  */
-function gitterWeltLinien(system, anker, schritt) {
-  const reichweite = system.height * SICHT_HOEHE_FAKTOR * 0.9;
+function gitterWeltLinien(system, anker, schritt, reichweite) {
+  if (!(reichweite > 0) || !Number.isFinite(reichweite)) {
+    fehler(`Gitterreichweite nicht messbar: ${reichweite} m — erwartet der Radius des `
+      + `gerahmten Bewegungsbereichs um den Bind-Anker, mehr als 0 m`);
+  }
   const stufen = Math.ceil(reichweite / schritt);
   const linien = [];
   const bodenLinien = [];
@@ -609,7 +775,13 @@ function zeichneMassstab(pan, system, anker, schritt) {
     const x = xR - k * schritt * pan.pxProMeter;
     linie(g, [x, bodenPy], [x, bodenPy - (k % 2 === 0 ? 8 : 4)], FARBE.boden, 1);
     if (k % 2 === 0) {
-      text(g, [x, bodenPy - 11], zahl(k * schritt, 2) + ' m', FARBE.textSchwach, 9, 'mitte');
+      // mittig, es sei denn, das Etikett würde über die rechte Panelkante laufen:
+      // dort wird die Zahl abgeschnitten und der Maßstab ist unlesbar. Geprüft
+      // wird mit ETIKETT_HALB_PX, weil die Ebene hier noch keine Font-Metriken
+      // kennt — gemessen wird der Überlauf im Abnahmetest mit measureText().
+      const laeuftUeber = x + ETIKETT_HALB_PX > pan.x + pan.breite - 2;
+      text(g, [x, bodenPy - 11], zahl(k * schritt, 2) + ' m', FARBE.textSchwach, 9,
+        laeuftUeber ? 'rechts' : 'mitte');
     }
   }
   linie(g, [xR, bodenPy], [xR - stufen * schritt * pan.pxProMeter, bodenPy], FARBE.boden, 1.5);
@@ -640,8 +812,17 @@ function zeichneAchsenkreuz(pan, system, anker) {
     punkt(g, ende, 2.5, a.farbe);
     text(g, [ende[0] + 4, ende[1] - 4], a.beschriftung, a.farbe, 9);
   }
+  // Das Ursprungsetikett steht zentriert am Achsenkreuz-Ursprung. Läuft es über
+  // die rechte Panelkante — möglich, seit die Kamera über die Bewegung rahmt und
+  // der Bind-Anker nicht mehr panelmittig liegt — wird es rechtsbündig an die
+  // Kante gerückt (Aufgabe 1: nichts Entscheidendes abgeschnitten). Der Schwell-
+  // wert nutzt ETIKETT_HALB_PX; das Etikett ist länger als 6 Zeichen, der Wert
+  // triggert also konservativ früh. Gemessen wird der Überlauf im Abnahmetest
+  // mit echten Font-Metriken (measureText).
+  const etikettKante = pan.x + pan.breite - 6;
   text(g, [ursprung[0], ursprung[1] + 12],
-    `Ursprung Bind-Pose, Boden ${zahl(system.groundY, 2)} m`, FARBE.textSchwach, 9, 'mitte');
+    `Ursprung Bind-Pose, Boden ${zahl(system.groundY, 2)} m`, FARBE.textSchwach, 9,
+    ursprung[0] + ETIKETT_HALB_PX * 4 > etikettKante ? 'rechts' : 'mitte');
 }
 
 /** Der Körper: mit Szene die dünnen Knochenlinien über dem Mesh, ohne Szene die
@@ -693,7 +874,7 @@ function zeichneStuetzflaeche(pan, system, frame) {
 
   if (amBoden.length === 0) {
     text(g, [pan.x + pan.breite - 6, pan.y + pan.hoehe - 6],
-      `kein Bodenkontakt (0 von ${frame.sohlen.length} Sohlenpunkten am Boden)`,
+      `kein Bodenkontakt ${amBoden.length}/${frame.sohlen.length} Sohlen`,
       FARBE.stuetzflaeche, 10, 'rechts');
     return;
   }
@@ -716,8 +897,11 @@ function zeichneStuetzflaeche(pan, system, frame) {
   const fs = ebenen.map((e) => e[1]);
   const breite = Math.max(...ls) - Math.min(...ls);
   const tiefe = Math.max(...fs) - Math.min(...fs);
+  // Die Eckenzahl der Hülle bleibt hier weg: sie ist die für den Agenten
+  // unverfänglichste der vier Angaben und dieses Etikett muss in das schmalste
+  // Panel passen, das die Budgettreppe liefert (12 Frames × 4 Ansichten).
   text(g, [pan.x + pan.breite - 6, pan.y + pan.hoehe - 6],
-    `Stützfläche ${amBoden.length}/${frame.sohlen.length} Sohlen, ${huelle.length} Ecken, `
+    `Stützfläche ${amBoden.length}/${frame.sohlen.length} Sohlen, `
     + `${zahl(breite, 2)}×${zahl(tiefe, 2)} m, ${zahl(polygonFlaeche(huelle), 3)} m²`,
     FARBE.stuetzflaeche, 9, 'rechts');
 }
@@ -747,7 +931,7 @@ function zeichneKontaktpunkte(pan, system, frame) {
 
   if (frame.sohlenOhneAusrichtung > 0) {
     text(g, [pan.x + pan.breite - 6, pan.y + pan.hoehe - 39],
-      `${frame.sohlenOhneAusrichtung} Kontaktpunkte ohne Gelenkausrichtung auf dem Knochenpunkt gesetzt`,
+      `${frame.sohlenOhneAusrichtung} Sohlen auf dem Gelenk (ohne Ausrichtung)`,
       FARBE.kontakt, 9, 'rechts');
   }
 }
@@ -787,6 +971,12 @@ export function planeStreifen(opts) {
   const aufgestellt = pruefeFrames(profile, system, opts.frames, opts);
 
   const mitMesh = opts.scene !== undefined && opts.scene !== null;
+  const anzahlPanels = aufgestellt.length * views.length;
+  if (anzahlPanels > MAX_PANELS) {
+    fehler(`${aufgestellt.length} Frames × ${views.length} Ansichten = ${anzahlPanels} Panels, `
+      + `höchstens ${MAX_PANELS}`);
+  }
+
   if (mitMesh) {
     const ohne = aufgestellt.filter((f) => !f.pose).map((f) => f.index);
     if (ohne.length > 0) {
@@ -796,25 +986,84 @@ export function planeStreifen(opts) {
         + `Streifen suchen soll`);
     }
   }
-  const anzahlPanels = aufgestellt.length * views.length;
-  if (anzahlPanels > MAX_PANELS) {
-    fehler(`${aufgestellt.length} Frames × ${views.length} Ansichten = ${anzahlPanels} Panels, `
-      + `höchstens ${MAX_PANELS}`);
+
+  // Zeitkürzung, Schritt 2 im Auftrag "Der Bildstreifen frisst den Rechner":
+  // die Panelzahl wird VOR dem Rendern auf PANELS_ZEIT_MAX gekürzt — gemessen
+  // an Xbot.glb, SwiftShader (spikes/tmp-strip-zeit.mjs, 31.08.2026), siehe
+  // die Begründung am Parameter PANELS_ZEIT_MAX. Über 24 Panels hinaus werden
+  // die Frames JE ANSICHT gekürzt: die ersten n liegen im Bild (bei sortierter
+  // Auswahl decken sie Stütz, Druck und Flug ab), die angeforderte Zahl und
+  // die Kürzung stehen als Warnung am Streifen (plan.md 5.5 — nichts
+  // verschwindet still). Der Fall 12 Frames × 4 Ansichten, der heute 2151 ms
+  // rendert und dann am Bytebudget scheitert, kürzt hier auf 6 Frames und
+  // kommt in unter einer Sekunde mit 24 Panels zurück.
+  const framesAngefordert = aufgestellt.length;
+  const panelsErst = framesAngefordert * views.length;
+  let gekuert = 0;
+  if (panelsErst > PANELS_ZEIT_MAX) {
+    const behalte = Math.max(1, Math.floor(PANELS_ZEIT_MAX / views.length));
+    aufgestellt.length = behalte;
+    gekuert = framesAngefordert - behalte;
   }
 
   const skala = Number.isFinite(opts.skala) && opts.skala > 0 ? opts.skala : 1;
   const panelBreite = Math.max(40, Math.round(PANEL_BREITE_PX * skala));
   const panelHoehe = Math.max(40, Math.round(PANEL_HOEHE_PX * skala));
 
+  // ── Rahmung über die BEWEGUNG, nicht über die Bind-Pose ───────────────────
+  //
+  // Der Auftrag der Panels ist Vergleichbarkeit: derselbe Bildausschnitt in
+  // jeder Spalte. Rahmt die Kamera gegen die Bind-Pose, trägt die erste
+  // Ortsveränderung die Figur aus dem Bild — der Agent beurteilt dann ein Bild,
+  // dem das Entscheidende fehlt. Also:
+  //
+  //   1. Der Bewegungsbereich wird GEMESSEN: äußerste Positionen aller
+  //      Körperteile über alle gezeigten Frames (plus Schwerpunkt und Sohlen).
+  //      Erst nach der Zeitkürzung — weggekürzte Frames sind nicht im Bild und
+  //      dürfen den Rahmen nicht weiter ziehen.
+  //   2. JE Ansicht wird EINE Kamera über den ganzen Bereich gelegt. Alle
+  //      Panels einer Zeile nutzen sie gemeinsam; der Maßstab ergibt sich aus
+  //      dem größeren Bedarf der beiden Bildrichtungen, geteilt durch die
+  //      Panelgröße (plan.md 6.8: nebeneinander, vergleichbar).
+  //   3. Puffer und Bodenlinie sind Anteile der gemessenen Körperhöhe — der
+  //      Rahmen bleibt relativ, niemals ein getipptes Meter.
+  //
+  // Je Ansicht ein eigener Maßstab, denn die Ausdehnung der Bewegung hängt von
+  // der Blickrichtung ab (ein Sprung ist von der Seite höher als von vorn
+  // breit). Verglichen wird Frame gegen Frame INNERHALB einer Zeile — dafür
+  // ist die Kamera dort identisch.
+  const rahmenBereich = bewegungsBereich(aufgestellt, system);
+
   const anker = bindAnker(profile, system);
-  const sichtHoeheMeter = system.height * SICHT_HOEHE_FAKTOR;
-  const pxProMeter = panelHoehe / sichtHoeheMeter;
   const schritt = glatterSchritt(system.height / GITTER_TEILUNG);
-  const gitter = gitterWeltLinien(system, anker, schritt);
+  const luft = system.height * RAHMEN_LUFT_ANTEIL;
+  // Je Ansicht EINE Kamera über den ganzen Bewegungsbereich plus Bind-Anker —
+  // alle Panels der Zeile nutzen sie gemeinsam, sonst ist Frame gegen Frame
+  // nicht vergleichbar (plan.md 6.8). Der Anker gehört mit hinein: an ihm
+  // hängen Achsenkreuz und Maßstabsbalken, beide müssen sichtbar bleiben.
+  const kameras = new Map();
+  for (const ansicht of views) {
+    kameras.set(ansicht, panelKamera(
+      [rahmenBereich, { min: anker, max: anker }], kamerabasis(system, ansicht),
+      panelBreite, panelHoehe, luft));
+  }
+  // Das Raster bleibt WELTfest (Aufgabe 2): Bodengitter und Höhenmarken wandern
+  // nicht mit, sie bleiben an ihrer Weltposition. Seine Reichweite folgt der
+  // gerahmten Fläche — das größte Kamerafenster der Streifens, damit die
+  // getragene Figur nicht auf einer leeren Fläche steht. Der Faktor 2: auch
+  // der Anker liegt irgendwo im Fenster, die Reichweite muss von IHN bis in
+  // die fernste sichtbare Bodenecke reichen; plus Luft.
+  const maxHalbMeter = Math.max(...views.map((v) => {
+    const k = kameras.get(v);
+    return Math.max(panelBreite, panelHoehe) / 2 / k.pxProMeter;
+  }));
+  const gitter = gitterWeltLinien(system, anker, schritt,
+    Math.max(system.height * SICHT_HOEHE_FAKTOR, 2 * maxHalbMeter + luft));
 
   const panels = [];
   views.forEach((ansicht, zeile) => {
     const basis = kamerabasis(system, ansicht);
+    const kamera = kameras.get(ansicht);
     aufgestellt.forEach((frame, spalte) => {
       const pan = {
         ansicht,
@@ -825,11 +1074,10 @@ export function planeStreifen(opts) {
         y: PANEL_ABSTAND_PX + zeile * (panelHoehe + PANEL_ABSTAND_PX),
         breite: panelBreite,
         hoehe: panelHoehe,
-        ziel: [anker[0], system.groundY + sichtHoeheMeter / 2, anker[2]],
-        X: basis.X, Y: basis.Y, blick: basis.blick, sag: basis.sag,
-        pxProMeter,
-        halbBreiteMeter: panelBreite / 2 / pxProMeter,
-        halbHoeheMeter: sichtHoeheMeter / 2,
+        ziel: kamera.ziel, X: basis.X, Y: basis.Y, blick: basis.blick, sag: basis.sag,
+        pxProMeter: kamera.pxProMeter,
+        halbBreiteMeter: panelBreite / 2 / kamera.pxProMeter,
+        halbHoeheMeter: panelHoehe / 2 / kamera.pxProMeter,
         schritt,
         annotationen: {
           achsenkreuz: [], bodengitter: [], schwerpunkt: [],
@@ -857,6 +1105,13 @@ export function planeStreifen(opts) {
   });
 
   const warnungen = [];
+  if (gekuert > 0) {
+    warnungen.push(`Zeitgrenze: ${gekuert} von ${framesAngefordert} Frames entfernt, `
+      + `gezeigt sind die ersten ${aufgestellt.length} in ${views.length} Ansicht`
+      + `${views.length === 1 ? '' : 'en'} (${aufgestellt.length * views.length} von `
+      + `${panelsErst} Panels, Grenze ${PANELS_ZEIT_MAX} Panel — gemessen gegen die `
+      + `${STRIPE_ZEIT_MS}-ms-Grenze; die angeforderten Frame-Zahlen stehen im Bericht)`);
+  }
   if (!mitMesh) {
     warnungen.push(`ohne Scene gerastert: 0 Mesh-Panels, Figur aus ${profile.segments.length} `
       + `gemessenen Segmentradien als Kapseln`);
@@ -865,6 +1120,23 @@ export function planeStreifen(opts) {
   if (ohneAusrichtung > 0) {
     warnungen.push(`${ohneAusrichtung} Sohlenpunkte über ${aufgestellt.length} Frames ohne `
       + 'Gelenkausrichtung — auf dem Knochenpunkt gesetzt und im Bild benannt');
+  }
+
+  // Schrumpft die Budgettreppe (bildeStreifen) die Panels, muss die Schrift mit
+  // schrumpfen: die Panelgrößen stehen in Pixeln, die Textbreiten ebenso. Ohne
+  // diesen Faktor liefen bei 12 Frames × 4 Ansichten — dem Maximum, das Werkzeug
+  // `look` verlangen kann — 48 Beschriftungen über ihre Panelkante und wurden
+  // abgeschnitten (gemessen mit echten Font-Metriken im Abnahmetest).
+  const schriftFaktor = panelBreite / PANEL_BREITE_PX;
+  if (schriftFaktor !== 1) {
+    for (const pan of panels) {
+      const gruppen = [...Object.values(pan.annotationen), pan.koerper, pan.beschriftung];
+      for (const g of gruppen) {
+        for (const p of g) {
+          if (p.art === 'text') p.groesse = Math.max(4, +(p.groesse * schriftFaktor).toFixed(2));
+        }
+      }
+    }
   }
 
   return {
@@ -888,9 +1160,9 @@ export function planeStreifen(opts) {
     meshGezeichnet: mitMesh,
     massstab: {
       schrittMeter: schritt,
-      sichtHoeheMeter: Number(sichtHoeheMeter.toFixed(4)),
-      pxProMeter: Number(pxProMeter.toFixed(4)),
-      meterProPixel: Number((1 / pxProMeter).toFixed(6)),
+      sichtHoeheMeter: Number((panelHoehe / kameras.get(views[0]).pxProMeter).toFixed(4)),
+      pxProMeter: Number(kameras.get(views[0]).pxProMeter.toFixed(4)),
+      meterProPixel: Number((1 / kameras.get(views[0]).pxProMeter).toFixed(6)),
       koerperHoeheMeter: system.height,
       groundY: system.groundY,
     },
@@ -1431,6 +1703,11 @@ export function createStripRenderer(opts = {}) {
         scene, profile, frames: aufgelost, views,
         frameCount: opts.frameCount, canvas: opts.canvas, renderer: opts.renderer,
       });
+      // Die Zeitkürzung in planeStreifen kann Frames wegnehmen (PANELS_ZEIT_MAX).
+      // Der Bericht trägt weiterhin die ANGEFORDERTEN Frame-Zahlen (view, frames,
+      // ref in haengeStreifenAn kommen von hier außen, nicht aus dem Bild) —
+      // die Kürzung selbst steht als Warnung im Eintrag, nichts verschwindet
+      // still (plan.md 5.5).
       return [eintrag];
     },
   };

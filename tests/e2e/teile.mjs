@@ -23,6 +23,7 @@
 
 /** Eintrittsnamen, unter denen der Phasenlöser zu finden ist. */
 export const LOESER_NAMEN = [
+  'loeseBewegung',
   'loese', 'loeseTimeline', 'loesePhasen', 'loeseVorgang', 'loeseAlle', 'loeser',
 ];
 

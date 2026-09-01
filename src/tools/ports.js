@@ -159,3 +159,537 @@ export function attrappenPorts() {
     exporter: attrappenExporter()
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Echte Anschluesse (Verdrahtung, kein Neubau)
+//
+// Bis hierher stand nur die Attrappenseite. Ab hier haengen die sechzehn
+// Werkzeuge an den gemessenen Modulen: Vermessung, Erkennung, Loeser, Bericht,
+// Bildstreifen, Export. Die Werkzeugschicht wird beim Seitenstart gebaut, das
+// Modell kommt erst mit dem Upload — deshalb sind die Ports LEBEND: sie zeigen
+// auf ein veraenderliches Modell, das `setzeModell` einhaengt.
+//
+// Ohne Modell antwortet jeder Port mit einem Fehler, der die Zahl nennt
+// ("0 Modelle geladen"), nicht mit einer erfundenen Zahl. Eine Attrappe kommt
+// hier nirgends mehr vor.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Absichts-Bausteine werden UNUEBERSETZT durchgereicht.
+ *
+ * Verbindlich sind die Namen des Werkzeugkatalogs (src/tools/catalog.js,
+ * INTENT_ARTEN) — genau sie sieht der Agent. src/validate/intent.js zieht
+ * gerade darauf nach: am 31.08.2026 stehen dort fuenf der sieben Faelle schon
+ * auf den Katalognamen (rotation, airtime, travel, contact_change, clearance),
+ * zwei noch auf den alten deutschen (hoehe statt part_height, tempo statt
+ * part_speed). Eine Uebersetzung an dieser Stelle wuerde die fuenf fertigen
+ * Faelle wieder brechen; sobald die letzten zwei nachgezogen sind, passt alles
+ * von selbst. Bis dahin scheitern part_height und part_speed mit einer
+ * Meldung, die den erwarteten Namen nennt.
+ */
+
+/** Fehler, wenn ein Werkzeug ein Modell braucht und keines geladen ist. */
+function keinModell(tool, was) {
+  return new WerkzeugMeldung({
+    tool, param: 'Modell', value: 0,
+    range: '1 geladenes Modell',
+    next: 'lade eine .glb-Datei über die Dateiauswahl der Seite',
+    message: `0 Modelle geladen: ${was} wird am geladenen Modell gemessen; `
+      + 'lade eine .glb-Datei über die Dateiauswahl der Seite'
+  });
+}
+
+/**
+ * Baut die lebenden Anschluesse. SYNCHRON — die Funktion kehrt sofort zurueck.
+ *
+ * Die Nachbarpakete werden dynamisch geladen und dabei NICHT abgewartet:
+ * three.js und die sieben Module wiegen zusammen mehr, als das load-Ereignis
+ * der Seite tragen kann. Ein `await` an dieser Stelle schob `window.__boot
+ * .bereit` hinter das load-Ereignis — 10 von 13 Browsertests fielen darauf
+ * herein und meldeten „Seitenmodul wurde nicht ausgeführt“.
+ *
+ * Gebraucht werden die Module erst bei `setzeModell`, und das laeuft beim
+ * Upload — dort wird gewartet. Bis dahin antwortet jeder Port ohnehin mit
+ * „0 Modelle geladen“.
+ *
+ * @param {object} [opt]
+ * @param {object} [opt.renderer] THREE.WebGLRenderer der Seite, fuer den Streifen
+ * @returns {object} { rig, solver, validator, renderer, exporter,
+ *                     setzeModell, loeseModell, stand, bereit }
+ */
+export function echtePorts(opt = {}) {
+  const geladen = Promise.all([
+    import('../rig/measure.js'),
+    import('../rig/detect.js'),
+    import('../solver/kinematik.js'),
+    import('../solver/loeser.js'),
+    import('../validate/report.js'),
+    import('../render/strip.js'),
+    import('../export/gltf.js')
+  ]).then(([measure, detect, kinematik, loeser, report, strip, gltfExport]) =>
+    ({ measure, detect, kinematik, loeser, report, strip, gltfExport }));
+
+  // Nach dem ersten setzeModell steht M; alle synchronen Ports laufen erst
+  // danach, weil sie ohne Modell mit "0 Modelle geladen" abbrechen.
+  let M = null;
+  geladen.then((x) => { M = x; });
+  const mod = () => {
+    if (!M) {
+      throw new WerkzeugMeldung({
+        tool: 'ports', param: 'Module', value: 0,
+        range: '7 geladene Module',
+        next: 'lade zuerst ein Modell — dabei werden die Module abgewartet',
+        message: '0 von 7 Nachbarpaketen geladen: die Module kommen mit dem ersten Upload'
+      });
+    }
+    return M;
+  };
+
+  // Der gemessene Stand des geladenen Modells. Alles hier drin ist gemessen
+  // oder null — nichts ist geschaetzt.
+  let m = null;         // { gltf, fileName, profil, erkennung, erkennungFehler, skel }
+  // Letzte Loesung, damit der Bildstreifen dieselben Frames zeigt, die geprueft
+  // wurden. Ohne diese Bruecke rendert `look` andere Posen als `validate` misst.
+  let loesung = null;   // { frames, bericht, frameCount }
+  /** Letzter Export, damit die Oberflaeche einen Download anbieten kann. */
+  let letzterExport = null;
+
+  const brauchtModell = (tool, was) => {
+    if (!m) throw keinModell(tool, was);
+    return m;
+  };
+
+  /** Skelett fuer den Loeser, einmal je Modell gebaut. */
+  const skelett = () => {
+    if (!m.skel) {
+      const k = mod().kinematik;
+      m.skel = k.baueSkeleton(m.profil, k.erfasseBind(m.gltf.scene));
+    }
+    return m.skel;
+  };
+
+  /** Rollen aus der Erkennung, sonst die drei Pflichtrollen der Vermessung. */
+  const rollenTabelle = () => (m.erkennung ? m.erkennung.roles : m.profil.roles);
+
+  /**
+   * Bind-Pose der Szene, einmal je Modell gelesen: je Knochen Weltausrichtung
+   * und Weltmassstab. Beides misst frameAusScene an derselben Szene, die auch
+   * das Mesh stellt — nichts wird abgetippt.
+   */
+  const bindPose = () => {
+    if (!m.bind) m.bind = mod().strip.frameAusScene(m.gltf.scene).bones;
+    return m.bind;
+  };
+
+  /**
+   * Uebersetzt einen geloesten Frame in die Form, die der Bildstreifen liest.
+   *
+   * Der Loeser liefert `positions` (je Knochen) und `joints` (je GELENK eine
+   * Weltausrichtung, 18 Stueck bei Xbot). Der Streifen braucht `bones` mit
+   * Position, Ausrichtung und Weltmassstab je Knochen — sonst bliebe das Mesh
+   * in der Bind-Pose stehen und jedes Panel zeigte dasselbe Bild.
+   *
+   * Die fehlenden Ausrichtungen werden nicht geraten, sondern gerechnet: ein
+   * Knochen ohne eigenen Freiheitsgrad dreht sich gegenueber seinem naechsten
+   * gedrehten Vorfahren gar nicht. Seine Weltausrichtung ist deshalb exakt
+   *
+   *   q_welt(kind) = q_welt(vorfahre) · q_bind(vorfahre)⁻¹ · q_bind(kind)
+   *
+   * Der Weltmassstab kommt unveraendert aus der Bind-Pose.
+   */
+  const alsStreifenFrame = (f) => {
+    const bind = bindPose();
+    const eltern = new Map(m.profil.bones.map((b) => [b.id, b.parent]));
+
+    // 1. Ausrichtungen, die der Loeser selbst gemessen hat.
+    const quat = new Map();
+    const wurzel = m.profil.roles.pelvis?.bone;
+    if (f.root && Array.isArray(f.root.quat) && wurzel) quat.set(wurzel, f.root.quat);
+    for (const [gelenk, q] of Object.entries(f.joints ?? {})) {
+      const id = m.profil.joints[gelenk]?.bone;
+      if (id && Array.isArray(q)) quat.set(id, q);
+    }
+
+    // 2. Die uebrigen aus dem naechsten bekannten Vorfahren fortrechnen.
+    const holeQuat = (id) => {
+      if (quat.has(id)) return quat.get(id);
+      const kette = [];
+      let cur = id;
+      while (cur && !quat.has(cur)) { kette.push(cur); cur = eltern.get(cur) ?? null; }
+      if (!cur) {                       // kein gedrehter Vorfahre: Bind gilt
+        for (const k of kette) quat.set(k, bind[k]?.quaternion ?? [0, 0, 0, 1]);
+        return quat.get(id);
+      }
+      for (let i = kette.length - 1; i >= 0; i--) {
+        const k = kette[i];
+        const p = eltern.get(k);
+        const qP = quat.get(p) ?? [0, 0, 0, 1];
+        const bP = bind[p]?.quaternion ?? [0, 0, 0, 1];
+        const bK = bind[k]?.quaternion ?? [0, 0, 0, 1];
+        const kin = mod().kinematik;
+        quat.set(k, kin.qNorm(kin.qMul(qP, kin.qMul(kin.qconj(bP), bK))));
+      }
+      return quat.get(id);
+    };
+
+    const bones = {};
+    for (const [id, p] of Object.entries(f.positions ?? {})) {
+      if (!bind[id]) continue;          // Knochen, die das Profil nicht kennt
+      bones[id] = { position: p, quaternion: holeQuat(id), weltSkala: bind[id].weltSkala };
+    }
+    return { ...f, bones };
+  };
+
+  const rig = {
+    quelle: 'AP2 (src/rig/measure.js) + AP3 (src/rig/detect.js)',
+
+    world() {
+      const s = brauchtModell('describe_world', 'Der Weltvertrag');
+      const w = {
+        quelle: 'gemessen',
+        datei: s.fileName,
+        knochen: s.profil.source.boneCount,
+        vertices: s.profil.source.vertexCount,
+        ...s.profil.world,
+        warnings: s.profil.warnings
+      };
+      // Vorne und links misst die Erkennung, nicht die Vermessung: sie liest
+      // sie aus der Punktwolke, das Profil setzt sie fest auf z bzw. x.
+      if (s.erkennung) {
+        w.forward = s.erkennung.world.forward;
+        w.left = s.erkennung.world.left;
+        w.forwardVektor = s.erkennung.world.forwardVektor;
+        w.leftVektor = s.erkennung.world.leftVektor;
+        w.achsenWert = s.erkennung.world.achsenWert;
+      }
+      return w;
+    },
+
+    rig() {
+      const s = brauchtModell('describe_rig', 'Die Gelenkliste');
+      const bericht = {
+        quelle: 'gemessen',
+        roles: rollenTabelle(),
+        joints: s.profil.joints,
+        bones: s.profil.bones,
+        warnings: s.profil.warnings
+      };
+      if (s.erkennung) {
+        bericht.questions = s.erkennung.questions;
+        bericht.unknown = s.erkennung.unknown;
+        bericht.evidence = s.erkennung.evidence;
+        bericht.warnings = [...s.profil.warnings, ...s.erkennung.warnings];
+      } else if (s.erkennungFehler) {
+        // Die Erkennung ist ausgefallen; die Vermessung steht trotzdem. Das
+        // wird gesagt, nicht durch eine leere Rollenliste verschwiegen.
+        bericht.erkennungFehler = s.erkennungFehler;
+      }
+      return bericht;
+    },
+
+    body() {
+      const s = brauchtModell('describe_body', 'Das Körperprofil');
+      return {
+        quelle: 'gemessen',
+        segments: s.profil.segments,
+        soles: s.profil.soles,
+        restDistances: s.profil.restDistances,
+        params: s.profil.params,
+        masseGesamt_kg: +s.profil.segments
+          .reduce((a, x) => a + (x.mass ?? 0), 0).toFixed(4),
+        warnings: s.profil.warnings
+      };
+    },
+
+    gelenke() {
+      return m ? Object.keys(m.profil.joints) : [];
+    },
+
+    rollen() {
+      return m ? Object.keys(rollenTabelle()) : [];
+    },
+
+    /**
+     * Beugt ein Gelenk im geladenen Modell um `winkelGrad`, liest Vorher und
+     * Nachher als Frames aus derselben Szene und rendert beide nebeneinander.
+     * Die Bind-Pose wird danach wiederhergestellt.
+     */
+    probe(gelenk, winkelGrad) {
+      const s = brauchtModell('probe_joint', 'Die Gelenkprobe');
+      const j = s.profil.joints[gelenk];
+      if (!j) {
+        throw new WerkzeugMeldung({
+          tool: 'probe_joint', param: 'joint', value: gelenk,
+          range: `eines von ${Object.keys(s.profil.joints).length} gemessenen Gelenken`,
+          next: 'rufe describe_rig auf',
+          message: `Gelenk "${gelenk}" ist nicht gemessen: `
+            + `${Object.keys(s.profil.joints).length} Gelenke stehen im Profil`
+        });
+      }
+      const knochen = s.gltf.scene.getObjectByName(j.bone);
+      if (!knochen) {
+        throw new WerkzeugMeldung({
+          tool: 'probe_joint', param: 'joint', value: gelenk,
+          range: '1 Knochen in der Szene',
+          next: 'lade das Modell erneut',
+          message: `0 Knochen namens "${j.bone}" in der Szene gefunden, `
+            + `obwohl das Profil ihn für ${gelenk} führt`
+        });
+      }
+      // Freiheitsgrad mit gemessenem Vorzeichen bevorzugen — sonst der erste.
+      const namen = Object.keys(j.dof);
+      const dofName = namen.find((n) => j.dof[n].signSource === 'gemessen') ?? namen[0];
+      const dof = j.dof[dofName];
+      const achse = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }[dof.axis] ?? [1, 0, 0];
+      const rad = (winkelGrad * Math.PI / 180) * (dof.sign ?? 1);
+
+      const gesichert = knochen.quaternion.clone();
+      const vorher = mod().strip.frameAusScene(s.gltf.scene, { frame: 0 });
+      // Mit qMul aus kinematik.js gerechnet und dann gesetzt, nicht mit
+      // Quaternion.multiply: three liest dort die internen Felder (_x .. _w).
+      // Ein einfaches {x,y,z,w} ergibt NaN — der Teilbaum unter dem Gelenk
+      // verliert dann seine Positionen und der Bildstreifen lehnt ab.
+      const bind = [gesichert.x, gesichert.y, gesichert.z, gesichert.w];
+      const kin = mod().kinematik;
+      const neu = kin.qMul(bind, kin.qFromAxisAngle(achse, rad));
+      knochen.quaternion.set(neu[0], neu[1], neu[2], neu[3]);
+      s.gltf.scene.updateMatrixWorld(true);
+      const nachher = mod().strip.frameAusScene(s.gltf.scene, { frame: 1 });
+      knochen.quaternion.copy(gesichert);
+      s.gltf.scene.updateMatrixWorld(true);
+
+      const ende = Object.keys(nachher.positions).length;
+      const text = `Gelenk ${gelenk} (${j.bone}), Freiheitsgrad ${dofName} um Achse `
+        + `${dof.axis}, Vorzeichen ${dof.sign ?? 1} (${dof.signSource}): `
+        + `${winkelGrad} Grad angelegt, ${ende} Knochen neu ausgewertet, `
+        + `Grenzen ${JSON.stringify(dof.limit)} (${j.limitSource}). `
+        + 'Links Bind-Pose, rechts gebeugt.';
+
+      let bild = null;
+      try {
+        const r = mod().strip.createStripRenderer({
+          scene: s.gltf.scene, profile: s.profil,
+          frames: [vorher, nachher], frameCount: 2, renderer: opt.renderer
+        });
+        bild = r.streifen({ frames: [0, 1], views: ['side'] })[0];
+      } catch (err) {
+        return { quelle: 'gemessen', text: `${text}\nKein Bild: ${err.message}`, bild: null };
+      }
+      return { quelle: 'gemessen', text, bild };
+    }
+  };
+
+  const solver = {
+    quelle: 'AP5 (src/solver/loeser.js)',
+    loese(timeline) {
+      const s = brauchtModell('validate', 'Die gelöste Bewegung');
+      const { frames, bericht } = mod().loeser.loeseBewegung(s.profil, skelett(), timeline);
+      loesung = { frames, bericht, frameCount: timeline.frameCount };
+      return { quelle: 'gemessen', frames, bericht };
+    }
+  };
+
+  const rendererPort = {
+    quelle: 'AP9 (src/render/strip.js)',
+    streifen({ frames, views }) {
+      const s = brauchtModell('look', 'Der Bildstreifen');
+      if (!loesung) {
+        throw new WerkzeugMeldung({
+          tool: 'look', param: 'gelöste Frames', value: 0,
+          range: 'mindestens 1 gelöster Frame',
+          next: 'rufe zuerst validate auf, das löst die Timeline',
+          message: '0 gelöste Frames vorhanden: der Bildstreifen zeigt die gelöste '
+            + 'Bewegung, nicht die Bind-Pose — rufe zuerst validate auf'
+        });
+      }
+      const r = mod().strip.createStripRenderer({
+        scene: s.gltf.scene, profile: s.profil,
+        frameQuelle: (i) => alsStreifenFrame(loesung.frames[i]),
+        frameCount: loesung.frameCount, renderer: opt.renderer
+      });
+      return r.streifen({ frames, views });
+    }
+  };
+
+  const validator = {
+    quelle: 'AP4/AP6 (src/validate/report.js)',
+    pruefe(timeline, { intent } = {}) {
+      const s = brauchtModell('validate', 'Der Validierungsbericht');
+      // Der Bericht holt sich seinen Streifen selbst (plan.md 5.3): Zahlen ohne
+      // Bild gehen nicht raus. Die Auswahl kommt aus report.js, nicht von hier.
+      const streifenQuelle = (auswahl) => {
+        const r = mod().strip.createStripRenderer({
+          scene: s.gltf.scene,
+          profile: s.profil,
+          frameQuelle: (i) => alsStreifenFrame(
+          auswahl.find((x) => x.frame === i) ?? timeline.solved.frames[i]),
+          frameCount: timeline.frameCount,
+          renderer: opt.renderer
+        });
+        gerendert = r.streifen({ frames: auswahl.map((a) => a.frame), views: ['side', 'front'] });
+        return gerendert;
+      };
+      // Die gerenderten Streifen werden hier festgehalten: der Bericht traegt
+      // nur die VERWEISE (view, frames, ref), die Bilddaten braucht aber die
+      // Antwort an den Agenten. Ohne diesen Griff muesste handlers.js ein
+      // zweites Mal rendern — dieselben Frames, 250 KB, doppelte Zeit.
+      let gerendert = [];
+      const checks = Array.isArray(intent) ? intent : (intent && intent.checks) || [];
+      const bericht = mod().report.baueValidationReport({
+        profile: s.profil, timeline, intent: checks, strip: streifenQuelle
+      });
+      // Erst NACH der Schemapruefung angehaengt, damit der Bericht selbst
+      // vertragsrein bleibt. handlers.js zieht das Feld heraus und loescht es.
+      bericht.bilddaten = gerendert;
+      return bericht;
+    }
+  };
+
+  const exporter = {
+    quelle: 'Export (src/export/gltf.js)',
+    async gltf(timeline) {
+      const s = brauchtModell('export_clip', 'Die glTF-Datei');
+      // exportiereClip liefert { bytes: Uint8Array, animation, warnings,
+      // koerperHoehe }; das Werkzeug meldet die BYTEZAHL, nicht das Array.
+      const e = await mod().gltfExport.exportiereClip(s.gltf, timeline, s.profil);
+      // Die Bytes festhalten, damit die Seite daraus eine Datei machen kann.
+      // Das Werkzeug meldet nur die Bytezahl — bisher endete der Export damit
+      // in einer Zahl, und der Mensch bekam nie einen Clip in die Hand.
+      letzterExport = {
+        daten: e.bytes,
+        name: `${(s.fileName || 'clip').replace(/\.(glb|gltf)$/i, '')}_clip.glb`,
+        bytes: e.bytes.length,
+        zeit: Date.now(),
+      };
+      return {
+        quelle: 'gemessen',
+        bytes: e.bytes.length,
+        ref: `${(s.fileName || 'clip').replace(/\.(glb|gltf)$/i, '')}_clip.glb`,
+        daten: e.bytes,
+        warnung: e.warnings && e.warnings.length
+          ? `${e.warnings.length} Warnung${e.warnings.length === 1 ? '' : 'en'} beim Export: `
+            + e.warnings.join('; ')
+          : undefined
+      };
+    }
+  };
+
+  return {
+    rig, solver, validator, renderer: rendererPort, exporter,
+
+    /**
+     * Misst das geladene Modell mit korrigierten Rollen NEU.
+     *
+     * Belegt in spikes/rollen/BEFUND.md: `confirm_role` schrieb die Korrektur
+     * bisher nur in den Sitzungszustand, und describe_body antwortete danach
+     * bitidentisch. Alles, was aus den Rollen abgeleitet ist — Segmente,
+     * Massen, Sohlenpunkte, Gelenkachsen — blieb auf der urspruenglichen
+     * Zuordnung stehen. Am Xbot gemessen: mit pelvis auf mixamorigSpine ergibt
+     * die Neuvermessung 138,2 kg statt 151,9 kg Gesamtmasse und 48,0 statt
+     * 61,7 kg im Rumpf. Die Bestaetigung des Menschen war damit folgenlos.
+     *
+     * measureRigProfile nimmt eine Rollentabelle entgegen und misst darueber
+     * neu — dieser Weg existierte, wurde vom Werkzeug aber nie benutzt.
+     *
+     * @param {object} rollen  Rolle -> Knochenname, vom Menschen bestaetigt
+     * @returns {object} was sich geaendert hat, mit Zahlen
+     */
+    vermesseMitRollen(rollen) {
+      const s = brauchtModell('confirm_role', 'Die Neuvermessung');
+      const vorher = {
+        masse: (s.profil.segments ?? []).reduce((n, seg) => n + (seg.mass ?? 0), 0),
+        segmente: (s.profil.segments ?? []).length,
+        sohlen: (s.profil.soles ?? []).length,
+      };
+      const profil = mod().measure.measureRigProfile(s.gltf, {
+        fileName: s.fileName,
+        roles: rollen,
+      });
+      m = { ...m, profil, skel: null, bind: null };
+      loesung = null;                 // die alte Loesung gehoert zum alten Profil
+      const nachher = {
+        masse: (profil.segments ?? []).reduce((n, seg) => n + (seg.mass ?? 0), 0),
+        segmente: (profil.segments ?? []).length,
+        sohlen: (profil.soles ?? []).length,
+      };
+      return { vorher, nachher, warnungen: profil.warnings.length };
+    },
+
+    /** Der zuletzt erzeugte Clip, oder null. Fuer den Download in der Seite. */
+    holeLetztenExport: () => letzterExport,
+
+    /**
+     * Haengt ein geladenes Modell ein und misst es. Wirft, wenn die Vermessung
+     * das Modell ablehnt — dann bleibt der vorherige Stand leer, nicht falsch.
+     *
+     * @returns {object} { knochen, hoehe, segmente, rollen, fragen, warnungen }
+     */
+    async setzeModell(gltf, o = {}) {
+      await geladen;                    // erst hier warten, nicht beim Seitenstart
+      const fileName = o.fileName ?? 'unbenannt.glb';
+      const profil = mod().measure.measureRigProfile(gltf, { fileName });
+      // Die Erkennung darf ausfallen, ohne die Vermessung mitzureissen: sie
+      // liefert die feineren Rollen, die drei Pflichtrollen stehen im Profil.
+      let erkennung = null;
+      let erkennungFehler = null;
+      try {
+        erkennung = mod().detect.detectRig(gltf, { file: fileName });
+      } catch (err) {
+        erkennungFehler = err.message;
+      }
+      m = { gltf, fileName, profil, erkennung, erkennungFehler, skel: null, bind: null };
+      loesung = null;
+      return {
+        knochen: profil.source.boneCount,
+        hoehe: profil.world.height,
+        segmente: profil.segments.length,
+        rollen: Object.keys(erkennung ? erkennung.roles : profil.roles).length,
+        fragen: erkennung ? erkennung.questions.length : 0,
+        warnungen: profil.warnings.length,
+        erkennungFehler
+      };
+    },
+
+    /** Promise, das aufloest, sobald die sieben Module geladen sind. */
+    bereit: geladen.then(() => true),
+
+    /** Modell abhaengen, z. B. wenn ein Upload scheitert. */
+    loeseModell() {
+      m = null;
+      loesung = null;
+    },
+
+    /** Was die Ports gerade sehen — fuer Spur und Abnahme. */
+    stand() {
+      return {
+        modell: m ? m.fileName : null,
+        knochen: m ? m.profil.source.boneCount : 0,
+        hoehe: m ? m.profil.world.height : null,
+        geloest: loesung ? loesung.frames.length : 0
+      };
+    },
+
+    /**
+     * Löst die aktuelle Timeline und liefert die Frames in der Form, die der
+     * Bildstreifen liest (mit `bones` je Knochen: Position, Ausrichtung,
+     * Weltmaßstab) — dieselbe Umsetzung, die look und validate benutzen,
+     * nur einzeln aufrufbar. Für den Abspieler und für Prüfungen.
+     *
+     * @param {object} timeline  Timeline gemäß plan.md 5.2
+     * @returns {object[]} gelöste Frames mit bones
+     */
+    loeseFuerSzene(timeline) {
+      if (!m || m.gltf == null) {
+        throw new WerkzeugMeldung({
+          tool: 'ports', param: 'gelöste Frames', value: 0,
+          range: 'mindestens 1 gelöster Frame',
+          next: 'lade zuerst ein Modell',
+          message: '0 Modelle geladen: ohne gemessenes Modell ist nichts zu lösen '
+            + '(loeseFuerSzene)'
+        });
+      }
+      const { frames } = solver.loese(timeline);
+      return frames.map(alsStreifenFrame);
+    }
+  };
+}

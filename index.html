@@ -1,76 +1,437 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>WebMCP Challenge — Szene</title>
+<title>Animate a rigged 3D character with an AI agent</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  :root { --bg:#0e1116; --fg:#e6edf3; --dim:#8b949e; --bad:#f85149; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.5 ui-monospace,Consolas,monospace; }
-  header { display:flex; gap:12px; align-items:center; padding:10px 14px; border-bottom:1px solid #262d38; }
-  canvas { display:block; }
-  #status { color:var(--dim); }
-  #error { display:none; margin:10px 14px; padding:10px 12px; border:1px solid var(--bad); border-radius:6px; color:var(--bad); white-space:pre-wrap; }
-  #stage { text-align:center; flex:1 1 auto; min-width:0; }
+  /* ── Gestaltungsentscheidung ───────────────────────────────────────────────
 
-  /* Rückfrage (plan.md 6.7) steht neben der Leinwand, nicht darüber.
-     Grund: Bodenkontakt, Standfläche und Fußanker sind die Größen, an denen der
-     Mensch die Bewegung beurteilt — ein Overlay über den Füßen verdeckt genau
-     das, worüber gefragt wird. Ein Overlay am rechten Rand ginge bei 1440 px
-     gut aus und bei 1024 px nicht mehr; im eingebauten Browser der
-     ChatGPT-Desktop-App ist mit schmalen Fenstern zu rechnen (challenge.md).
-     Deshalb teilen sich beide den Platz, statt sich zu überlagern.
+     Haltung: Diese Seite ist ein Messsaal, kein Editor. Die Figur ist das
+     einzige Helle und das einzig Farbige im Bild; alles andere — Fläche,
+     Schrift, Linie — tritt so weit zurück, wie es noch lesbar bleibt, und die
+     einzige gesättigte Farbe der Oberfläche (--ruf) steht ausschließlich dort,
+     wo der Mensch handeln muss.
 
-     frameCamera bleibt unangetastet: die Leinwand behält ihre 960×720 Pixel und
-     ihr Seitenverhältnis, CSS skaliert sie nur gleichmäßig herunter. */
-  #buehne { display:flex; gap:16px; align-items:flex-start; padding:0 16px; }
-  #view { max-width:100%; height:auto; }
-  #seite { flex:0 0 clamp(300px, 30vw, 420px); display:flex; flex-direction:column; gap:12px; }
-  /* Solange weder Frage noch Spur etwas zeigen, nimmt die Spalte keinen Platz. */
-  #seite:not(:has(> section:not([hidden]))) { display:none; }
-  #frage[hidden], #spur[hidden] { display:none; }
-  #frage, #spur {
-    background:#161c25; border:1px solid #3b4b63; border-radius:10px;
-    padding:14px 16px; box-shadow:0 10px 30px #0009;
+     Warum diese: Das Produkt macht einen blinden Agenten sehend, indem es die
+     Figur vermisst statt sie zu schätzen (Regel 1, AGENTS.md). Eine Oberfläche,
+     die selbst vor der Figur steht, widerspricht ihrem eigenen Versprechen —
+     deshalb hat die Bühne keinen Rahmen, keinen Kasten und keine runde Ecke:
+     der Szenenhintergrund ist derselbe Ton wie die Seite, die Figur steht im
+     Raum statt in einem Fenster. Und deshalb trägt sie einen Höhenmaßstab: die
+     gemessenen Meter werden an ihr abgetragen, statt unter ihr behauptet zu
+     werden.
+
+     Daraus folgt der Rest:
+
+       Farbe hat drei Bedeutungen, keine vierte. Weiß (--schrift) heißt
+       gemessen — jede Zahl, die am Modell entstanden ist, steht in der
+       hellsten Stufe. Grau (--leise, --still) heißt Erklärung. Indigo (--ruf)
+       heißt: du bist dran. Es gibt keinen dekorativen Einsatz von --ruf; wo es
+       leuchtet, wartet die Seite auf einen Klick.
+
+       Typografie trennt Messung von Prosa. Messwerte stehen monospace mit
+       gleich breiten Ziffern, Erklärungen serifenlos. Wer die Seite ansieht,
+       unterscheidet Behauptung und Messwert, ohne ein Wort zu lesen.
+
+       Beschriftungen sind Instrumentenschrift: 10 px, Versalien, weites
+       Tracking, immer grau, nie fett. Sie benennen, sie betonen nicht.
+
+       Es gibt drei Trennlinien auf der ganzen Seite — unter dem Kopf, über der
+       Messleiste, links der Spalte — und sonst keine Rahmen. Kästen um jeden
+       Inhalt waren der Grund, warum die Seite vorher wie ein Debug-Fenster
+       aussah: gleich starke Umrandungen erzeugen gleiches Gewicht, und
+       gleiches Gewicht ist keine Hierarchie. */
+
+  :root {
+    /* Fläche */
+    --grund:   #0e0e10;   /* Seite und Szenenhintergrund — derselbe Ton */
+    --bett:    #17171a;   /* die eine Fläche, die sich abheben darf */
+    --linie:   #232327;   /* die drei Trennlinien */
+    --linie-hell: #33333a;
+
+    /* Schrift */
+    --schrift: #f2f1ee;   /* Messwerte und Titel — die hellste Stufe */
+    --leise:   #8b8a91;   /* Erklärungen */
+    --still:   #64636a;   /* Beschriftungen */
+
+    /* Bedeutung */
+    --ruf:     #6d5cff;   /* nur wo der Mensch handeln muss */
+    --ruf-hell:#9186ff;
+    --fehler:  #e0674c;
+
+    --prosa: system-ui, "Segoe UI Variable Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", "Roboto Mono", Consolas, monospace;
+
+    --rand: 32px;   /* der äußere Rand der Seite */
   }
-  #frage { max-height:calc(100vh - 120px); overflow:auto; }
-  /* Unter 720 px reicht die Breite für zwei Spalten nicht mehr: dann
-     untereinander, Frage zuerst — beantwortet werden muss sie so oder so. */
-  @media (max-width: 719px) {
-    #buehne { flex-direction:column; align-items:stretch; }
-    #seite { flex:none; order:-1; }
+
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    margin:0; background:var(--grund); color:var(--schrift);
+    font:400 13px/1.6 var(--prosa);
+    -webkit-font-smoothing:antialiased;
+    display:flex; flex-direction:column; overflow:hidden;
   }
-  #frage-text { margin:0 0 12px; white-space:pre-wrap; font-size:14px; }
-  #frage-optionen { display:grid; gap:10px; }
+
+  /* Die Instrumentenschrift: jede Beschriftung auf der Seite sieht gleich aus. */
+  .verb-marke, #spur-titel, #einstieg-schritte-titel,
+  .wertpaar .beschriftung, .frage-karte .marke {
+    font-size:10px; font-weight:500; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--still); font-family:var(--prosa);
+  }
+  /* Gemessene Werte, überall auf der Seite gleich gesetzt. */
+  .messwert { font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--schrift); }
+
+  /* ── Kopf ─────────────────────────────────────────────────────────────────
+     Eine Zeile, drei Angaben: wer, was liegt, wie lädt man neu. Der native
+     Datei-Knopf ist verborgen; sichtbar ist ein <label>, das ihn auslöst — der
+     weiße "Choose File" des Browsers war der stärkste Stilbruch der Seite. */
+  #kopf {
+    flex:0 0 auto; display:flex; align-items:center; gap:20px;
+    height:56px; padding:0 var(--rand);
+    border-bottom:1px solid var(--linie);
+  }
+  #marke-name { font-size:13px; font-weight:600; letter-spacing:.01em; white-space:nowrap; }
+  #kopf-rechts { margin-left:auto; display:flex; align-items:center; gap:18px; min-width:0; }
+  #status {
+    font-family:var(--mono); font-size:11.5px; color:var(--leise);
+    font-variant-numeric:tabular-nums;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  #file {
+    position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+    overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0;
+  }
+  #datei-knopf {
+    font:inherit; font-size:12px; color:var(--leise); cursor:pointer;
+    border:1px solid var(--linie-hell); border-radius:4px; padding:6px 13px;
+    white-space:nowrap; transition:color .15s, border-color .15s;
+  }
+  #datei-knopf:hover { color:var(--schrift); border-color:var(--still); }
+  #file:focus-visible + #datei-knopf { outline:2px solid var(--ruf); outline-offset:2px; }
+
+  /* ── Fehler ───────────────────────────────────────────────────────────────
+     Der einzige Ort, an dem die Seite laut wird. Deshalb keine Fläche und kein
+     Rahmen ringsum, sondern eine Kante links wie ein Randstrich. */
+  #error {
+    display:none; flex:0 0 auto; margin:14px var(--rand) 0;
+    padding:11px 0 11px 14px; border-left:2px solid var(--fehler);
+    color:var(--fehler); font-size:12.5px; white-space:pre-wrap;
+  }
+
+  /* ── Bühne ────────────────────────────────────────────────────────────────
+     Links die Figur, rechts die Spalte. Zwischen beiden eine Linie und Luft,
+     kein Kasten: die Figur soll im Raum stehen, nicht in einem Fenster. */
+  #buehne { flex:1 1 auto; min-height:0; display:flex; }
+  #stage {
+    flex:1 1 auto; min-width:0; min-height:0;
+    display:flex; flex-direction:column;
+    padding-left:var(--rand);
+  }
+  #leinwand { flex:1 1 auto; min-height:0; position:relative; }
+  /* Das Canvas füllt sein Bett vollständig; seine Pixelgröße setzt das
+     Seitenmodul aus der gemessenen Elementgröße, nicht aus einer festen Zahl. */
+  #view { display:block; width:100%; height:100%; }
+
+  /* ── Höhenmaßstab ─────────────────────────────────────────────────────────
+     Die Signatur der Seite. Die Marken stehen dort, wohin die echte Kamera die
+     gemessenen Weltpunkte projiziert (src/ui/hoehenmassstab.js) — sie können
+     nicht falsch stehen, ohne dass auch die Figur falsch stünde. */
+  #massstab {
+    position:absolute; inset:0; pointer-events:none;
+    font-family:var(--mono); font-variant-numeric:tabular-nums;
+  }
+  #massstab[hidden] { display:none; }
+
+  /* ── Hinweis auf die Bedienung ────────────────────────────────────────────
+     Die Leinwand ist ab jetzt bedienbar, und das sieht man ihr nicht an. Der
+     Satz sagt es in der leisesten Schriftstufe, unten links, ausserhalb der
+     Blickachse der Figur — und nur, solange eine Figur steht. Er faengt keine
+     Maus ab: was hier steht, soll das Ziehen nicht behindern. */
+  #bediensatz {
+    position:absolute; left:0; bottom:0; margin:0; display:none;
+    pointer-events:none; user-select:none;
+    font-size:11px; letter-spacing:.01em; color:var(--still);
+  }
+  body.hat-modell #bediensatz { display:block; }
+  .massmarke {
+    position:absolute; left:0; height:0;
+    display:flex; align-items:center; gap:12px;
+  }
+  .massmarke-wert {
+    flex:0 0 auto; width:78px; text-align:right; white-space:nowrap;
+    font-size:10.5px; color:var(--still); line-height:1;
+  }
+  /* Teilstrich des Rasters: kurz. Die lange Linie ist der Scheitelmarke
+     vorbehalten, sonst hätte jede Marke dasselbe Gewicht wie die Körperhöhe. */
+  .massmarke-strich { flex:0 0 26px; height:1px; background:var(--linie); }
+  /* Die Scheitelmarke trägt die gemessene Körperhöhe — der eine Wert, um den
+     sich alles dreht. Sie ist deshalb die einzige helle Marke. */
+  .massmarke.scheitel .massmarke-wert { color:var(--schrift); font-size:12px; }
+  .massmarke.scheitel .massmarke-strich { flex:1 1 auto; background:var(--linie-hell); }
+  /* Kein Platz für die lange Linie (schmale Leinwand, T-Pose): dann behält
+     auch die Scheitelmarke den Teilstrich. */
+  .massmarke.scheitel.kurz .massmarke-strich { flex:0 0 26px; }
+  /* ── Titelkarte über der leeren Bühne ─────────────────────────────────────
+     Solange nichts geladen ist, gehört die Bühne der Ansage: was das ist und
+     was man drückt. Sobald eine Figur steht, erklärt die Figur sich selbst —
+     Titel und Satz treten weg, der Knopf bleibt als stille Zeile unten links. */
+  #einstieg {
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:min(540px, 80%);
+  }
+  #einstieg-titel {
+    margin:0 0 16px; font-size:31px; line-height:1.16; font-weight:600;
+    letter-spacing:-.022em; color:var(--schrift);
+  }
+  #einstieg-satz { margin:0 0 28px; color:var(--leise); font-size:14px; line-height:1.65; }
+  #einstieg-beispiel {
+    font:inherit; font-size:13px; font-weight:500; color:#fff; cursor:pointer;
+    background:var(--ruf); border:1px solid var(--ruf); border-radius:5px;
+    padding:11px 22px; transition:background .15s, border-color .15s;
+  }
+  #einstieg-beispiel:hover { background:var(--ruf-hell); border-color:var(--ruf-hell); }
+  #einstieg-beispiel:focus-visible { outline:2px solid var(--ruf-hell); outline-offset:3px; }
+  #einstieg-beispiel:disabled { background:transparent; color:var(--still);
+    border-color:var(--linie-hell); cursor:wait; }
+  /* Die Messzeile der Erstsicht bleibt aus: dieselben Zahlen stehen genauer in
+     der Messleiste unter der Figur. Ein Element, eine Aufgabe. */
+  #einstieg-messung { display:none; }
+
+  body.hat-modell #einstieg {
+    left:auto; right:0; top:auto; bottom:18px; transform:none; width:auto;
+  }
+  body.hat-modell #einstieg-titel, body.hat-modell #einstieg-satz { display:none; }
+  /* Der Beispielknopf verschwindet, sobald ein Modell steht: es laedt beim
+     Start von selbst, und "Open GLB" oben rechts holt jedes andere Rig. Ein
+     dritter Weg zum selben Ziel, mitten im Bild, ist nur Unruhe. */
+  body.hat-modell #einstieg-beispiel { display:none; }
+  body.hat-modell #einstieg-beispiel:hover { color:var(--schrift); border-color:var(--still); }
+
+  /* ── Messleiste unter der Figur ───────────────────────────────────────────
+     Der eine Ort für alles, was am Modell gemessen wurde. Der erste Wert ist
+     die Körperhöhe und steht groß — die anderen sind ihr Kontext, nicht ihre
+     Gleichen. Vor dem ersten Laden leer statt mit Platzhaltern gefüllt: eine 0
+     wäre eine Behauptung. */
+  #messwerte {
+    flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:baseline; gap:0 36px;
+    padding:17px 0 21px; border-top:1px solid var(--linie); margin-right:var(--rand);
+  }
+  #messwerte:empty { display:none; }
+  .wertpaar { display:flex; flex-direction:column; gap:6px; }
+  .wertpaar .zahl {
+    font-family:var(--mono); font-variant-numeric:tabular-nums;
+    color:var(--schrift); font-size:13.5px; line-height:1;
+  }
+  .wertpaar:first-child .zahl { font-size:27px; letter-spacing:-.02em; }
+  #messwerte .quelle {
+    margin-left:auto; align-self:flex-end; color:var(--still); font-size:11px;
+  }
+
+  /* ── Rechte Spalte ────────────────────────────────────────────────────────
+     Von oben nach unten in der Reihenfolge, in der es dringend wird:
+     Verbindung, Rückfrage, Agentenspur, Anleitung. Keine Karten — die
+     Abschnitte trennt Luft und eine Beschriftung, sonst nichts. */
+  #seite {
+    flex:0 0 clamp(300px, 24vw, 420px); min-height:0;
+    display:flex; flex-direction:column;
+    /* Abstand über gap, nicht über Ränder an den Abschnitten: die Rückfrage
+       wechselt per order ihren Platz, und ein Rand am DOM-Nachbarn säße dann
+       an der falschen Stelle. */
+    gap:32px;
+    padding:26px var(--rand) 24px 26px;
+    border-left:1px solid var(--linie);
+    overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--linie-hell) transparent;
+  }
+  #seite > section { flex:0 0 auto; }
+  /* Steht eine Rückfrage offen, rückt sie an die Spitze der Spalte. Der Agent
+     wartet auf einen Klick — dann ist das der wichtigste Punkt im Bild, und
+     kein Zustandsbericht darf darüber stehen. */
+  #frage { order:-1; }
+  #frage[hidden], #spur[hidden], #hinweis[hidden] { display:none; }
+
+  /* ── Verbindung ───────────────────────────────────────────────────────────
+     Die Zahl, um die es bei einem WebMCP-Wettbewerb geht, steht vorn — nicht
+     in einem Absatz versteckt. */
+  .verb-kopf { display:flex; align-items:center; gap:9px; }
+  .verb-punkt {
+    width:6px; height:6px; border-radius:50%; background:var(--still); flex:0 0 auto;
+  }
+  #hinweis.verbunden .verb-punkt { background:var(--ruf); box-shadow:0 0 0 3px rgba(109,92,255,.18); }
+  .verb-zustand { margin-left:auto; font-size:11px; color:var(--still); }
+  #hinweis.verbunden .verb-zustand { color:var(--leise); }
+  .verb-zaehler { margin:15px 0 0; display:flex; align-items:baseline; gap:9px; }
+  .verb-zahl {
+    font-family:var(--mono); font-variant-numeric:tabular-nums;
+    font-size:23px; color:var(--schrift); letter-spacing:-.02em; line-height:1;
+  }
+  .verb-wort { font-size:12px; color:var(--leise); }
+  .verb-weg { margin:12px 0 0; font-size:11.5px; line-height:1.6; color:var(--still); }
+  .verb-weg[hidden] { display:none; }
+
+  /* ── Rückfrage ────────────────────────────────────────────────────────────
+     Der laute Moment der Anwendung: der Agent hält an und will eine Antwort.
+     Das ist die einzige Stelle, an der eine Fläche eingefärbt wird. */
+  #frage {
+    background:var(--bett); border-left:2px solid var(--ruf);
+    padding:18px 18px 18px 17px; margin-left:-1px;
+  }
+  #frage-text { margin:0 0 15px; white-space:pre-wrap; font-size:13.5px; line-height:1.55; }
+  /* Zwei Möglichkeiten sind eine Geschmacksfrage und stehen nebeneinander,
+     damit man sie vergleicht statt sie zu lesen. Die Spaltenbreite oben ist
+     danach bemessen. */
+  #frage-optionen { display:grid; gap:8px; }
+  /* Zwei Spalten nur, wenn sie auch passen. Befund aus dem Browserlauf: eine
+     Rollenfrage mit langen Knochennamen ("nein, sondern mixamorigRightLeg")
+     schob die zweite Karte aus dem Panel — der Mensch konnte sie nicht mehr
+     lesen und nicht sicher treffen. */
   #frage-optionen.varianten { grid-template-columns:1fr 1fr; }
   #frage-optionen.liste { grid-template-columns:1fr; }
   .frage-karte {
-    font:inherit; color:var(--fg); background:#1d2531; cursor:pointer;
-    border:1px solid #3b4b63; border-radius:8px; padding:12px 14px; text-align:left;
+    font:inherit; font-size:12.5px; color:var(--schrift); background:transparent;
+    cursor:pointer; border:1px solid var(--linie-hell); border-radius:5px;
+    padding:12px 13px; text-align:left; transition:border-color .15s, background .15s;
   }
-  .frage-karte:hover, .frage-karte:focus { border-color:#6ea8fe; outline:none; }
-  .frage-karte.variante { display:flex; flex-direction:column; gap:6px; min-height:72px; }
-  .frage-karte .marke { color:var(--dim); font-size:11px; letter-spacing:.08em; text-transform:uppercase; }
-  .frage-karte .titel { font-size:14px; }
-  #frage-hinweis { margin:10px 0 0; color:var(--bad); }
-  #frage-fuss { display:flex; align-items:center; gap:12px; margin-top:12px; }
-  #frage-budget { color:var(--dim); }
+  .frage-karte:hover { border-color:var(--ruf); background:rgba(109,92,255,.09); }
+  .frage-karte:focus-visible { outline:2px solid var(--ruf); outline-offset:2px; }
+  .frage-karte.variante { display:flex; flex-direction:column; gap:8px; }
+  .frage-karte .marke { color:var(--ruf-hell); }
+  /* Der Umbruch, nicht das Stapeln, loest den Ueberlauf: eine Rollenfrage mit
+     langen Knochennamen ("nein, sondern mixamorigRightLeg") schob die zweite
+     Karte aus dem Panel. Nebeneinander bleiben sie trotzdem — zwei Varianten
+     vergleicht man nebeneinander, nicht untereinander. */
+  .frage-karte { min-width:0; }
+  .frage-karte .titel { line-height:1.45; overflow-wrap:anywhere; hyphens:auto; }
+  #frage-hinweis { margin:10px 0 0; color:var(--fehler); font-size:12px; }
+  #frage-fuss { display:flex; align-items:center; gap:12px; margin-top:14px; }
+  #frage-budget { color:var(--still); font-size:11px; }
   #frage-abbruch {
-    font:inherit; color:var(--dim); background:none; cursor:pointer;
-    border:1px solid #3b4b63; border-radius:6px; padding:5px 10px;
+    font:inherit; font-size:11.5px; color:var(--still); background:none; cursor:pointer;
+    border:1px solid var(--linie-hell); border-radius:4px; padding:5px 11px;
+  }
+  #frage-abbruch:hover { color:var(--schrift); border-color:var(--still); }
+
+  /* ── Agentenspur ──────────────────────────────────────────────────────────
+     Der Mensch soll sehen, DASS gearbeitet wird — nicht mitlesen müssen.
+     Deshalb ruhig und klein; Farbe nur beim abgelehnten Aufruf. */
+  #spur-titel { margin:0 0 14px; }
+  /* Festes Fenster statt wachsender Liste.
+     Befund aus dem Agentenlauf: jeder Eintrag brachte seine eigene Hoehe mit
+     (ein look-Ergebnis fuenf Zeilen, ein describe_pose dreissig). Das Panel
+     sprang bei jedem Aufruf und schob den Rest der Spalte weg. Jetzt haben
+     alle Zeilen dieselbe Hoehe, die Liste scrollt in sich, die Spalte steht. */
+  #spur-liste {
+    margin:0; padding:0 8px 0 0; list-style:none;
+    max-height:340px; overflow-y:auto; overflow-x:hidden;
+    overscroll-behavior:contain;
+  }
+  /* Lange Werkzeugnamen und Zahlenketten brechen um, statt die Liste seitlich
+     zu verbreitern — sonst bekommt das Panel einen zweiten Scrollbalken. */
+  .spur-zeile { min-width:0; }
+  .spur-zeile .werkzeug, .spur-zeile .ergebnis { min-width:0; overflow-wrap:anywhere; }
+  #spur-liste::-webkit-scrollbar { width:6px; }
+  #spur-liste::-webkit-scrollbar-track { background:transparent; }
+  #spur-liste::-webkit-scrollbar-thumb { background:var(--linie); border-radius:3px; }
+  #spur-liste::-webkit-scrollbar-thumb:hover { background:var(--still); }
+  .spur-zeile {
+    display:grid; grid-template-columns:auto 1fr; gap:3px 11px;
+    padding:10px 0; border-top:1px solid var(--linie);
+  }
+  .spur-zeile:first-child { border-top:none; padding-top:0; }
+  .spur-zeile .zeit {
+    font-family:var(--mono); font-size:10.5px; color:var(--still);
+    font-variant-numeric:tabular-nums; padding-top:2px;
+  }
+  .spur-zeile .werkzeug { font-size:12.5px; color:var(--schrift); font-weight:500; }
+  /* Hoechstens zwei Zeilen je Eintrag: gleiche Hoehe fuer alle, der Rest steht
+     im Tooltip. Ohne diese Deckelung bestimmt die laengste Antwort, wie hoch
+     das Panel wird. */
+  .spur-zeile .ergebnis {
+    grid-column:2; color:var(--leise); font-size:11.5px; line-height:1.5;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+    overflow:hidden; overflow-wrap:break-word;
+  }
+  .spur-zeile.fehler .werkzeug, .spur-zeile.fehler .ergebnis { color:var(--fehler); }
+
+  /* ── Anleitung ────────────────────────────────────────────────────────────
+     Bleibt unten stehen, auch wenn der Agent arbeitet: wer die Seite zum
+     ersten Mal sieht, soll nie raten müssen, was als Nächstes kommt. */
+  /* Die Anleitung steht am Fuß der Spalte, aber nicht am Fuß des Fensters:
+     unten festgenagelt sähe sie verlassen aus, wenn darüber wenig steht. */
+  #einstieg-spalte { padding-top:14px; }
+  #einstieg-schritte-titel { margin:0 0 16px; }
+  #einstieg-schritte { margin:0; padding:0; list-style:none; display:grid; gap:17px; }
+  .einstieg-punkt { display:grid; grid-template-columns:auto 1fr; gap:3px 11px; }
+  .einstieg-punkt .einstieg-nr {
+    grid-row:1 / span 2; font-family:var(--mono); font-size:10.5px; color:var(--still);
+    font-variant-numeric:tabular-nums; padding-top:2px;
+  }
+  .einstieg-punkt strong { font-weight:500; font-size:12.5px; color:var(--schrift); }
+  .einstieg-punkt .einstieg-wie { color:var(--still); font-size:11.5px; line-height:1.55; }
+  .einstieg-punkt code, #einstieg-satz code {
+    font-family:var(--mono); font-size:11px; color:var(--leise);
   }
 
-  /* Agentenspur: der Mensch soll sehen, dass gearbeitet wird — nicht mitlesen.
-     Deshalb ruhig, klein, ohne Farbe außer beim abgelehnten Aufruf. */
-  #spur-titel { margin:0 0 8px; font-size:11px; font-weight:normal; color:var(--dim);
-    letter-spacing:.08em; text-transform:uppercase; }
-  #spur-liste { margin:0; padding:0; list-style:none; }
-  .spur-zeile { display:grid; grid-template-columns:auto 1fr; gap:2px 8px; padding:4px 0;
-    border-top:1px solid #222a35; }
-  .spur-zeile:first-child { border-top:none; }
-  .spur-zeile .zeit { color:var(--dim); font-variant-numeric:tabular-nums; }
-  .spur-zeile .werkzeug { color:var(--fg); }
-  .spur-zeile .ergebnis { grid-column:2; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .spur-zeile.fehler .werkzeug, .spur-zeile.fehler .ergebnis { color:var(--bad); }
+  /* ── Abspielleiste unter der 3D-Ansicht ──────────────────────────────────
+     Derselbe Ton wie die Messleiste: kein Kasten, nur die Zeile. Sie steht
+     auch im Auszustand sichtbar dort — ausgegraut, mit einem Satz, was
+     ihr fehlt. Versteckte Steuerungen erklären dem Menschen nicht, worauf
+     er wartet. */
+  #abs-leiste {
+    flex:0 0 auto; padding:10px 0 12px; margin-right:var(--rand);
+    border-bottom:1px solid var(--linie);
+  }
+  #abs-leiste .abs-zeile { display:flex; align-items:center; gap:14px; }
+  #abs-leiste.abs-aus { opacity:.5; }
+  #abs-leiste .abs-knopf {
+    font:inherit; font-size:12px; color:var(--schrift); cursor:pointer;
+    background:var(--bett); border:1px solid var(--linie-hell); border-radius:4px;
+    padding:6px 16px; transition:border-color .15s;
+  }
+  #abs-leiste .abs-knopf:hover:not(:disabled) { border-color:var(--still); }
+  #abs-leiste .abs-knopf:disabled { cursor:default; }
+  #abs-leiste .abs-schieber { flex:1 1 auto; accent-color:var(--ruf); }
+  #abs-leiste .abs-frame {
+    font-size:11.5px; color:var(--leise); white-space:nowrap;
+    font-variant-numeric:tabular-nums;
+  }
+  #abs-leiste .abs-tempo { display:flex; gap:4px; }
+  #abs-leiste .abs-tempo-knopf {
+    font:inherit; font-size:10.5px; color:var(--still); cursor:pointer;
+    background:none; border:1px solid var(--linie-hell); border-radius:4px;
+    padding:3px 8px; transition:border-color .15s, color .15s;
+  }
+  #abs-leiste .abs-tempo-knopf:hover:not(:disabled) { color:var(--schrift); }
+  #abs-leiste .abs-tempo-knopf.aktiv {
+    color:var(--schrift); border-color:var(--ruf);
+  }
+  #abs-leiste .abs-grund {
+    margin:6px 0 0; color:var(--still); font-size:11px; line-height:1.5;
+  }
+  #abs-leiste .abs-grund[hidden] { display:none; }
+
+  /* Unter 900 px reicht die Breite für zwei Spalten nicht mehr: dann
+     untereinander, Bild zuerst — ohne Figur ist die Frage nicht zu beantworten. */
+  @media (max-width: 899px) {
+    :root { --rand:20px; }
+    body { overflow:auto; }
+    #buehne { flex-direction:column; }
+    #stage { min-height:64vh; padding-right:var(--rand); }
+    #seite {
+      flex:none; overflow:visible; border-left:none; border-top:1px solid var(--linie);
+      padding-left:var(--rand);
+      /* src/ui/frage-panel.js setzt der Spalte per Inline-Stil eine
+         Maximalbreite von 420 px — richtig für die Rückfrage im zweispaltigen
+         Layout, falsch, sobald die Spalte unter dem Bild über die volle Breite
+         läuft: die Trennlinie bräche dann mitten im Bild ab. Inline schlägt
+         CSS, deshalb hier !important. */
+      max-width:none !important;
+    }
+    #einstieg-titel { font-size:23px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
 </style>
 <!-- Alle Pfade relativ zum Dokument, keiner ab Wurzel. Die Seite muss auch unter
      einem Unterpfad ausgeliefert werden können (…/webmcp/), sonst lädt three.js
@@ -104,70 +465,285 @@ function meldeModulFehler() {
   const feld = document.getElementById('error');
   const status = document.getElementById('status');
   if (!feld) return;
-  feld.textContent = `Modul nicht geladen (${window.__boot.fehlerr.length} Stück): ` +
+  feld.textContent = `Module failed to load (${window.__boot.fehlerr.length}): ` +
     window.__boot.fehlerr.join(', ');
   feld.style.display = 'block';
-  if (status) status.textContent = 'Kein Modell geladen';
+  if (status) status.textContent = 'No model loaded';
 }
 
 // Wächter: meldet sich, wenn das Seitenmodul gar nicht erst ausgeführt wurde.
 // Ohne ihn bleibt ein kaputter Import-Graph unsichtbar — der nachgewiesene Fall.
 setTimeout(() => {
   if (window.__boot.bereit || window.__boot.fehlerr.length > 0) return;
-  window.__boot.fehlerr.push('(kein Modul-Skript ausgeführt)');
+  window.__boot.fehlerr.push('(no module script executed)');
   meldeModulFehler();
 }, 5000);
 </script>
 </head>
 <body>
-<header>
-  <input type="file" id="file" accept=".glb,.gltf">
-  <span id="status">Kein Modell geladen</span>
+<header id="kopf">
+  <!-- Nur der Name. Dass die Seite WebMCP spricht, sagt der Zähler in der
+       rechten Spalte mit einer Zahl — zweimal dasselbe wäre einmal zu viel. -->
+  <span id="marke-name">Rig Studio</span>
+  <div id="kopf-rechts">
+    <span id="status">No model loaded</span>
+    <input type="file" id="file" accept=".glb,.gltf" aria-label="Open a rigged GLB file">
+    <label id="datei-knopf" for="file">Open GLB</label>
+  </div>
 </header>
 <div id="error" role="alert"></div>
-<div id="buehne">
-  <div id="stage"><canvas id="view" width="960" height="720"></canvas></div>
+<main id="buehne">
+  <div id="stage">
+    <!-- Das Bett gibt dem Canvas seine Groesse; das Seitenmodul misst sie und
+         setzt daraus die Pixelgroesse. Der Massstab und die Titelkarte liegen
+         als Auflagen darueber, damit die Figur den ganzen Platz behaelt. -->
+    <div id="leinwand">
+      <canvas id="view"></canvas>
+      <div id="massstab" hidden></div>
+      <!-- Der Hinweis auf die Bedienung. Er steht erst, wenn eine Figur da
+           ist, an der sich etwas drehen laesst, und er steht in der leisesten
+           Stufe: eine Anleitung, die lauter waere als die Messwerte, haette
+           das Gewicht falsch verteilt. -->
+      <p id="bediensatz" aria-hidden="true"></p>
+      <section id="einstieg"></section>
+    </div>
+    <!-- Die Abspielleiste steht DIREKT unter der Ansicht, die sie steuert.
+         Vorher sass sie unter der Messwertzeile und wirkte wie angeklebt: ein
+         Schieberegler ohne sichtbaren Bezug zu dem Bild, das er bewegt. -->
+    <section id="abs-leiste"></section>
+    <!-- Der eine Ort fuer gemessene Werte, direkt bei der Figur, deren Werte
+         es sind. Leer, solange nichts gemessen wurde. -->
+    <div id="messwerte"></div>
+  </div>
   <aside id="seite">
+    <!-- Reihenfolge nach Dringlichkeit: der Verbindungszustand steht immer,
+         die Rueckfrage draengt sich davor, die Spur laeuft darunter, und die
+         Anleitung bleibt unten stehen, solange Platz ist. -->
+    <section id="hinweis"></section>
     <section id="frage" hidden></section>
     <section id="spur" hidden></section>
+    <section id="einstieg-spalte"></section>
   </aside>
-</div>
+</main>
 
 <script type="module">
 import * as THREE from 'three';
 import { loadGLB, validateLoadedModel, getBounds } from './src/scene/load.js';
 import { frameCamera } from './src/scene/view.js';
 import { createToolLayer } from './src/tools/index.js';
+import { KATALOG_SICHTBAR } from './src/tools/catalog.js';
+import { echtePorts } from './src/tools/ports.js';
 import { mounteFragePanel } from './src/ui/frage-panel.js';
-import { mounteSpur, spurKontext } from './src/ui/agentenspur.js';
+import { mounteSpur, spurKontext, ergebnisZeile } from './src/ui/agentenspur.js';
 import { createKnochenLeuchten } from './src/ui/knochen-leuchten.js';
 import { frageRollenAb } from './src/ui/rollen-bestaetigung.js';
+import { mounteEinstieg, ladeBeispielDatei } from './src/ui/einstieg.js';
+import { createBodengitter } from './src/ui/bodengitter.js';
+import { mounteHoehenmassstab } from './src/ui/hoehenmassstab.js';
+import { mounteKamerasteuerung } from './src/ui/kamerasteuerung.js';
+import { mounteAbspieler } from './src/ui/abspieler.js';
+import { stellePose } from './src/render/strip.js';
+import { mounteVerbindung } from './src/ui/verbindung.js';
+import { KATALOG_GROESSE } from './src/tools/catalog.js';
 
 const canvas = document.getElementById('view');
+const leinwand = document.getElementById('leinwand');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setSize(960, 720, false);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x11161d);
+// Derselbe Ton wie die Seite (--grund): die Leinwand hat keinen sichtbaren
+// Rand mehr, die Naht zwischen Bild und Oberflaeche verschwindet.
+scene.background = new THREE.Color(0x0e0e10);
 
-const camera = new THREE.PerspectiveCamera(38, 960 / 720, 0.05, 100);
+const camera = new THREE.PerspectiveCamera(38, 1, 0.05, 100);
 // Vorläufige Ansicht; nach dem Laden übernimmt frameCamera aus der Bounding Box.
 camera.position.set(0, 1, 4);
 camera.lookAt(0, 1, 0);
 
-scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x28303c, 2.1));
-const sun = new THREE.DirectionalLight(0xffffff, 2.2);
-sun.position.set(3, 6, 4);
-scene.add(sun);
+// Drei Lichter, wie im Fotostudio: kuehles Umgebungslicht von oben, ein
+// Fuehrungslicht von schraeg vorn und ein schwaches Gegenlicht, das die
+// Silhouette von der Flaeche loest. Die Figur ist das einzige Helle im
+// Bild und muss diese Rolle auch tragen koennen.
+scene.add(new THREE.HemisphereLight(0xc8d6ff, 0x1a1a1e, 1.5));
+const fuehrung = new THREE.DirectionalLight(0xfff4e8, 2.4);
+fuehrung.position.set(3, 6, 5);
+scene.add(fuehrung);
+const gegenlicht = new THREE.DirectionalLight(0x9fb4ff, 1.1);
+gegenlicht.position.set(-4, 3, -4);
+scene.add(gegenlicht);
 
 const stage = document.getElementById('stage');
 const statusEl = document.getElementById('status');
 const errorEl = document.getElementById('error');
+const hinweisEl = document.getElementById('hinweis');
+const messwerteEl = document.getElementById('messwerte');
+
+// Anschlüsse der Werkzeuge an die gemessenen Module. Sie stehen VOR dem ersten
+// Upload, weil der Agent die Schicht sofort sieht; das Modell hängt sich später
+// mit setzeModell ein. Bis dahin antwortet jedes Werkzeug mit "0 Modelle
+// geladen" — nicht mit einer Attrappenzahl.
+const werkzeugPorts = echtePorts({ renderer });
 
 let model = null;
 // Marker für den fraglichen Knochen (plan.md 6.7, Moment 1). Gehört zum
 // geladenen Modell und geht mit ihm.
 let leuchten = null;
+// Bodengitter auf der gemessenen Bodenebene. Gehört ebenfalls zum Modell:
+// ohne Modell gibt es keine gemessene Ebene, auf die es sich legen könnte.
+let boden = null;
+
+// Der Höhenmaßstab an der Figur — die Signatur der Seite. Er liest nur die
+// Kamera und die gemessene Bodenebene; die Szene selbst bleibt unberührt.
+const massstab = mounteHoehenmassstab({
+  wurzel: document.getElementById('massstab'),
+  kamera: camera,
+});
+
+// Die Hand des Menschen an der Kamera. Sie haengt am Canvas, nicht am Bett:
+// der Massstab liegt zwar darueber, faengt aber keine Maus ab
+// (pointer-events:none), und der Beispiel-Knopf soll seine Klicks behalten.
+//
+// rahme() ist der einzige Weg zur Startansicht — frameCamera aus
+// src/scene/view.js, unveraendert. Die Steuerung rechnet keine Kameraposition,
+// sie ruft die Messung. Deshalb steht nach jeder Rueckkehr und nach jedem
+// Modellwechsel exakt der gemessene Wert da.
+const steuerung = mounteKamerasteuerung({
+  kamera: camera,
+  element: canvas,
+  rahme: () => {
+    if (!model) throw new Error('Kamera nicht rahmbar: 0 Modelle geladen, 1 noetig');
+    return frameCamera(camera, model);
+  },
+  // Der Massstab liest dieselbe Kamera: dreht der Nutzer, wandern seine Marken
+  // mit. Ohne diesen Anschluss stuenden die gemessenen Meter nach der ersten
+  // Drehung auf den Bildhoehen der alten Ansicht.
+  aufAenderung: () => massstab.neuZeichnen(),
+});
+
+// Die Abspielleiste. Sie loest die aktuelle Timeline ueber denselben Loeser,
+// den auch validate nutzt (werkzeugPorts.solver.loese, src/tools/ports.js:
+// ports.solver), und stellt jeden Frame ueber stellePose aus src/render/
+// strip.js auf die Szene — das Verfahren zum Aufsetzen einer geloesten Pose
+// existiert dort bereits und wird hier nicht neu gebaut. Ohne geloeste
+// Bewegung oder ohne Modell steht die Leiste grau mit einem Satz, was fehlt.
+//
+// fps und frameCount kommen aus dem Sitzungszustand der Werkzeugschicht
+// (window.__tools.store, plan.md 5.2): die Timeline-Framerate ist die des
+// Stores, nicht eine getippte Zahl.
+const abspieler = mounteAbspieler({
+  wurzel: document.getElementById('abs-leiste'),
+  holeBewegung: () => {
+    if (!model) {
+      throw new Error('0 Modelle geladen — die geloeste Bewegung braucht ein gemessenes Modell');
+    }
+    const z = window.__tools.store.roh();
+    if (!z.frameCount || z.frameCount <= 0) {
+      throw new Error('frameCount = ' + z.frameCount + ': die Timeline hat noch keine Laenge — '
+        + 'der Agent legt sie mit set_duration fest');
+    }
+    // Dieselbe Umsetzung wie look und validate (alsStreifenFrame, ports.js):
+    // die Frames kommen MIT bones-Tabellen zurück, die stellePose stellt.
+    const frames = werkzeugPorts.loeseFuerSzene({
+      schemaVersion: z.schemaVersion,
+      fps: z.fps,
+      frameCount: z.frameCount,
+      rotationFormat: z.rotationFormat,
+      phases: z.phases,
+      overrides: z.overrides,
+    });
+    if (!Array.isArray(frames) || frames.length === 0) {
+      throw new Error('0 geloeste Frames: der Loeser hat nichts geliefert, '
+        + 'es gibt nichts abzuspielen');
+    }
+    return { frames, fps: z.fps, frameCount: z.frameCount };
+  },
+  stelleFrame: (frame) => {
+    if (!model) throw new Error('0 Modelle geladen: Frame ' + (frame?.frame ?? '?') + ' nicht stellbar');
+    stellePose(model, frame);
+  },
+});
+window.__abspieler = abspieler;
+
+const bediensatzEl = document.getElementById('bediensatz');
+bediensatzEl.textContent =
+  'Drag to orbit · Scroll to zoom · Right-drag to pan · Double-click or R to reset the measured view';
+
+// Zwei Wege zurueck auf die gemessene Ansicht, beide ueber dieselbe Messung.
+canvas.addEventListener('dblclick', () => steuerung.zurueck());
+window.addEventListener('keydown', (e) => {
+  // Nicht, waehrend jemand tippt, und nicht als zweite Bedeutung einer
+  // Tastenkombination.
+  const ziel = e.target;
+  if (ziel && /^(INPUT|TEXTAREA|SELECT)$/.test(ziel.tagName)) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'r' || e.key === 'R' || e.key === 'Home') {
+    if (steuerung.zurueck()) e.preventDefault();
+  }
+});
+
+/**
+ * Bringt Renderer und Kamera auf die tatsächliche Größe des Leinwandbetts.
+ *
+ * Vorher stand die Leinwand fest auf 960 × 720 px. Bei 1920 Fensterbreite ließ
+ * das rechts eine tote Fläche stehen und setzte die Figur in einen Kasten links.
+ * Jetzt kommt die Größe aus dem gemessenen Element, und das Seitenverhältnis
+ * der Kamera folgt ihr — sonst zöge das Bild in die Breite.
+ *
+ * frameCamera bleibt unangetastet (mutationsgetestet); sie wird nur erneut
+ * aufgerufen, weil ihr Ergebnis vom aspect abhängt. Ohne diesen zweiten Aufruf
+ * stünde die Figur nach einer Größenänderung nicht mehr mittig im Bild.
+ */
+function passeLeinwandAn() {
+  const breite = Math.max(1, Math.round(leinwand.clientWidth));
+  const hoehe = Math.max(1, Math.round(leinwand.clientHeight));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(breite, hoehe, false);
+  camera.aspect = breite / hoehe;
+  camera.updateProjectionMatrix();
+  // Neu gerahmt wird nur, solange die Ansicht noch die gemessene ist. Hat der
+  // Nutzer gedreht oder herangefahren, gehoert sie ihm: eine Fenstergroessen-
+  // aenderung, die ihm die Ansicht wegnimmt, waere ein Ruecksprung, den er
+  // nicht ausgeloest hat.
+  if (model && steuerung.unberuehrt()) steuerung.starteNeu();
+  // Der Maßstab hängt an derselben Kamera: ändert sich die Ansicht, wandern
+  // seine Marken mit. Ohne diesen Aufruf stünden sie nach einer
+  // Größenänderung auf den Bildhöhen der alten Ansicht.
+  massstab.neuZeichnen();
+}
+new ResizeObserver(passeLeinwandAn).observe(leinwand);
+passeLeinwandAn();
+
+/**
+ * Schreibt die gemessenen Werte in die Leiste unter der Leinwand — den einen
+ * Ort, an dem die Seite zeigt, was sie am Modell gemessen hat.
+ *
+ * Beschriftung serifenlos, Wert monospace: die Gestaltungsentscheidung im
+ * Kopf der Stilangaben trennt Prosa von Messung, und hier fällt sie an.
+ *
+ * @param {Array<[string, string]>} paare  Beschriftung und gemessener Wert
+ * @param {string} [quelle]  woher die Werte stammen, rechtsbündig
+ */
+function zeigeMesswerte(paare, quelle) {
+  const teile = paare.map(([was, wert]) => {
+    const paar = document.createElement('span');
+    paar.className = 'wertpaar';
+    const marke = document.createElement('span');
+    marke.className = 'beschriftung';
+    marke.textContent = was;
+    const zahl = document.createElement('span');
+    zahl.className = 'zahl';
+    zahl.textContent = wert;
+    paar.append(marke, zahl);
+    return paar;
+  });
+  if (quelle) {
+    const q = document.createElement('span');
+    q.className = 'quelle';
+    q.textContent = quelle;
+    teile.push(q);
+  }
+  messwerteEl.replaceChildren(...teile);
+}
 
 function showError(message) {
   errorEl.textContent = message;
@@ -183,10 +759,23 @@ function removeFromScene() {
     leuchten.abmelden();
     leuchten = null;
   }
+  if (boden) {
+    boden.aus();
+    boden = null;
+  }
+  massstab.aus();
+  // Ohne Modell gibt es keine gemessene Ansicht, zu der eine Drehung
+  // zurueckfuehren koennte — dann ist die Leinwand auch nicht bedienbar.
+  steuerung.aus();
   if (model) {
     scene.remove(model);
     model = null;
   }
+  document.body.classList.remove('hat-modell');
+  // Die Abspielleiste zurück in den Auszustand: ohne Modell gibt es keine
+  // gelöste Bewegung, die sie abspielen könnte.
+  abspieler.aus();
+  messwerteEl.replaceChildren();
 }
 
 function describeBox(box) {
@@ -208,11 +797,36 @@ function presentModel(gltf, fileName) {
   const check = validateLoadedModel(gltf);
   const box = getBounds(model);
 
-  frameCamera(camera, model);
+  // Startansicht aus der Messung, und zugleich der Punkt, auf den die
+  // Rueckkehr zielt. starteNeu() ruft frameCamera — ein neues Modell setzt die
+  // Kamera also immer auf seine eigenen gemessenen Werte, nie auf die des
+  // vorigen.
+  steuerung.starteNeu();
   leuchten = createKnochenLeuchten({ scene, model });
+  // Der Boden unter der Figur: ohne ihn ist nicht zu sehen, ob die Füße stehen,
+  // und Bodenkontakt ist die Größe, an der diese Anwendung Bewegung beurteilt.
+  // Die Ebene wird gemessen (Bounding-Box-Unterseite bzw. world.groundY aus dem
+  // RigProfile), nie getippt — Regel 1 des Projekts.
+  boden = createBodengitter({ scene, model });
+  document.body.classList.add('hat-modell');
 
-  statusEl.textContent =
-    `${fileName} — ${check.boneCount} Knochen — Bounding Box ${describeBox(box)}`;
+  // Der Test in tools/browser-test.mjs liest diese Zeile und erwartet die
+  // Knochenzahl darin; sie ist der Beleg, dass ein Rig geladen wurde.
+  statusEl.textContent = `${fileName} — ${check.boneCount} bones`;
+
+  // Der Maßstab trägt die gemessene Körperhöhe an der Figur ab. Beide Werte
+  // kommen aus derselben Messung wie das Bodengitter — nichts davon getippt.
+  const stand = boden.stand();
+  massstab.zeige({ model, groundY: stand.groundY, hoehe: stand.hoehe });
+
+  // Körperhöhe zuerst: sie ist der Wert, um den sich alles dreht, und steht
+  // deshalb groß (siehe .wertpaar:first-child in den Stilangaben).
+  zeigeMesswerte([
+    ['Height', `${stand.hoehe.toFixed(4)} m`],
+    ['Bones', String(check.boneCount)],
+    ['Bounds', describeBox(box)],
+    ['Ground', `${stand.groundY.toFixed(4)} m`],
+  ], 'measured on load');
 }
 
 /**
@@ -226,14 +840,16 @@ function presentModel(gltf, fileName) {
  * das Modell trotzdem, das Fehlerfeld gehört dem Upload.
  */
 async function bestaetigeUnsichereRollen(gltf) {
-  if (!window.__tools || !window.__ui) return null;
+  // Ohne WebMCP-Kontext gibt es keinen Agenten, der die Bestätigung braucht —
+  // dann wird nicht gefragt, auch wenn die Schicht steht.
+  if (!window.__ui || !window.__ui.hatKontext) return null;
   let profil = null;
   try {
     const { detectRig } = await import('./src/rig/detect.js');
     profil = detectRig(gltf);
   } catch (err) {
     window.__ui.spur.notiere({
-      name: 'Rollenerkennung', fehler: true, text: err.message
+      name: 'Role detection', fehler: true, text: err.message
     });
     return null;
   }
@@ -241,15 +857,55 @@ async function bestaetigeUnsichereRollen(gltf) {
   const offene = profil.questions?.length ?? 0;
   if (offene === 0) {
     window.__ui.spur.notiere({
-      name: 'Rollenerkennung',
-      text: `${Object.keys(profil.roles ?? {}).length} Rollen sicher zugeordnet, 0 Rückfragen`
+      name: 'Role detection',
+      text: `${Object.keys(profil.roles ?? {}).length} roles assigned with confidence, 0 questions`
     });
     return null;
   }
 
   const ergebnis = await window.__ui.rollenAbfragen(profil);
-  window.__ui.spur.notiere({ name: 'Rollenerkennung', text: ergebnis.meldung });
+  window.__ui.spur.notiere({ name: 'Role detection', text: ergebnis.meldung });
   return ergebnis;
+}
+
+/**
+ * Hängt das geladene Modell in die Werkzeuge ein und vermisst es. Erst danach
+ * antwortet describe_world mit einer Körperhöhe statt mit "0 Modelle geladen".
+ *
+ * Die Vermessung darf scheitern, ohne den Upload mitzureißen: das Modell steht
+ * dann sichtbar in der Szene, und die Werkzeuge sagen mit Betrag, warum sie es
+ * nicht messen konnten. Ein stilles Zurückfallen auf Attrappen gibt es nicht.
+ */
+async function messeFuerWerkzeuge(gltf, fileName) {
+  try {
+    const stand = await werkzeugPorts.setzeModell(gltf, { fileName });
+    // Die volle Messung ersetzt die Kurzfassung aus presentModel: dieselben
+    // Werte, jetzt aus der Vermessung statt nur aus der Bounding Box.
+    zeigeMesswerte([
+      ['Height', `${stand.hoehe.toFixed(4)} m`],
+      ['Bones', String(stand.knochen)],
+      ['Segments', String(stand.segmente)],
+      ['Roles', String(stand.rollen)],
+      ['Ground', `${boden ? boden.stand().groundY.toFixed(4) : '—'} m`],
+    ], stand.warnungen > 0 ? `${stand.warnungen} warnings` : 'measured, no warnings');
+    if (window.__ui) {
+      window.__ui.spur.notiere({
+        name: 'Measurement',
+        text: `${stand.knochen} bones, ${stand.hoehe.toFixed(4)} m, `
+          + `${stand.segmente} segments, ${stand.rollen} roles, `
+          + `${stand.fragen} open questions, ${stand.warnungen} warnings`
+      });
+    }
+    return stand;
+  } catch (err) {
+    werkzeugPorts.loeseModell();
+    statusEl.textContent += ' — not measured';
+    showError(`Measurement rejected: ${err.message}`);
+    if (window.__ui) {
+      window.__ui.spur.notiere({ name: 'Measurement', fehler: true, text: err.message });
+    }
+    return null;
+  }
 }
 
 async function loadFile(file) {
@@ -259,17 +915,67 @@ async function loadFile(file) {
     const buffer = await file.arrayBuffer();
     const gltf = await loadGLB(buffer);
     presentModel(gltf, file.name);
+    const stand = await messeFuerWerkzeuge(gltf, file.name);
+    if (stand) {
+      // Kurz halten: die Zahlen stehen in der Werteleiste unter der Leinwand.
+      // Diese Zeile bestätigt nur, dass der Klick angekommen ist — ein Element,
+      // eine Aufgabe.
+      einstieg.setzeGemessen(
+        `Loaded ${file.name} — ${stand.hoehe.toFixed(4)} m tall, measured.`
+      );
+    }
     await bestaetigeUnsichereRollen(gltf);
   } catch (err) {
     removeFromScene();
-    statusEl.textContent = 'Kein Modell geladen';
-    showError(`Ladefehler: ${err.message}`);
+    werkzeugPorts.loeseModell();
+    statusEl.textContent = 'No model loaded';
+    showError(`Could not load ${file.name}: ${err.message}`);
   }
 }
+
+// Der einzige Ladepfad der Seite. Die Datei-Auswahl ruft ihn, und der
+// Beispiel-Knopf ruft ihn — mit einem File-Objekt, das aus einem fetch des
+// Beispielverzeichnisses entsteht. Nicht zwei Wege bauen: beide Eingänge
+// laufen durch dieselben Prüfungen und denselben Fehlerpfad.
+window.__ladeDatei = loadFile;
 
 document.getElementById('file').addEventListener('change', (e) => {
   loadFile(e.target.files[0]);
 });
+
+// Der eine Satz über der Leinwand, der Beispiel-Knopf darunter — und die
+// drei Schritte in der rechten Leerspalte. Ohne das liest der Juror nur
+// „Kein Modell geladen“ und weiß weder, was die Seite ist, noch dass er eine
+// GLB hineinladen soll, noch woher er eine nimmt.
+const einstieg = mounteEinstieg({
+  wurzel: document.getElementById('einstieg'),
+  spalte: document.getElementById('einstieg-spalte'),
+  async dateiLaden() {
+    return ladeBeispielDatei();
+  },
+});
+
+// Die Figur steht sofort da.
+//
+// Solange es genau EIN mitgeliefertes Modell gibt, ist ein Startbildschirm mit
+// "Lade einen Charakter" eine Tür, hinter der immer dasselbe liegt. Der Mensch
+// klickt sie weg, der Agent stolpert über eine leere Seite und bekommt bei
+// jedem Werkzeug "0 Modelle geladen". Also wird geladen, ohne zu fragen; über
+// "Open GLB" oben rechts kommt weiterhin jedes andere Rig herein.
+(async () => {
+  try {
+    await loadFile(await ladeBeispielDatei());
+  } catch (e) {
+    // Kein stiller Ausfall: schlägt es fehl, bleibt der Einstieg stehen und
+    // sagt, was war.
+    if (window.__ui?.spur) {
+      window.__ui.spur.notiere({
+        name: 'Start', fehler: true,
+        text: `Beispielmodell nicht geladen: ${e.message}`,
+      });
+    }
+  }
+})();
 
 // Für Playwright-Tests und für andere Skripte der Seite. refit() rahmt die
 // Kamera nach einer Skalierung des Modells erneut aus der Bounding Box aus —
@@ -280,47 +986,219 @@ window.__scene = {
   renderer,
   get model() { return model; },
   refit() {
-    if (!model) throw new Error('refit(): kein Modell geladen, 0 Objekte in der Szene');
-    frameCamera(camera, model);
+    if (!model) throw new Error('refit(): no model loaded, 0 objects in the scene');
+    steuerung.starteNeu();
   },
+  /** Zurueck auf die gemessene Startansicht — derselbe Weg wie Doppelklick. */
+  resetView() {
+    if (!model) throw new Error('resetView(): no model loaded, 0 objects in the scene');
+    return steuerung.zurueck();
+  },
+  controls: steuerung.controls,
 };
 
 // Renderlauf. Ohne ihn wird die Szene nie gezeichnet — die Leinwand bliebe
 // schwarz, auch wenn das Modell längst hängt und die Kamera richtig steht.
+let letzteZeit = performance.now();
 function render() {
+  const jetzt = performance.now();
+  // Der Abspieler schaltet in der Framerate der Timeline (plan.md 5.2, fps
+  // aus dem Sitzungszustand), nicht in der Bildrate des Browsers: er sammelt
+  // die verstrichenen Sekunden und schaltet, wenn ein Frame voll ist.
+  abspieler.tick((jetzt - letzteZeit) / 1000);
+  letzteZeit = jetzt;
   renderer.render(scene, camera);
   requestAnimationFrame(render);
 }
 requestAnimationFrame(render);
 
-// Werkzeugschicht (AP7): genau einmal registrieren, und zwar nur bei einem
-// echten document.modelContext. Ohne ihn bleibt der normale Upload unverändert —
-// ohne Kontext gibt es keinen Empfänger für die Werkzeuge, also bleibt die
-// Schicht weg.
-window.__tools = null;
-window.__ui = null;
-if (document.modelContext && typeof document.modelContext.registerTool === 'function') {
-  // Die Spur hängt sich zwischen Schicht und Kontext: sie umwickelt jedes
-  // registrierte execute und reicht es unverändert weiter. src/tools/ bleibt
-  // unangetastet, der Agent sieht denselben Werkzeugkatalog wie vorher.
-  const spur = mounteSpur({ wurzel: document.getElementById('spur') });
-  window.__tools = await createToolLayer({
-    modelContext: spurKontext(document.modelContext, spur)
-  });
+// Werkzeugschicht (AP7). Sie wird IMMER gebaut und hängt an den echten
+// Anschlüssen — auch ohne document.modelContext. Beim Kontext wird zusätzlich
+// registriert; ohne ihn gibt es keinen Empfänger, aber die Schicht steht über
+// window.__tools und lässt sich ohne Flag aufrufen und prüfen.
+//
+// Vorher wurde die Schicht ohne Kontext gar nicht gebaut. Ein Browser ohne Flag
+// zeigte dann einen stummen GLB-Viewer, ohne zu sagen, was fehlt.
+const hatKontext = !!(document.modelContext
+  && typeof document.modelContext.registerTool === 'function');
 
-  // Sichtbare Hälfte der Rückfrage (plan.md 6.7): ohne sie wartet ask_human auf
-  // einen Klick, den niemand sehen und deshalb niemand geben kann.
-  mounteFragePanel({ ask: window.__tools.ask, wurzel: document.getElementById('frage') });
+// Die Spur hängt sich zwischen Schicht und Kontext: sie umwickelt jedes
+// registrierte execute und reicht es unverändert weiter. src/tools/ bleibt
+// unangetastet, der Agent sieht denselben Werkzeugkatalog wie vorher.
+const spur = mounteSpur({ wurzel: document.getElementById('spur') });
 
-  window.__ui = {
-    spur,
-    get leuchten() { return leuchten; },
-    /** Mensch-Moment 1 aus plan.md 6.7, auch einzeln aufrufbar. */
-    rollenAbfragen: (profil) => frageRollenAb({
-      profil, ask: window.__tools.ask, rufe: window.__tools.rufe, leuchten
-    }),
-  };
+// Die 3D-Ansicht folgt dem PROTOKOLL, nicht einer bestimmten Tuer.
+//
+// Es gibt zwei Wege in die Werkzeugschicht: document.modelContext (der echte
+// WebMCP-Weg, den ein Agent im Browser nimmt) und window.__tools.rufe (die
+// Seite selbst und die Bruecke). Die Live-Anzeige hing zuerst nur am zweiten.
+// Ergebnis im Lauf: das Protokoll rechts fuellte sich mit set_pose-Eintraegen,
+// waehrend die Figur stur in der T-Pose stand — der Mensch sah dem Agenten
+// beim Tippen zu, nicht beim Arbeiten.
+//
+// Beide Wege melden in dieselbe Spur. Deshalb haengt die Ansicht jetzt hier:
+// wer sich meldet, bewegt auch das Bild.
+const spurMitBild = {
+  ...spur,
+  notiere(eintrag) {
+    spur.notiere(eintrag);
+    zeigeFrameZumAufruf(eintrag?.name, eintrag?.args);
+  },
+};
+
+window.__tools = await createToolLayer({
+  modelContext: hatKontext ? spurKontext(document.modelContext, spurMitBild) : null,
+  ports: werkzeugPorts
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Der Mensch sieht dem Agenten zu
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Befund aus dem ersten Agentenlauf ueber die Bruecke: Der Agent baute in
+// zwoelf Aufrufen einen vollstaendigen Sprung — und die Seite sah tot aus.
+// Die 3D-Ansicht blieb in der Bindepose stehen, und das Protokoll rechts
+// zeigte "1 CALL", obwohl zwoelf gelaufen waren.
+//
+// Zwei Ursachen, beide hier behoben:
+//
+//   1. Das Protokoll haengt an spurKontext(), also an document.modelContext.
+//      Ein Agent von aussen (tools/webmcp-bridge.mjs) ruft aber ueber
+//      window.__tools.rufe auf — dieselbe Schicht, andere Tuer. Diese Tuer
+//      hatte keinen Eintrag ins Protokoll.
+//   2. Kein Werkzeug hat je die Ansicht nachgezogen. Sichtbar wurde die
+//      Arbeit erst, wenn der Mensch selbst am Abspieler zog.
+//
+// Deshalb wird rufe() hier umwickelt: jeder Aufruf landet im Protokoll, und
+// jeder Aufruf, der einen Frame nennt oder die Timeline aendert, stellt die
+// Ansicht auf genau diesen Frame. Der Mensch sieht die Figur mitwandern.
+//
+// Die Werkzeugschicht selbst bleibt unberuehrt (src/tools/), und der Agent
+// merkt nichts davon: die Antwort geht unveraendert zurueck.
+
+/** Werkzeuge, nach denen sich die Ansicht geaendert haben kann. */
+const AENDERT_BILD = new Set(['set_pose', 'set_joint', 'set_target', 'add_phase',
+  'edit_phase', 'set_duration', 'undo', 'look', 'describe_pose', 'validate', 'probe_joint']);
+
+/**
+ * Kurzfassung einer Werkzeugantwort fuers Protokoll.
+ *
+ * Nimmt bewusst dieselbe Funktion wie der WebMCP-Weg (ergebnisZeile aus
+ * agentenspur.js). Vorher stand hier eine zweite, eigene Fassung — und weil
+ * die nur die erste Textzeile nahm, stand im Panel bei jeder JSON-Antwort
+ * woertlich "{". Eine Kurzfassung, zwei Wege.
+ */
+function protokollText(antwort) {
+  return ergebnisZeile(antwort);
 }
+
+const rufeRoh = window.__tools.rufe;
+window.__tools.rufe = async (name, args) => {
+  const antwort = await rufeRoh(name, args);
+  try {
+    spur.notiere({
+      name,
+      fehler: antwort?.isError === true,
+      text: protokollText(antwort),
+      // Der ungekuerzte Text landet im Tooltip der Zeile.
+      voll: (antwort?.content ?? [])
+        .filter((c) => c.type === 'text').map((c) => c.text).join(' '),
+    });
+  } catch { /* das Protokoll darf einen Werkzeugaufruf nie kippen */ }
+
+  // Export: der Mensch bekommt die Datei.
+  //
+  // export_clip meldet dem Agenten nur die Bytezahl — die Bytes selbst lagen
+  // im Anschluss und kamen nirgends an. Ein Beitrag, dessen Ergebnis man nicht
+  // herunterladen kann, ist kein Ergebnis. Der Download wird deshalb hier
+  // ausgeloest, sobald ein Export durchgelaufen ist.
+  if (name === 'export_clip' && antwort?.isError !== true) {
+    try {
+      const clip = werkzeugPorts.holeLetztenExport?.();
+      if (clip && clip.daten) {
+        const url = URL.createObjectURL(new Blob([clip.daten], { type: 'model/gltf-binary' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = clip.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        spur.notiere({
+          name: 'Download',
+          text: `${clip.name}, ${(clip.bytes / 1024).toFixed(0)} KB gespeichert`,
+        });
+      }
+    } catch (e) {
+      spur.notiere({ name: 'Download', fehler: true, text: String(e.message || e) });
+    }
+  }
+
+  zeigeFrameZumAufruf(name, args);
+  return antwort;
+};
+
+/**
+ * Stellt die Ansicht auf den Frame, um den es beim Aufruf ging.
+ *
+ * @param {string} name  Werkzeugname
+ * @param {object} args  Argumente, falls bekannt — daraus kommt der Frame
+ */
+function zeigeFrameZumAufruf(name, args) {
+  if (!AENDERT_BILD.has(name)) return;
+  // Welchen Frame zeigen: den, den der Agent genannt hat. Nennt er keinen,
+  // bleibt die Ansicht auf dem zuletzt gestellten Frame — sie springt nicht
+  // grundlos an den Anfang.
+  const gewuenscht = Number.isInteger(args?.frame) ? args.frame
+    : (Array.isArray(args?.frames) && Number.isInteger(args.frames[0]) ? args.frames[0] : null);
+  try {
+    // pruefe() zuerst: der Abspieler haelt seinen Bereitschaftszustand fest
+    // und meldet ohne diesen Aufruf weiter "bereit: false, frameCount: 0".
+    abspieler.pruefe();
+    const stand = abspieler.stand();
+    if (stand?.bereit) {
+      const ziel = Math.min(Math.max(gewuenscht ?? stand.index ?? 0, 0), stand.frameCount - 1);
+      abspieler.anfahren(ziel);
+    }
+  } catch { /* noch nichts loesbar: die Leiste sagt selbst, was fehlt */ }
+}
+
+
+// Sichtbare Hälfte der Rückfrage (plan.md 6.7): ohne sie wartet ask_human auf
+// einen Klick, den niemand sehen und deshalb niemand geben kann.
+mounteFragePanel({ ask: window.__tools.ask, wurzel: document.getElementById('frage') });
+
+window.__ui = {
+  spur,
+  hatKontext,
+  get leuchten() { return leuchten; },
+  /** Mensch-Moment 1 aus plan.md 6.7, auch einzeln aufrufbar. */
+  rollenAbfragen: (profil) => frageRollenAb({
+    profil, ask: window.__tools.ask, rufe: window.__tools.rufe, leuchten
+  }),
+};
+window.__ports = werkzeugPorts;
+
+// Der Verbindungszustand steht immer, nicht nur im Fehlerfall: bei einem
+// WebMCP-Wettbewerb ist die Zahl der registrierten Werkzeuge die Kernaussage
+// der Seite. Vorher stand sie in einem vierzeiligen Absatz über die volle
+// Fensterbreite — das lauteste Element im Bild war eine Fehlermeldung.
+//
+// Die Katalogzahl kommt aus src/tools/catalog.js, nicht aus dem Text: eine
+// getippte 16 wäre eine Behauptung und liefe beim nächsten Werkzeug schief.
+const verbindung = mounteVerbindung({ wurzel: hinweisEl });
+verbindung.setze({
+  verbunden: hatKontext,
+  registriert: hatKontext ? window.__tools.getTools().length : 0,
+  // Die Zahl, die zaehlt, ist die SICHTBARE. Drei Werkzeuge liegen bewusst in
+  // der Kiste (KISTE in catalog.js) und werden nicht registriert; "19 / 22"
+  // sah aus, als fehlten drei.
+  katalog: KATALOG_SICHTBAR.length,
+  wegText: hatKontext
+    ? 'An agent can call these tools on this page right now.'
+    : 'Open this page in the ChatGPT desktop app, or in Chrome 149+ with '
+      + 'chrome://flags/#enable-webmcp-testing enabled. The tools run either way.',
+});
 
 window.__boot.bereit = true;
 window.__ready = true;

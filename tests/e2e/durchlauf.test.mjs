@@ -21,7 +21,10 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { durchlauf, berichtText, SCHRITTE, FRAMES } from './durchlauf.mjs';
+import {
+  durchlauf, berichtText, SCHRITTE, FRAMES,
+  absichtFuerPruefung, framesFuerPruefung, platzhalterStreifen, ABSICHT_NAMEN,
+} from './durchlauf.mjs';
 import { nahtstellen } from './nahtstellen.mjs';
 
 const HIER = dirname(fileURLToPath(import.meta.url));
@@ -62,27 +65,54 @@ test('Durchlauf: der Weg läuft bis zum ersten fehlenden Teil und meldet, wie we
   assert.ok(SCHRITTE.length >= 8,
     `die Schrittliste muss den ganzen Weg abbilden, sie hat ${SCHRITTE.length} Einträge`);
 
-  // Vor dem ersten fehlenden Teil muss alles gelaufen sein, das da ist.
+  // Der Lauf darf auf zweierlei Weise enden, und beide werden hier geprüft:
+  // an einem Stopp (dann mit Datei und Zahl) oder vollständig (dann muss
+  // Schritt 8 wirklich Bytes exportiert haben). Was er NICHT darf: still
+  // aufhören oder vollständig melden, ohne exportiert zu haben.
   const end = lauf.endeteBei;
-  assert.ok(end !== null, `der Lauf meldet kein Ende — ergebnis.endeteBei = ${end}`);
-  assert.equal(lauf.endete, 'nicht verfügbar',
-    `der Lauf endet heute an einem fehlenden Teil, meldete aber "${lauf.endete}" `
-    + `(Schritt ${end}) — complete ${lauf.zahlen.gelaufen}/${lauf.zahlen.schritteGesamt}`);
+  if (end === null) {
+    assert.equal(lauf.endete, 'vollständig',
+      `ohne Stopp muss der Lauf vollständig sein, meldete "${lauf.endete}"`);
+    assert.ok(schritt('8').zahlen.bytes > 0,
+      `ein vollständiger Lauf muss exportiert haben, Schritt 8 meldet `
+      + `${schritt('8').zahlen.bytes} Bytes`);
+  } else {
+    assert.ok(['nicht verfügbar', 'abgebrochen'].includes(lauf.endete),
+      `ein Stopp an Schritt ${end} muss als "nicht verfügbar" oder "abgebrochen" gemeldet `
+      + `werden, gemeldet wurde "${lauf.endete}" — `
+      + `${lauf.zahlen.gelaufen}/${lauf.zahlen.schritteGesamt} gelaufen`);
+    const stop = schritt(end);
+    assert.match(stop.meldung, /(^noch nicht verfügbar: |\.js)/,
+      `die Stoppmeldung muss das Teil nennen — entweder als "noch nicht verfügbar: " oder mit `
+      + `seiner Datei, war: "${stop.meldung}"`);
+    assert.match(stop.meldung, /\d/,
+      `die Meldung muss eine Zahl nennen (AGENTS.md), war: "${stop.meldung}"`);
 
-  const stop = schritt(end);
-  assert.match(stop.meldung, /^noch nicht verfügbar: /,
-    `die Meldung muss mit "noch nicht verfügbar: " beginnen, war: "${stop.meldung}"`);
-  assert.match(stop.meldung, /\d/,
-    `die Meldung muss eine Zahl nennen (AGENTS.md), war: "${stop.meldung}"`);
+    // Wie weit er kam: jeder Schritt vor dem Stopp muss gelaufen oder
+    // ausdrücklich abgelehnt sein — kein Schritt davor darf "nicht erreicht"
+    // stehen haben. Schritt 7 ist ausgenommen: ohne WebGL kann er in Node
+    // nicht laufen, und er hält den Lauf trotzdem nicht auf.
+    const vorDemStopp = SCHRITTE.slice(0, SCHRITTE.findIndex((s) => s.id === end)).map((s) => s.id);
+    for (const id of vorDemStopp) {
+      const s = schritt(id);
+      if (id === '7' && s.status === 'nicht verfügbar') continue;
+      assert.ok(s.status === 'gelaufen' || s.status === 'abgelehnt',
+        `Schritt ${id} (${s.name}) steht vor dem Stopp aber mit Status "${s.status}" — `
+        + `der Lauf behauptet, bis ${end} gekommen zu sein: ${s.meldung ?? ''}`);
+    }
+  }
 
-  // Wie weit er kam: jeder Schritt vor dem Stopp muss gelaufen oder ausdrücklich
-  // abgelehnt sein — kein Schritt davor darf "nicht erreicht" stehen haben.
-  const vorDemStopp = SCHRITTE.slice(0, SCHRITTE.findIndex((s) => s.id === end)).map((s) => s.id);
-  for (const id of vorDemStopp) {
-    const s = schritt(id);
-    assert.ok(s.status === 'gelaufen' || s.status === 'abgelehnt',
-      `Schritt ${id} (${s.name}) steht vor dem Stopp aber mit Status "${s.status}" — `
-      + `der Lauf behauptet, bis ${end} gekommen zu sein: ${s.meldung ?? ''}`);
+  // Schritt 7 in Node: er darf NIE als gelaufen dastehen — es gibt hier keinen
+  // WebGL-Kontext, und ein Platzhalter ist kein Bild.
+  const bild = schritt('7');
+  assert.notEqual(bild.status, 'gelaufen',
+    `Schritt 7 meldet "gelaufen", obwohl Node 0 WebGL-Kontexte hat — ein Platzhalter ist kein `
+    + `gerendertes Bild`);
+  if (bild.status === 'nicht verfügbar') {
+    assert.equal(bild.zahlen.gerendertBilder, 0,
+      `der Platzhalter muss 0 gerenderte Bilder ausweisen, meldet ${bild.zahlen.gerendertBilder}`);
+    assert.match(bild.meldung, /0 WebGL-Kontext/,
+      `die Meldung muss den Grund mit Zahl nennen, war: "${bild.meldung}"`);
   }
   assert.ok(lauf.zahlen.gelaufen >= 4,
     `bis zum Löser stehen ${lauf.zahlen.gelaufen} gelaufene Schritte, erwartet werden mindestens 4 `
@@ -239,8 +269,121 @@ test('Bericht: am Ende steht, welche Schritte liefen, welche fehlten und wo es h
   for (const h of lauf.haken) assert.match(h, /\d/, `Haken ohne Zahl: "${h}"`);
 
   // Wie weit, in Zahlen, und zwar dieselben wie im Protokoll.
-  assert.match(text, new RegExp(`kam bis Schritt ${lauf.kamBis}, endet bei Schritt ${lauf.endeteBei}`),
+  const ende = lauf.endeteBei === null
+    ? 'läuft bis zum Ende durch'
+    : `endet bei Schritt ${lauf.endeteBei}`;
+  assert.match(text, new RegExp(`kam bis Schritt ${lauf.kamBis}, ${ende}`),
     `der Bericht sagt nicht, wie weit der Lauf kam (kamBis=${lauf.kamBis}, endeteBei=${lauf.endeteBei})`);
+});
+
+test('Überbrückungen: sie übersetzen Namen und erfinden dabei keinen einzigen Wert', async () => {
+  // Der Lauf überbrückt heute zwei Namensdivergenzen. Beide dürfen NUR
+  // umbenennen. Sobald eine von ihnen anfängt, Zahlen zu erzeugen, ist der
+  // Schnitt wertlos — also wird hier nachgezählt.
+  const { KATALOG_ARTEN } = { KATALOG_ARTEN: Object.keys(ABSICHT_NAMEN) };
+  assert.equal(KATALOG_ARTEN.length, 7,
+    `plan.md 6.6 kennt 7 Bausteine, die Tabelle führt ${KATALOG_ARTEN.length}`);
+
+  const vorher = [{ kind: 'airtime', minSek: 0.4 }, { kind: 'part_height', part: 'com', minAnteil: 0.4 }];
+  const { kriterien, uebersetzt } = absichtFuerPruefung(vorher);
+  assert.equal(uebersetzt.length, 2, `2 Namen mussten übersetzt werden, gezählt ${uebersetzt.length}`);
+  assert.equal(kriterien[0].kind, 'flugphase');
+  assert.equal(kriterien[0].minSek, 0.4,
+    `der Sollwert wurde von ${vorher[0].minSek} auf ${kriterien[0].minSek} verändert — übersetzt `
+    + 'wird der Name, nicht die Zahl');
+  assert.equal(kriterien[1].part, 'com', 'das Körperteil darf die Übersetzung nicht verlieren');
+
+  // Ein Baustein, den die Tabelle nicht kennt, geht unverändert durch — der
+  // Lauf soll ihn der Prüfschicht vorlegen und ihr Nein hören, nicht raten.
+  const fremd = absichtFuerPruefung([{ kind: 'salto', minDeg: 360 }]);
+  assert.equal(fremd.uebersetzt.length, 0);
+  assert.equal(fremd.kriterien[0].kind, 'salto');
+
+  // Frame-Spiegel: dieselbe Tabelle unter zwei Namen, kein neuer Wert.
+  const f = framesFuerPruefung([{ positions: { hips: [0, 1, 0] }, com: [0, 1, 0] }]);
+  assert.equal(f.gespiegelt, 1, `1 Frame musste gespiegelt werden, gezählt ${f.gespiegelt}`);
+  assert.deepEqual(f.frames[0].bones, f.frames[0].positions,
+    'bones und positions müssen dieselbe Tabelle sein, sonst zeigen Bild und Zahl zwei Posen');
+  assert.equal(framesFuerPruefung([{ positions: { a: [0, 0, 0] }, bones: { a: [0, 0, 0] } }]).gespiegelt, 0,
+    'ein Frame, der bones schon mitbringt, darf nicht angefasst werden');
+});
+
+test('Platzhalter: er erfüllt die Bildpflicht, gibt sich aber nicht als Bild aus', async () => {
+  // Die Regel aus plan.md 5.3 bleibt in Kraft — jeder Bericht trägt einen
+  // Bildverweis. Der Platzhalter erfüllt sie, darf aber niemanden glauben
+  // machen, es sei gerendert worden.
+  const grund = 'noch nicht verfügbar: Bildstreifen, 0 WebGL-Kontext in node';
+  const eintraege = platzhalterStreifen(grund)([{ frame: 0 }, { frame: 30 }, { frame: 59 }]);
+
+  assert.equal(eintraege.length, 1, `erwartet 1 Platzhaltereintrag, waren ${eintraege.length}`);
+  const e = eintraege[0];
+  assert.equal(e.view, 'platzhalter',
+    `die Ansicht heißt "${e.view}" — ein Platzhalter darf nicht wie "side" oder "front" aussehen`);
+  assert.match(e.ref, /^platzhalter:\/\/kein-bild\//,
+    `der Verweis muss im Text sagen, dass er keiner ist, war: "${e.ref}"`);
+  assert.equal(e.gerendert, false, 'der Eintrag muss sich als nicht gerendert ausweisen');
+  assert.deepEqual(e.frames, [0, 30, 59],
+    'die Frame-Zahlen müssen die tatsächlich gewählten sein, nicht erfundene');
+  assert.ok(e.ref.includes(encodeURIComponent(grund).slice(0, 20)),
+    `der Grund muss im Verweis stehen, war: "${e.ref}"`);
+
+  // Und er muss den Vertrag erfüllen, sonst hilft er dem Lauf nicht.
+  const { validateValidationReport } = await import(umgebung().moduleUrl('src/contracts/validation-report.js'));
+  const probe = validateValidationReport({
+    frameCount: 60, phases: [{ state: 'kontakt', from: 0, to: 60 }],
+    physics: { passed: true, issues: [] },
+    intent: { passed: true, checks: [] },
+    style: { passed: true, issues: [] },
+    images: eintraege.map((x) => ({ view: x.view, frames: x.frames, ref: x.ref })),
+  });
+  assert.equal(probe.ok, true,
+    `der Platzhalter erfüllt den Bildvertrag nicht: `
+    + probe.errors.map((x) => `${x.field}: ${x.message}`).join(' | '));
+});
+
+test('Sabotage: ein ausgehängtes Bauteil wird bemerkt und mit Namen benannt, nicht überspielt', async () => {
+  // Der Wert des Schnitts liegt darin, dass er das Fehlen MERKT. Also wird
+  // genau das vorgeführt: der Export wird ausgehängt, obwohl alles davor da
+  // ist. Ein Lauf, der danach immer noch "vollständig" meldet, wäre wertlos.
+  const ausgehaengt = {
+    verfuegbar: false, datei: 'src/export/gltf.js', paket: 'plan.md 6.9',
+    meldung: 'noch nicht verfügbar: plan.md 6.9 — src/export/gltf.js, '
+      + 'Datei fehlt: src/export/gltf.js (0 von 1 erwarteten Dateien gefunden)',
+  };
+  const ohneExport = await durchlauf(umgebung({ teile: { export: ausgehaengt } }));
+
+  assert.notEqual(ohneExport.endete, 'vollständig',
+    `mit ausgehängtem Export darf der Lauf nicht vollständig melden, er meldete `
+    + `"${ohneExport.endete}"`);
+  const s8 = ohneExport.schritte.find((s) => s.id === '8');
+  assert.notEqual(s8.status, 'gelaufen',
+    `Schritt 8 meldet "${s8.status}", obwohl src/export/gltf.js ausgehängt ist`);
+  if (s8.status === 'nicht verfügbar') {
+    assert.ok(s8.meldung.includes('src/export/gltf.js'),
+      `die Meldung muss die ausgehängte Datei nennen, war: "${s8.meldung}"`);
+    assert.ok(ohneExport.fehlend.some((f) => f.includes('src/export/gltf.js')),
+      'die ausgehängte Datei fehlt in der Liste der fehlenden Teile');
+    assert.match(berichtText(ohneExport), /src\/export\/gltf\.js/,
+      'der Berichtstext verschweigt das ausgehängte Bauteil');
+  }
+
+  // Zweite Sabotage: ein Bildstreifen, der etwas zurückgibt, aber ohne
+  // Bildverweis. Der Bericht darf das nicht durchlassen (plan.md 5.3).
+  const leererStreifen = {
+    verfuegbar: true, datei: 'src/render/strip.js', paket: 'AP9',
+    modul: { createStripRenderer: () => ({ streifen: () => [] }) },
+  };
+  const ohneBild = await durchlauf(umgebung({
+    teile: { streifen: leererStreifen },
+    streifenRenderer: async () => ({ streifen: () => [] }),
+  }));
+  assert.notEqual(ohneBild.endete, 'vollständig',
+    `ein Streifen mit 0 Bildeinträgen darf keinen vollständigen Lauf ergeben, `
+    + `gemeldet wurde "${ohneBild.endete}"`);
+  const s6 = ohneBild.schritte.find((s) => s.id === '6');
+  assert.notEqual(s6.status, 'gelaufen',
+    `Schritt 6 meldet "${s6.status}", obwohl 0 Bildverweise vorlagen — ein Bericht ohne Bild `
+    + 'wird nicht ausgeliefert (plan.md 5.3)');
 });
 
 test('Bericht, Negativfall: ein Lauf, der stillschweigend nichts tut, darf keinen Erfolg melden', async () => {

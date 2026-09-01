@@ -1,0 +1,67 @@
+{
+  "pfadA": {
+    "was": "measureRigProfile mit opts.roles = { pelvis: <falscher Knochen> }",
+    "pelvisVorher": "mixamorigHips",
+    "korrekturZu": "mixamorigSpine",
+    "pelvisNachher": "mixamorigSpine",
+    "pelvisKonfidenzNachher": 1,
+    "torsoRadiusVorher_m": 0.169,
+    "torsoRadiusNachher_m": 0.1626,
+    "torsoMasseVorher_kg": 61.7424,
+    "torsoMasseNachher_kg": 48.04566,
+    "masseGesamtVorher_kg": 151.881,
+    "masseGesamtNachher_kg": 138.184,
+    "schwerpunktVorher": "mixamorigHips"
+  },
+  "pfadA2": {
+    "was": "Korrektur foot_l → (erkannter) Zeh, dasselbe gltf-Objekt mehrfach vermessen",
+    "footLVorher": "mixamorigLeftFoot",
+    "korrekturZu": "mixamorigLeftToeBase",
+    "footLNachher": "mixamorigLeftToeBase",
+    "sohleKnochenVorher": "mixamorigLeftFoot",
+    "sohleKnochenNachher": "mixamorigLeftToeBase",
+    "sohleLokalVorher": [
+      4.27837,
+      -6.91494,
+      17.1612
+    ],
+    "sohleLokalNachher": [
+      4.27837,
+      1.81373,
+      6.45064
+    ],
+    "ankleKnochenVorher": "mixamorigLeftFoot",
+    "ankleKnochenNachher": "mixamorigLeftToeBase",
+    "ankleSignVorher": 1,
+    "ankleSignNachher": 1,
+    "massenGesamt": {
+      "ohne": 151.881,
+      "mitFusskorrektur": 175.835
+    }
+  },
+  "pfadB": {
+    "was": "confirm_role im Werkzeug, dann describe_body",
+    "korrekturZu": "mixamorigSpine",
+    "bestatigtImStore": {
+      "pelvis": "mixamorigSpine",
+      "foot_l": "mixamorigLeftToeBase"
+    },
+    "profilBleibtAuf": "mixamorigHips",
+    "torsoRadiusVorher_m": 0.169,
+    "torsoRadiusNachher_m": 0.169,
+    "masseGesamtVorher_kg": 151.8805,
+    "masseGesamtNachher_kg": 151.8805,
+    "identisch": true,
+    "footLKorrektur": {
+      "korrekturZu": "mixamorigLeftToeBase",
+      "sohleKnochenBleibt": "mixamorigLeftFoot",
+      "masseGesamtFusskorrektur_kg": 151.8805,
+      "identisch": true
+    }
+  },
+  "negativ": {
+    "geworfen": true,
+    "meldung": "Rollenvorgabe foot_l: Knochen „gibt-es-nicht“ gibt es in diesem Skelett mit 67 Knochen nicht",
+    "nenntZahl": true
+  }
+}

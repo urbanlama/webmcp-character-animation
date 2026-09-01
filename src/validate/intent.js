@@ -40,35 +40,51 @@ export const KONTAKT_SCHWELLE_FALLBACK_ANTEIL = 0.035;
 // ─────────────────────────────────────────────────────────────────────────────
 // Die sieben Bausteine (plan.md 6.6, "Absicht")
 //
-//   drehung      Drehung um eine Achse über einen Frame-Bereich  (Grad)
-//   flugphase    Flugphase                                       (Sekunden, Scheitelhöhe Anteil Körperhöhe)
-//   ortsveraenderung  Ortsveränderung                            (Körperhöhen, Richtung)
-//   kontaktwechsel    Kontaktwechsel                             (welcher Fuß, welcher Frame)
-//   abstand      Abstand zweier Körperteile                      (Anteil Körperhöhe, Mindestdauer s)
-//   hoehe        Höhe eines Körperteils                          (Anteil Körperhöhe)
-//   tempo        Tempo eines Körperteils                         (Körperhöhen pro Sekunde)
+// Die Bezeichner sind die des WERKZEUGKATALOGS (INTENT_ARTEN in
+// src/tools/catalog.js) — der Agent sieht genau diese Namen und kein zweites
+// Vokabular darf entstehen. plan.md 6.6 nennt die Bausteine sachlich auf
+// Deutsch; das ist Beschreibung, keine Namensvorgabe. Meldungen bleiben deutsch.
+//
+//   rotation        Drehung um eine Achse über einen Frame-Bereich     (Grad)
+//   airtime         Flugphase                                (Sekunden, Scheitelhöhe Anteil Körperhöhe)
+//   travel          Ortsveränderung                          (Körperhöhen, Richtung)
+//   contact_change  Kontaktwechsel                           (welcher Fuß, welcher Frame)
+//   clearance       Abstand zweier Körperteile               (Anteil Körperhöhe, Mindestdauer s)
+//   part_height     Höhe eines Körperteils                   (Anteil Körperhöhe)
+//   part_speed      Tempo eines Körperteils                  (Körperhöhen pro Sekunde)
 //
 // Jedes Kriterium wird beim Agenten folgendermaßen angegeben (set_intent,
 // plan.md 5.5, Nummer 6):
 //
-//   { kind: 'drehung',   part, axis, from, to, minDeg, maxDeg? }
-//   { kind: 'flugphase', minSek, maxSek?, minScheitel, maxScheitel? }
+//   { kind: 'rotation',       part, axis, from, to, minDeg, maxDeg? }
+//   { kind: 'airtime',        minSek, maxSek?, minScheitel, maxScheitel? }
 //       minScheitel/maxScheitel: Anteile der Körperhöhe
-//   { kind: 'ortsveraenderung', part, minHoehe, maxHoehe?, richtung: [x,y,z] }
+//   { kind: 'travel',         part, minHoehe, maxHoehe?, richtung: [x,y,z] }
 //       minHoehe/maxHoehe in Körperhöhen, richtung: Einheitsvektor
-//   { kind: 'kontaktwechsel',   foot: 'foot_l'|'foot_r', von, bis }
+//   { kind: 'contact_change', foot: 'foot_l'|'foot_r', von, bis }
 //       erwartet: von und bis sind kontaktfrei, davor/danach Kontakt
-//   { kind: 'abstand',   partA, partB, minAnteil, maxAnteil?, minDauerSek? }
+//   { kind: 'clearance',      partA, partB, minAnteil, maxAnteil?, minDauerSek? }
 //       Anteil der Körperhöhe, minDauerSek in Sekunden
-//   { kind: 'hoehe',     part, minAnteil, maxAnteil? }
+//   { kind: 'part_height',    part, minAnteil, maxAnteil? }
 //       Anteil an der Körperhöhe (gemessen über der Sohle/des Bodens)
-//   { kind: 'tempo',     part, minHoeheProSek, maxHoeheProSek?, from?, to? }
+//   { kind: 'part_speed',     part, minHoeheProSek, maxHoeheProSek?, from?, to? }
 //       Körperhöhen pro Sekunde, ggf. in einem Frame-Bereich
 //
-// part ist eine KNOCHEN-ID aus dem gelösten Timeline-Objekt (frame.bones),
+// part ist eine KNOCHEN-ID aus dem gelösten Timeline-Objekt
+// (frame.positions, dasselbe Feld wie in src/validate/physics.js),
 // nicht eine Rolle: die Absicht sagt "die rechte Hand", der Knochenname steht
-// im geladenen Profil. Für abstand/hoehe/tempo ist part auch 'com' (Schwerpunkt).
+// im geladenen Profil. Für clearance/part_height/part_speed ist part auch
+// 'com' (Schwerpunkt).
+//
+// Die deutschen Namen der ersten Bauversion gibt es nicht mehr. Ein Kriterium,
+// das einen von ihnen trägt, wird abgelehnt und nicht still zurückübersetzt:
+// zwei Namen für dieselbe Sache sind genau die Nahtstelle, die diesen Durchlauf
+// blockiert hat. Die Ablehnung nennt alle sieben Namen des Katalogs.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** Die sieben Bausteine in Katalogreihenfolge (INTENT_ARTEN, src/tools/catalog.js). */
+export const BAUSTEINE = ['rotation', 'airtime', 'travel', 'contact_change',
+  'clearance', 'part_height', 'part_speed'];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -81,10 +97,10 @@ function betrag(v) { return Math.hypot(v[0], v[1], v[2]); }
 function fehler(text) { throw new Error('Absichtsprüfung abgelehnt: ' + text); }
 
 /** Ein Punkt eines Tracks in einem Frame: part='com' → frame.com,
- *  sonst frame.bones[part]. null, wenn der Punkt nicht existiert. */
+ *  sonst frame.positions[part]. null, wenn der Punkt nicht existiert. */
 function punktVon(frame, part) {
   if (part === 'com') return frame.com ?? null;
-  return frame.bones?.[part] ?? null;
+  return frame.positions?.[part] ?? null;
 }
 
 /** Mindestwert eines Kriteriums erfüllt? */
@@ -137,6 +153,13 @@ function pruefeEingaben(profile, timeline, intent) {
   if (!Array.isArray(intent) || intent.length === 0) {
     fehler(`intent = ${Array.isArray(intent) ? 'leeres Array' : typeof intent}: erwartet nicht-leeres Array von Kriterien — die Absichtsprüfung sagt ohne Kriterien nichts aus`);
   }
+  // Frame-Form: ein gelöster Frame trägt seine Knochendaten in `positions`
+  // (BRETT.md, Eintrag AP5; src/validate/physics.js liest dasselbe Feld).
+  const ohne = frames.findIndex((f) => !f || typeof f !== 'object'
+    || !f.positions || typeof f.positions !== 'object');
+  if (ohne >= 0) {
+    fehler(`timeline.solved.frames[${ohne}].positions fehlt: erwartet { Knochen-id: [x,y,z] } in Metern — ${frames.length} Frames, der erste ohne Knochendaten ist Frame ${ohne}`);
+  }
 }
 
 // ── Die sieben Messungen ─────────────────────────────────────────────────────
@@ -144,7 +167,7 @@ function pruefeEingaben(profile, timeline, intent) {
 // fehlenden Eingaben (unbekannter Knochen, Frame außerhalb der Timeline)
 // mit Zahl und Grund.
 
-// 1. drehung — gemessen an einem Part als kumulierte Winkeländerung von Frame
+// 1. rotation — gemessen an einem Part als kumulierte Winkeländerung von Frame
 //    zu Frame über den Frame-Bereich (Achse aus axis: 'x'|'y'|'z'), in Grad.
 //    parts: 'com' (Ausrichtung als Gesamtrotation ist nicht definiert) ist hier
 //    nicht zulässig — die Drehung braucht eine konkrete Knochenrichtung. Das
@@ -153,8 +176,8 @@ function pruefeEingaben(profile, timeline, intent) {
 //    des Azimut-Winkels in der zur Achse senkrechten Ebene, summiert.
 function messeDrehung(alle, frames, part, axis, from, to) {
   const pelvisBone = alle.pelvisBone;
-  const punkt = (i) => frames[i].bones?.[part];
-  const bezug = (i) => frames[i].bones?.[pelvisBone] ?? [0, 0, 0];
+  const punkt = (i) => frames[i].positions?.[part];
+  const bezug = (i) => frames[i].positions?.[pelvisBone] ?? [0, 0, 0];
   if (!punkt(from)) fehler(`Knochen ${JSON.stringify(part)} fehlt in Frame ${from} der gelösten Timeline`);
   // Relative Position zur Bezugsachse: 2D-Koordinaten in der zur Achse
   // senkrechten Ebene. Achse 'y' → x/z-Ebene, 'x' → y/z-Ebene, 'z' → x/y-Ebene.
@@ -180,7 +203,7 @@ function messeDrehung(alle, frames, part, axis, from, to) {
   return summe * 180 / Math.PI;
 }
 
-// 2. flugphase — längster zusammenhängender Zeitraum im Frame-Bereich der
+// 2. airtime (Flugphase) — längster zusammenhängender Zeitraum im Frame-Bereich der
 //    Timeline, in dem die Kontaktphase (frame.contact) 'flug' ist.
 function messeFlugphase(frames, from, to) {
   let laengste = 0, jetzige = 1;
@@ -209,7 +232,7 @@ function messeOrtsveraenderung(alle, frames, part, richtung, from, to) {
   const n = Math.hypot(richtung[0], richtung[1], richtung[2]);
   if (!(n > 0)) fehler(`richtung = [${richtung}]: erwartet Vektor ungleich (0,0,0), Länge ${n}`);
   if (from >= to) {
-    fehler(`ortsveraenderung: from = ${from}, to = ${to} — für eine Bewegung braucht es einen Bereich`);
+    fehler(`travel: from = ${from}, to = ${to} — für eine Ortsveränderung braucht es einen Bereich`);
   }
   // Vorzeichen: die Richtung zeigt die gesuchte Seite (projektion positiv).
   let best = -Infinity;
@@ -229,7 +252,7 @@ function messeOrtsveraenderung(alle, frames, part, richtung, from, to) {
 function messeKontaktwechsel(alle, profile, frames, boneName, von, bis) {
   const schwelle = alle.kontaktSchwelle;
   const footY = (i) => {
-    const p = frames[i].bones?.[boneName];
+    const p = frames[i].positions?.[boneName];
     if (!p) fehler(`Knochen ${JSON.stringify(boneName)} fehlt in Frame ${i} der gelösten Timeline`);
     return p[1] - (profile.world?.groundY ?? 0);
   };
@@ -314,14 +337,17 @@ function werteKriterium(profile, timeline, k, kontext) {
     fehler(`to = ${JSON.stringify(k.to)}: erwartet ganzzahliger Frame im Bereich ${von} bis ${frameCount - 1}`);
   }
 
-  switch (k.kind) {
-    case 'drehung': {
+  // Gewertet wird in den Bezeichnern des Werkzeugkatalogs (INTENT_ARTEN) —
+  // derselbe Name, den der Agent in set_intent schreibt, kein zweiter.
+  const art = k.kind;
+  switch (art) {
+    case 'rotation': {
       if (!k.part || typeof k.part !== 'string') fehler(`part = ${JSON.stringify(k.part)}: erwartet Knochen-name für die Drehung`);
       if (!['x', 'y', 'z'].includes(k.axis)) {
         fehler(`axis = ${JSON.stringify(k.axis)}: erwartet 'x', 'y' oder 'z'`);
       }
       if (!Number.isFinite(k.minDeg) && !Number.isFinite(k.maxDeg)) {
-        fehler('drehung: erwartet minDeg oder maxDeg in Grad');
+        fehler(`${art}: erwartet minDeg oder maxDeg in Grad`);
       }
       const gemessen = messeDrehung(kontext, frames, k.part, k.axis, von, bis);
       // Eine Drehung ist eine Größe: 360 Grad in eine Richtung erfüllen
@@ -331,12 +357,12 @@ function werteKriterium(profile, timeline, k, kontext) {
         : genuegt(Math.abs(gemessen), k.minDeg, k.maxDeg);
       const soll = k.minDeg !== undefined && k.maxDeg !== undefined
         ? `${k.minDeg}..${k.maxDeg}` : (k.minDeg !== undefined ? `>=${k.minDeg}` : `<=${k.maxDeg}`);
-      return check('drehung', soll, +gemessen.toFixed(1), 'grad', ok,
+      return check(art, soll, +gemessen.toFixed(1), 'grad', ok,
         ok ? undefined : `Drehung von ${k.part} um die ${k.axis}-Achse beträgt ${deutsch(Math.abs(gemessen), 1)} Grad, erwartet war ${sollText(k.minDeg, k.maxDeg, 'Grad')}`);
     }
-    case 'flugphase': {
+    case 'airtime': {
       if (!Number.isFinite(k.minSek) && !Number.isFinite(k.maxSek)) {
-        fehler('flugphase: erwartet minSek oder maxSek in Sekunden');
+        fehler(`${art}: erwartet minSek oder maxSek in Sekunden`);
       }
       const fps = timeline.fps;
       if (!Number.isFinite(fps) || fps <= 0) {
@@ -362,36 +388,36 @@ function werteKriterium(profile, timeline, k, kontext) {
           }
         }
         if (flugHoehen.length === 0) {
-          fehler('flugphase: es gibt keinen Flug-Frame im Frame-Bereich, Scheitelhöhe nicht messbar');
+          fehler(`${art}: es gibt 0 Flug-Frames im Frame-Bereich ${von} bis ${bis}, Scheitelhöhe nicht messbar`);
         }
         scheitel = Math.max(...flugHoehen);
         const scheitelOk =
           (k.minScheitel === undefined || scheitel >= k.minScheitel) &&
           (k.maxScheitel === undefined || scheitel <= k.maxScheitel);
         if (!scheitelOk) {
-          return check('flugphase.scheitel', `${k.minScheitel ?? '-∞'}..${k.maxScheitel ?? '∞'}`,
+          return check(`${art}.apex`, `${k.minScheitel ?? '-∞'}..${k.maxScheitel ?? '∞'}`,
             +scheitel.toFixed(3), 'koerperhoehen', false,
             `Scheitelhöhe im Flug erreicht ${deutsch(scheitel, 2)} Körperhöhen, erwartet war ${k.minScheitel ?? '-∞'} bis ${k.maxScheitel ?? '∞'} Körperhöhen`);
         }
       }
-      return check('flugphase', soll, +gemessen.toFixed(3), 'sek', ok,
+      return check(art, soll, +gemessen.toFixed(3), 'sek', ok,
         ok ? undefined : `Flugphase dauert ${deutsch(gemessen, 2)} Sekunden, erwartet war ${sollText(k.minSek, k.maxSek, 'Sekunden')}`);
     }
-    case 'ortsveraenderung': {
+    case 'travel': {
       if (!Array.isArray(k.richtung) || k.richtung.length !== 3 || !k.richtung.every(Number.isFinite)) {
         fehler(`richtung = ${JSON.stringify(k.richtung)}: erwartet [x, y, z]`);
       }
       if (!Number.isFinite(k.minHoehe) && !Number.isFinite(k.maxHoehe)) {
-        fehler('ortsveraenderung: erwartet minHoehe oder maxHoehe in Körperhöhen');
+        fehler(`${art}: erwartet minHoehe oder maxHoehe in Körperhöhen`);
       }
       const gemessen = messeOrtsveraenderung(kontext, frames, k.part, k.richtung, von, bis);
       const ok = genuegt(gemessen, k.minHoehe, k.maxHoehe);
       const soll = k.minHoehe !== undefined && k.maxHoehe !== undefined
         ? `${k.minHoehe}..${k.maxHoehe}` : (k.minHoehe !== undefined ? `>=${k.minHoehe}` : `<=${k.maxHoehe}`);
-      return check('ortsveraenderung', soll, +gemessen.toFixed(3), 'koerperhoehen', ok,
+      return check(art, soll, +gemessen.toFixed(3), 'koerperhoehen', ok,
         ok ? undefined : `${k.part} bewegt sich um ${deutsch(gemessen, 2)} Körperhöhen entlang [${k.richtung}], erwartet war ${sollText(k.minHoehe, k.maxHoehe, 'Körperhöhen')}`);
     }
-    case 'kontaktwechsel': {
+    case 'contact_change': {
       if (k.foot !== 'foot_l' && k.foot !== 'foot_r') {
         fehler(`foot = ${JSON.stringify(k.foot)}: erwartet 'foot_l' oder 'foot_r'`);
       }
@@ -400,19 +426,19 @@ function werteKriterium(profile, timeline, k, kontext) {
         fehler(`Rolle ${k.foot} fehlt im RigProfile — Kontaktwechsel ohne Fuß nicht messbar`);
       }
       if (!Number.isInteger(k.von) || !Number.isInteger(k.bis)) {
-        fehler(`kontaktwechsel: erwartet von und bis als ganzzahlige Frames, bekommen ${JSON.stringify(k.von)} und ${JSON.stringify(k.bis)}`);
+        fehler(`${art}: erwartet von und bis als ganzzahlige Frames, bekommen ${JSON.stringify(k.von)} und ${JSON.stringify(k.bis)}`);
       }
       const m = messeKontaktwechsel(kontext, profile, frames, boneName, k.von, k.bis);
       const ersterSollFrame = k.bis;
       const ok = m.letzterKontakt && m.flugAb && m.erster >= 0 && m.erster === ersterSollFrame;
       const gemessen = m.erster >= 0 ? m.erster : 'nicht gelöst';
-      return check('kontaktwechsel', `frame ${ersterSollFrame}`, gemessen, 'frame', ok,
+      return check(art, `frame ${ersterSollFrame}`, gemessen, 'frame', ok,
         ok ? undefined : `Kontaktwechsel von ${k.foot}: erwartet Abheben exakt bei Frame ${ersterSollFrame}, gemessen wurde ${typeof gemessen === 'number' ? 'Frame ' + gemessen : 'kein Abheben'}`);
     }
-    case 'abstand': {
-      if (!k.partA || !k.partB) fehler(`abstand: erwartet partA und partB, bekommen ${JSON.stringify(k.partA)} und ${JSON.stringify(k.partB)}`);
+    case 'clearance': {
+      if (!k.partA || !k.partB) fehler(`${art}: erwartet partA und partB, bekommen ${JSON.stringify(k.partA)} und ${JSON.stringify(k.partB)}`);
       if (!Number.isFinite(k.minAnteil) && !Number.isFinite(k.maxAnteil)) {
-        fehler('abstand: erwartet minAnteil oder maxAnteil in Anteilen der Körperhöhe');
+        fehler(`${art}: erwartet minAnteil oder maxAnteil in Anteilen der Körperhöhe`);
       }
       const m = messeAbstand(kontext, frames, k.partA, k.partB);
       // Der relevante Wert ist der ungünstigste: bei minAnteil der kleinste,
@@ -423,7 +449,7 @@ function werteKriterium(profile, timeline, k, kontext) {
       // SOLLBEREICH bleiben; die Messung braucht daher minAnteil/maxAnteil.
       if (k.minDauerSek !== undefined) {
         if (!Number.isFinite(k.minAnteil) && !Number.isFinite(k.maxAnteil)) {
-          fehler('abstand mit minDauerSek: erwartet minAnteil oder maxAnteil — ohne Bereich ist keine Haltezeit messbar');
+          fehler(`${art} mit minDauerSek: erwartet minAnteil oder maxAnteil — ohne Bereich ist keine Haltezeit messbar`);
         }
         const fps = timeline.fps;
         if (!Number.isFinite(fps) || fps <= 0) {
@@ -441,49 +467,49 @@ function werteKriterium(profile, timeline, k, kontext) {
         const sollAnteil = k.minAnteil !== undefined && k.maxAnteil !== undefined
           ? `${k.minAnteil}..${k.maxAnteil}` : (k.minAnteil !== undefined ? `>=${k.minAnteil}` : `<=${k.maxAnteil}`);
         if (!dauerOk) {
-          return check('abstand', sollAnteil, beste, 'frames', false,
+          return check(art, sollAnteil, beste, 'frames', false,
             `${k.partA} und ${k.partB} halten den Abstand nur ${beste} Frames am Stück, gefordert ${sollDauer}`);
         }
       }
       const soll = k.minAnteil !== undefined && k.maxAnteil !== undefined
         ? `${k.minAnteil}..${k.maxAnteil}` : (k.minAnteil !== undefined ? `>=${k.minAnteil}` : `<=${k.maxAnteil}`);
-      return check('abstand', soll, +relevanterWert.toFixed(3), 'koerperhoehen', ok,
+      return check(art, soll, +relevanterWert.toFixed(3), 'koerperhoehen', ok,
         ok ? undefined : `${k.partA} und ${k.partB} messen ${deutsch(relevanterWert, 2)} Körperhöhen Abstand, erwartet war ${sollText(k.minAnteil, k.maxAnteil, 'Körperhöhen')}`);
     }
-    case 'hoehe': {
-      if (!k.part) fehler(`hoehe: erwartet part, bekommen ${JSON.stringify(k.part)}`);
+    case 'part_height': {
+      if (!k.part) fehler(`${art}: erwartet part, bekommen ${JSON.stringify(k.part)}`);
       if (!Number.isFinite(k.minAnteil) && !Number.isFinite(k.maxAnteil)) {
-        fehler('hoehe: erwartet minAnteil oder maxAnteil in Anteilen der Körperhöhe');
+        fehler(`${art}: erwartet minAnteil oder maxAnteil in Anteilen der Körperhöhe`);
       }
       const m = messeHoehe(kontext, profile, frames, k.part);
       const relevanterWert = k.minAnteil !== undefined ? m.maxAnteil : m.minAnteil;
       const ok = genuegt(relevanterWert, k.minAnteil, k.maxAnteil);
       const soll = k.minAnteil !== undefined && k.maxAnteil !== undefined
         ? `${k.minAnteil}..${k.maxAnteil}` : (k.minAnteil !== undefined ? `>=${k.minAnteil}` : `<=${k.maxAnteil}`);
-      return check('hoehe', soll, +relevanterWert.toFixed(3), 'koerperhoehen', ok,
+      return check(art, soll, +relevanterWert.toFixed(3), 'koerperhoehen', ok,
         ok ? undefined : `${k.part} erreicht ${deutsch(relevanterWert, 2)} Körperhöhen Höhe, erwartet war ${sollText(k.minAnteil, k.maxAnteil, 'Körperhöhen')}`);
     }
-    case 'tempo': {
-      if (!k.part) fehler(`tempo: erwartet part, bekommen ${JSON.stringify(k.part)}`);
+    case 'part_speed': {
+      if (!k.part) fehler(`${art}: erwartet part, bekommen ${JSON.stringify(k.part)}`);
       if (!Number.isFinite(k.minHoeheProSek) && !Number.isFinite(k.maxHoeheProSek)) {
-        fehler('tempo: erwartet minHoeheProSek oder maxHoeheProSek in Körperhöhen pro Sekunde');
+        fehler(`${art}: erwartet minHoeheProSek oder maxHoeheProSek in Körperhöhen pro Sekunde`);
       }
       const m = messeTempo(kontext, timeline, frames, k.part, k.from, k.to);
       const relevanterWert = k.minHoeheProSek !== undefined ? m.max : m.min;
       const ok = genuegt(relevanterWert, k.minHoeheProSek, k.maxHoeheProSek);
       const soll = k.minHoeheProSek !== undefined && k.maxHoeheProSek !== undefined
         ? `${k.minHoeheProSek}..${k.maxHoeheProSek}` : (k.minHoeheProSek !== undefined ? `>=${k.minHoeheProSek}` : `<=${k.maxHoeheProSek}`);
-      return check('tempo', soll, +relevanterWert.toFixed(3), 'koerperhoehen/sek', ok,
+      return check(art, soll, +relevanterWert.toFixed(3), 'koerperhoehen/sek', ok,
         ok ? undefined : `${k.part} bewegt sich mit ${deutsch(relevanterWert, 2)} Körperhöhen pro Sekunde, erwartet war ${sollText(k.minHoeheProSek, k.maxHoeheProSek, 'Körperhöhen pro Sekunde')}`);
     }
     default:
-      fehler(`kind = ${JSON.stringify(k.kind)}: erwartet einen der sieben Bausteine aus plan.md 6.6 — drehung, flugphase, ortsveraenderung, kontaktwechsel, abstand, hoehe oder tempo`);
+      fehler(`kind = ${JSON.stringify(k.kind)}: erwartet einen der ${BAUSTEINE.length} Bausteine des Werkzeugkatalogs (plan.md 6.6) — ${BAUSTEINE.join(', ')} — bekommen wurde ${JSON.stringify(k.kind)}`);
   }
   return null;
 }
 
 function distsInBereich(frames, partA, partB, minAnteil, maxAnteil, hoehe) {
-  // Hilfsfunktion für die Mindestdauer von abstand: pro Frame, ob der Abstand
+  // Hilfsfunktion für die Mindestdauer von clearance: pro Frame, ob der Abstand
   // im Sollbereich liegt.
   const out = [];
   for (let i = 0; i < frames.length; i++) {
@@ -496,6 +522,79 @@ function distsInBereich(frames, partA, partB, minAnteil, maxAnteil, hoehe) {
   return out;
 }
 
+// ── Pflichtfelder vor dem Speichern ──────────────────────────────────────────
+// Dieselben Pflichtfelder, die werteKriterium oben beim Messen an jedem
+// Kriterium verlangt — hier abgelegt, damit ein unvollständiges Kriterium
+// SCHON BEIM SETZEN abgelehnt wird und nicht erst als Wurf aus der laufenden
+// Prüfung hochfällt. Die Tabelle wiederholt nichts: was hier steht, steht so
+// in den cases von werteKriterium; ändert dort ein Feld, muss es hier hin.
+
+const PFLICHTFELDER = {
+  rotation:       { einzel: ['part', 'axis'], einsVon: ['minDeg', 'maxDeg'] },
+  airtime:        { einzel: [],               einsVon: ['minSek', 'maxSek'] },
+  travel:         { einzel: ['part', 'richtung'], einsVon: ['minHoehe', 'maxHoehe'] },
+  contact_change: { einzel: ['foot', 'von', 'bis'], einsVon: null },
+  clearance:      { einzel: ['partA', 'partB'], einsVon: ['minAnteil', 'maxAnteil'] },
+  part_height:    { einzel: ['part'],         einsVon: ['minAnteil', 'maxAnteil'] },
+  part_speed:     { einzel: ['part'],         einsVon: ['minHoeheProSek', 'maxHoeheProSek'] },
+};
+
+/**
+ * pruefeKriterien(checks) -> { ok, fehler }
+ *
+ * Prüft eine Liste von Erfolgskriterien VOR dem Speichern (set_intent) auf
+ * Vollständigkeit — sie wirft nicht, sie sammelt. Je fehlendem Feld steht in
+ * `fehler` ein Eintrag { index, kind, feld, meldung }: index ist die Position
+ * in der Liste, kind die Art des Kriteriums, feld das fehlende Feld und
+ * meldung nennt zusätzlich alle Felder, die diese Art braucht.
+ *
+ * Ein unbekannter `kind` ist ebenfalls unvollständig (feld: 'kind'); die
+ * Meldung listet die sieben Bausteine des Werkzeugkatalogs. Reicht ein Feld
+ * Paar (minDeg oder maxDeg), steht in `feld` das Paar durch '|' getrennt,
+ * wenn KEINES der beiden da ist.
+ *
+ * checks: Array von Kriterien, je ein Objekt mit kind + Parametern (siehe
+ *         Bausteine-Katalog oben)
+ */
+export function pruefeKriterien(checks) {
+  if (!Array.isArray(checks)) {
+    fehler(`checks = ${typeof checks}: erwartet Array von Kriterien, bekommen ${typeof checks}`);
+  }
+
+  const fehlerListe = [];
+  checks.forEach((k, index) => {
+    const art = k?.kind;
+    const pflicht = PFLICHTFELDER[art];
+    if (!pflicht) {
+      fehlerListe.push({
+        index, kind: art ?? null, feld: 'kind',
+        meldung: `Kriterium ${index} von ${checks.length}: kind = ${JSON.stringify(art ?? null)} ist keiner der ${BAUSTEINE.length} Bausteine — erwartet wird einer von ${BAUSTEINE.join(', ')}`,
+      });
+      return;
+    }
+    const braucht = pflicht.einsVon
+      ? [...pflicht.einzel, `${pflicht.einsVon[0]} oder ${pflicht.einsVon[1]}`]
+      : [...pflicht.einzel];
+    for (const feld of pflicht.einzel) {
+      if (k[feld] === undefined || k[feld] === null) {
+        fehlerListe.push({
+          index, kind: art, feld,
+          meldung: `Kriterium ${index} von ${checks.length} (${art}): Feld '${feld}' fehlt — ${art} braucht ${braucht.join(', ')}`,
+        });
+      }
+    }
+    if (pflicht.einsVon
+      && pflicht.einsVon.every((feld) => k[feld] === undefined || k[feld] === null)) {
+      fehlerListe.push({
+        index, kind: art, feld: pflicht.einsVon.join('|'),
+        meldung: `Kriterium ${index} von ${checks.length} (${art}): Weder '${pflicht.einsVon[0]}' noch '${pflicht.einsVon[1]}' gesetzt — ${art} braucht ${braucht.join(', ')}`,
+      });
+    }
+  });
+
+  return { ok: fehlerListe.length === 0, fehler: fehlerListe };
+}
+
 // ── Öffentliche Funktion ─────────────────────────────────────────────────────
 
 /**
@@ -503,7 +602,7 @@ function distsInBereich(frames, partA, partB, minAnteil, maxAnteil, hoehe) {
  *
  * profile:  RigProfile gemäß plan.md 5.1 (world.height wird benutzt)
  * timeline: Timeline gemäß plan.md 5.2, mit gelöstem 'solved'-Abschnitt
- *           (frames: [{ bones: { Knochen-id: [x,y,z] }, com?, contact? }])
+ *           (frames: [{ positions: { Knochen-id: [x,y,z] }, com?, contact? }])
  * intent:   Array von Kriterien, je ein Objekt mit kind + Parametern
  *           (siehe Bausteine-Katalog oben)
  *

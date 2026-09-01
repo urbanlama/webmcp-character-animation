@@ -30,8 +30,27 @@ export const INTENT_ARTEN = [
 /** Ansichten des Bildstreifens, plan.md 5.5 Werkzeug 14 und AP9. */
 export const ANSICHTEN = ['front', 'side', 'quarter', 'top'];
 
-/** Kanaele eines Gelenkwinkels, plan.md 5.5 Werkzeug 11. */
+/**
+ * Kanaele eines Gelenkwinkels — allgemeine Liste, plan.md 5.5 Werkzeug 11.
+ *
+ * Gilt nur, solange kein Modell vermessen ist. Sobald eines geladen ist,
+ * kommen die Kanalnamen je Gelenk aus der Vermessung (describe_rig): am Xbot
+ * etwa shrug/fwd an der Schulter, lift/swing/twist am Arm, flex/spread/twist
+ * an der Huefte. Siehe pruefeGelenkKanal in handlers.js.
+ */
 export const KANAELE = ['bend', 'twist', 'swing'];
+
+/**
+ * Uebergangsform von einem gesetzten Frame zum naechsten (set_pose).
+ *
+ * `smooth` ist der Standard, weil rein lineare Uebergaenge zwischen zwei
+ * Haltungen nach Maschine aussehen: die Bewegung startet und stoppt abrupt.
+ * `linear` bleibt waehlbar, wo genau das gewollt ist — gleichfoermige
+ * Drehungen, technische Bewegungen. `hold` haelt die Haltung bis zum
+ * naechsten gesetzten Frame und springt dann, fuer harte Schnitte.
+ */
+export const EASE_ARTEN = ['smooth', 'linear', 'hold', 'wurf'];
+export const EASE_STANDARD = 'smooth';
 
 /** Grenzen der Timeline-Laenge, plan.md 5.5 Werkzeug 7. */
 export const FRAME_MIN = 12;
@@ -46,28 +65,41 @@ const leer = { type: 'object', properties: {}, required: [] };
 export const KATALOG = [
   {
     name: 'describe_world',
-    description: 'Liefert den Weltvertrag: oben, vorne, links, Bodenhöhe, Maßstab und Figurgröße.',
+    description: 'SCHRITT 1 - hier anfangen. Sagt, wie die Welt liegt: welche Achse oben ist, wo vorne ist, '
+      + 'auf welcher Hoehe der Boden liegt, wie gross die Figur ist. Enthaelt ausserdem eine '
+      + 'Kurzanleitung, wie in dieser Seite gearbeitet wird. Braucht ein geladenes Modell.',
     inputSchema: leer
   },
   {
     name: 'describe_rig',
-    description: 'Liefert Rollen, Gelenke, Freiheitsgrade mit Achsen, Vorzeichen und Grenzwerten '
-      + 'sowie alle Zuordnungen mit Konfidenz unter 1 und ihre Vermessungsquelle.',
-    inputSchema: leer
+    description: 'SCHRITT 2 - die Gelenkliste. Nennt jedes vermessene Gelenk mit seinen Kanaelen, deren '
+      + 'Grenzwerten in Grad und der Richtung, in die ein positiver Wert wirkt. DIE KANALNAMEN SIND '
+      + 'JE GELENK VERSCHIEDEN und kommen aus der Vermessung: die Schulter hat andere als das Knie. '
+      + 'Ohne diesen Aufruf sind set_pose und set_joint Raten. Nennt ausserdem die Rollen (foot_l, '
+      + 'hand_r, ...) mit ihrem Knochen und der Konfidenz.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        detail: {
+          type: 'boolean',
+          description: 'true liefert zusaetzlich Achsen, Vorzeichenquellen und Messbelege; '
+            + 'die Antwort wird dann sehr gross. Ohne Angabe die Kompaktfassung.'
+        }
+      }
+    }
   },
   {
     name: 'describe_body',
-    description: 'Liefert das gemessene Körperprofil: Segmente mit Radius und Masse in Metern und '
-      + 'Kilogramm, Sohlenpunkte in Knochen-lokalen Metern, Ruheabstände in Metern und alle '
-      + 'Verfahrensparameter mit Begründung.',
+    description: 'Das gemessene Koerperprofil: Segmente mit Radius in Metern und Masse in Kilogramm, '
+      + 'Fusssohlenpunkte, Ruheabstaende zwischen Koerperteilen. Fuer Reichweiten und '
+      + 'Standflaechen. Zum blossen Setzen von Haltungen nicht noetig.',
     inputSchema: leer
   },
   {
     name: 'probe_joint',
-    description: 'Beugt ein Gelenk probeweise (biegt es testweise, um zu sehen/zu schauen, was '
-      + 'passiert), um z. B. ein Hüft- oder Kniegelenk kurz auszutesten, und liefert Vorher/Nachher '
-      + 'als Bild. Der Winkel ist in Grad, das Vorzeichen wirkt in dem in describe_rig genannten '
-      + 'Bezugssystem des Gelenks.',
+    description: 'Probiert ein einzelnes Gelenk aus: beugt es um den angegebenen Winkel und liefert Vorher '
+      + 'und Nachher als Bild. Zum Nachsehen, in welche Richtung ein Kanal wirkt, wenn die Angabe '
+      + 'aus describe_rig nicht reicht. Aendert die Timeline nicht.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -79,8 +111,9 @@ export const KATALOG = [
   },
   {
     name: 'confirm_role',
-    description: 'Bestätigt oder korrigiert eine Zuordnung von Rolle zu Knochen; gilt nach '
-      + 'Bestätigung als gemessen.',
+    description: 'Bestaetigt oder korrigiert, welcher Knochen eine Rolle traegt (foot_l, hand_r, ...). '
+      + 'Noetig, wenn describe_rig eine Rolle mit Konfidenz unter 1 meldet. Danach gilt die '
+      + 'Zuordnung als gemessen.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -92,11 +125,14 @@ export const KATALOG = [
   },
   {
     name: 'set_intent',
-    description: 'Legt die Erfolgskriterien der Bewegung fest — was am Ende erreicht sein '
-      + 'muss (Drehung, Sprungweite, Bodenkontakt, Abstände), nicht wie lang die Animation '
-      + 'insgesamt dauert; dafür dient set_duration. Alle Längen in Anteilen der '
-      + 'Körperhöhe, alle Winkel in Grad, alle Zeiten in Sekunden. Wird vor dem Bauen vom '
-      + 'Menschen bestätigt.',
+    description: 'Legt fest, woran die fertige Bewegung gemessen wird - was am Ende zutreffen muss. Der '
+      + 'Mensch bestaetigt sie; antwortet er nicht, gilt sie unbestaetigt weiter. Jedes Kriterium '
+      + 'braucht seine Pflichtfelder: rotation {part, axis, minDeg oder maxDeg}, airtime {minSek '
+      + 'oder maxSek}, travel {part, richtung, minHoehe oder maxHoehe}, contact_change {foot, von, '
+      + 'bis}, clearance {partA, partB, minAnteil oder maxAnteil}, part_height {part, minAnteil '
+      + 'oder maxAnteil}, part_speed {part, minHoeheProSek oder maxHoeheProSek}. WICHTIG: part ist '
+      + 'ein KNOCHENNAME aus describe_rig, keine Rolle. Laengen in Anteilen der Koerperhoehe, '
+      + 'Winkel in Grad, Zeiten in Sekunden.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -105,9 +141,43 @@ export const KATALOG = [
           minItems: 1,
           maxItems: 20,
           description: `Kriterien, je eines der ${INTENT_ARTEN.length} Arten: ${INTENT_ARTEN.join(', ')}`,
-          items: {
+                    items: {
             type: 'object',
-            properties: { kind: { type: 'string', enum: INTENT_ARTEN } },
+            description: 'Ein Kriterium. Welche Felder es braucht, haengt von kind ab — '
+              + 'die Pflichtfelder stehen bei jedem Feld unten und in der Werkzeugbeschreibung.',
+            properties: {
+              kind: { type: 'string', enum: INTENT_ARTEN },
+              part: {
+                type: 'string',
+                description: 'KNOCHENNAME aus describe_rig, keine Rolle. '
+                  + 'Pflicht bei rotation, travel, part_height, part_speed.'
+              },
+              axis: {
+                type: 'string', enum: ['x', 'y', 'z'],
+                description: 'Drehachse. Pflicht bei rotation.'
+              },
+              minDeg: { type: 'number', description: 'Untergrenze in Grad. rotation: minDeg oder maxDeg.' },
+              maxDeg: { type: 'number', description: 'Obergrenze in Grad. rotation: minDeg oder maxDeg.' },
+              minSek: { type: 'number', description: 'Untergrenze in Sekunden. airtime: minSek oder maxSek.' },
+              maxSek: { type: 'number', description: 'Obergrenze in Sekunden. airtime: minSek oder maxSek.' },
+              richtung: {
+                type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3,
+                description: 'Richtungsvektor [x, y, z], KEIN Wort wie "hoch". Pflicht bei travel.'
+              },
+              minHoehe: { type: 'number', description: 'Untergrenze in Koerperhoehen. travel: minHoehe oder maxHoehe.' },
+              maxHoehe: { type: 'number', description: 'Obergrenze in Koerperhoehen. travel: minHoehe oder maxHoehe.' },
+              foot: { type: 'string', description: 'Fussrolle, z. B. foot_l. Pflicht bei contact_change.' },
+              von: { type: 'integer', description: 'Startframe. Pflicht bei contact_change.' },
+              bis: { type: 'integer', description: 'Endframe. Pflicht bei contact_change.' },
+              partA: { type: 'string', description: 'erstes Segment. Pflicht bei clearance.' },
+              partB: { type: 'string', description: 'zweites Segment. Pflicht bei clearance.' },
+              minAnteil: { type: 'number', description: 'Untergrenze als Anteil der Koerperhoehe.' },
+              maxAnteil: { type: 'number', description: 'Obergrenze als Anteil der Koerperhoehe.' },
+              minHoeheProSek: { type: 'number', description: 'Untergrenze in Koerperhoehen je Sekunde.' },
+              maxHoeheProSek: { type: 'number', description: 'Obergrenze in Koerperhoehen je Sekunde.' },
+              from: { type: 'integer', description: 'Startframe des Messfensters, optional.' },
+              to: { type: 'integer', description: 'Endframe des Messfensters, optional.' }
+            },
             required: ['kind']
           }
         }
@@ -117,10 +187,9 @@ export const KATALOG = [
   },
   {
     name: 'set_duration',
-    description: 'Setzt, wie lang die Animation insgesamt dauert — die Gesamtlänge in '
-      + 'Sekunden ausgedrückt, angegeben als framerate-abhängige Frame-Anzahl: bei der im '
-      + 'Timeline-Vertrag genannten Framerate entspricht eine Sekunde der Framerate an '
-      + 'Frames. Legt den Zeitrahmen fest; die inhaltlichen Erfolgskriterien setzt set_intent.',
+    description: 'SCHRITT 3 - legt fest, wie lang die Bewegung ist, in Frames. Muss vor jedem Setzen von '
+      + 'Haltungen oder Phasen kommen; ohne Laenge weisen die anderen Werkzeuge ab. Die Framerate '
+      + 'steht in der Antwort.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -134,12 +203,16 @@ export const KATALOG = [
   },
   {
     name: 'add_phase',
-    description: 'Legt eine Bewegungsphase an, z. B. einen Schritt nach links (Verb step), '
-      + 'einen Sprung (takeoff/airborne/land) oder eine Drehung (turn) — baut also einen '
-      + 'gesamten Bewegungsabschnitt statt eines Einzelziels. Zeiten in Frames, '
-      + 'Phase-Parameter in den Einheiten des Verbs (Tiefe in Anteilen der Körperhöhe, '
-      + 'Geschwindigkeit in Körperhöhen pro Sekunde, Winkel in Grad). Verben und Parameter: '
-      + 'plan.md 6.3.',
+    kiste: true,
+    description: 'EBENE 3 - eine fertige Bewegung ueber einen Zeitabschnitt, statt eigener Haltungen. Der '
+      + 'Loeser rechnet die Posen selbst. Nur nehmen, wenn eine dieser zehn Bewegungen genau passt; '
+      + 'alles andere baut man mit set_pose. Parameter je Verb: stand {verteilung 0..1, atmen}, '
+      + 'crouch {tiefe: Anteil der Koerperhoehe}, takeoff {vy: Koerperhoehen pro Sekunde, spinGrad, '
+      + 'spinAchse: x, y oder z}, airborne {vy, spinGrad, tuck}, land {fuss, abfedern: Anteil}, '
+      + 'step {weite: Anteil der Koerperhoehe, richtung: Grad, fuss}, turn {winkel: Grad}, settle '
+      + '{ausschlag}, reach {ziel: [x, y, z] in Metern, hand}, swing_arms {richtung, ausschlag, '
+      + 'wiederholungen}. Phasen duerfen sich zeitlich nur ueberlappen, wenn sie verschiedene '
+      + 'Koerperteile betreffen.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -153,8 +226,9 @@ export const KATALOG = [
   },
   {
     name: 'edit_phase',
-    description: 'Ändert oder entfernt eine bestehende Phase. Dieselben Einheiten wie add_phase. '
-      + 'Änderungen sind über undo rückgängig zu machen.',
+    kiste: true,
+    description: 'Aendert eine mit add_phase angelegte Phase oder entfernt sie. Die Id steht in der Antwort '
+      + 'von add_phase. Gilt nur fuer Phasen, nicht fuer gesetzte Haltungen.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -169,11 +243,11 @@ export const KATALOG = [
   },
   {
     name: 'set_target',
-    description: 'Setzt für einen einzelnen Frame ein Ziel für einen Endeffektor oder den '
-      + 'Schwerpunkt, in Metern, Weltkoordinaten des Weltvertrags — also eine Wunschposition '
-      + 'wie „das Bein soll bei Frame 40 auf 0,35 m stehen“, nicht einen Gelenkwinkel; '
-      + 'Winkel in Grad setzt set_joint. Wird vom Löser angestrebt und kann ihm nicht gelingen; '
-      + 'das steht dann im Bericht.',
+    kiste: true,
+    description: 'EBENE 2 - sagt, WO ein Koerperteil in einem Frame sein soll, statt welche Winkel es hat. '
+      + 'Angabe in Metern im Weltsystem aus describe_world. ACHTUNG: Der Loeser setzt solche Ziele '
+      + 'derzeit nur innerhalb der Verben reach und step um; ohne passende Phase bleibt der Frame '
+      + 'unveraendert und der Bericht sagt es. Fuer verlaessliche Ergebnisse set_pose nehmen.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -189,40 +263,219 @@ export const KATALOG = [
   },
   {
     name: 'set_joint',
-    description: 'Setzt für einen einzelnen Frame einen Gelenkwinkel in Grad, Vorzeichen und Achse '
-      + 'wie in describe_rig.',
+    description: 'EBENE 1, Feinschliff - setzt EINEN Kanal EINES Gelenks in einem Frame. Fuer '
+      + 'Nachbesserungen an einer Haltung, die schon steht. Eine ganze Haltung setzt man mit '
+      + 'set_pose, nicht mit vielen Aufrufen hiervon. Gelenk- und Kanalnamen kommen aus '
+      + 'describe_rig; Werte ausserhalb der gemessenen Gelenkgrenze werden beim Loesen geklemmt und '
+      + 'gemeldet.',
     inputSchema: {
       type: 'object',
       properties: {
         frame: { type: 'integer', minimum: 0 },
         joint: { type: 'string', description: 'Gelenkname aus describe_rig' },
         angleDeg: { type: 'number', minimum: -180, maximum: 180, description: 'Winkel in Grad' },
-        channel: { type: 'string', enum: KANAELE, description: `einer von ${KANAELE.length}: ${KANAELE.join(', ')}` }
+        channel: {
+          type: 'string',
+          // Kein festes enum: die Kanaele sind je Gelenk verschieden und kommen
+          // aus der Vermessung (shoulder_l: shrug/fwd, arm_l: lift/swing/twist,
+          // hip_l: flex/spread/twist, ankle_l: point/tilt, knee_l: bend). Eine
+          // feste Liste machte am Xbot 15 von 18 Gelenken unerreichbar.
+          description: 'Kanalname des Gelenks, z. B. bend, lift, flex, shrug — '
+            + 'welche es an welchem Gelenk gibt, sagt describe_rig'
+        }
       },
       required: ['frame', 'joint', 'angleDeg', 'channel']
     }
   },
   {
+    name: 'set_pose',
+    description: 'EBENE 1, DER HAUPTWEG - setzt eine ganze Koerperhaltung auf einen Frame: alle Gelenke in '
+      + 'einem Aufruf, so wie ein Animator ein Schluesselbild setzt. So arbeitet man hier: mehrere '
+      + 'Haltungen auf verschiedene Frames setzen; dazwischen wird beim Loesen ueberblendet, weich '
+      + 'oder linear (ease). WICHTIG: Gelenkwinkel allein heben die Figur nicht vom Boden - '
+      + 'wo sie im Raum steht, sagst du mit root. Danach mit look ansehen und mit '
+      + 'describe_pose nachmessen. Die '
+      + 'angegebenen Gelenke ERSETZEN die Haltung dieses Frames. Gelenk- und Kanalnamen kommen aus '
+      + 'describe_rig und sind je Gelenk verschieden.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        frame: { type: 'integer', minimum: 0, description: 'Frame, auf dem die Haltung sitzt' },
+        joints: {
+          type: 'object',
+          description: 'Gelenkname auf Kanal auf Grad, z. B. '
+            + '{"arm_l": {"lift": 70, "swing": 10}, "elbow_l": {"bend": 80}} — '
+            + 'welche Gelenke und Kanäle es gibt, sagt describe_rig'
+        },
+        root: {
+          type: 'object',
+          description: 'WO die Figur steht und wohin sie schaut. Ohne das bleibt sie auf der '
+            + 'Stelle — Gelenkwinkel allein heben niemanden vom Boden. '
+            + '{pos: [x, y, z]} in Metern im Weltsystem aus describe_world; '
+            + '{turnGrad: Zahl} dreht die ganze Figur um die Hochachse. '
+            + 'Ein Sprung entsteht, indem pos[1] (die Hoehe) ueber die Frames steigt und '
+            + 'wieder faellt; ein Schritt, indem pos entlang der Blickrichtung wandert. '
+            + 'Zwischen gesetzten Frames wird die Wurzel wie alles andere ueberblendet.',
+          properties: {
+            pos: {
+              type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3,
+              description: 'Position des Beckens [x, y, z] in Metern'
+            },
+            turnGrad: {
+              type: 'number',
+              description: 'Kurzform fuer drehGrad.y — Drehung um die Hochachse in Grad'
+            },
+            drehGrad: {
+              type: 'object',
+              description: 'Drehung der ganzen Figur in Grad, je Achse. '
+                + 'x = Salto vorwaerts/rueckwaerts (Nicken), '
+                + 'y = Drehung im Stand (Gieren), '
+                + 'z = seitliches Kippen (Rollen). '
+                + 'Ein Rueckwaertssalto ist x von 0 auf -360 ueber die Flugphase; '
+                + 'eine halbe Drehung im Stand ist y von 0 auf 180. '
+                + 'Wird zwischen Schluesselbildern ueberblendet, Achse fuer Achse — '
+                + 'volle Umdrehungen bleiben dabei volle Umdrehungen.',
+              properties: {
+                x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' }
+              }
+            }
+          }
+        },
+        ease: {
+          type: 'string',
+          enum: EASE_ARTEN,
+          description: `Übergang zum nächsten gesetzten Frame. `
+            + `"wurf" ist der freie Fall: die Höhe folgt exakt der Wurfparabel. `
+            + `Nimm ihn für die Flugphase — dann genügen zwei Schlüsselbilder für den `
+            + `ganzen Flug, und die Ballistikprüfung ist still. Sonst einer von `
+            + `${EASE_ARTEN.length}: ${EASE_ARTEN.join(', ')}; ohne Angabe ${EASE_STANDARD}`
+        }
+      },
+      required: ['frame', 'joints']
+    }
+  },
+  {
+    name: 'measure',
+    description: 'DEIN MESSGERAET - du richtest es selbst aus. Statt fertiger Urteile bekommst '
+      + 'du sieben Grundmessungen, die du beliebig kombinierst, um zu pruefen, ob eine Haltung '
+      + 'stimmt. Beispiel Hocke: steht das Knie vor dem Zeh (abstand_vorne knee_l/toe_l), '
+      + 'neigt sich der Rumpf nach vorne (neigung pelvis/neck), sitzt die Huefte hinter dem '
+      + 'Knoechel (abstand_vorne pelvis/ankle_l)? Beispiel Schritt: wandert der Fuss (tempo), '
+      + 'bleibt der andere stehen? Jede Bewegung braucht andere Fragen - stell sie. '
+      + 'Koerperteile sind Rollennamen aus describe_rig, dazu "com" fuer den Schwerpunkt. '
+      + 'Alle Laengen in Metern, Winkel in Grad.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        frame: { type: 'integer', minimum: 0, description: 'Frame, in dem gemessen wird' },
+        fragen: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          description: 'Was du wissen willst. Je Frage {art, a, ...}: '
+            + 'hoehe {a} - Hoehe ueber dem Boden. '
+            + 'abstand {a, b} - Luftlinie zwischen zwei Teilen. '
+            + 'abstand_vorne {a, b} - wie weit a vor b liegt, entlang der Blickrichtung; '
+            + 'negativ heisst dahinter. '
+            + 'abstand_seite {a, b} - wie weit a neben b liegt. '
+            + 'abstand_hoch {a, b} - wie weit a ueber b liegt. '
+            + 'winkel {a, b, c} - Winkel bei b zwischen den Strecken zu a und c. '
+            + 'neigung {a, b} - wie weit die Strecke a nach b von der Senkrechten abweicht; '
+            + '0 heisst lotrecht, 90 heisst waagerecht. '
+            + 'tempo {a, bisFrame} - Weg pro Sekunde zwischen diesem und jenem Frame. '
+            + 'Optional name: dein eigener Name fuer die Messung.',
+          items: {
+            type: 'object',
+            properties: {
+              art: {
+                type: 'string',
+                enum: ['hoehe', 'abstand', 'abstand_vorne', 'abstand_seite', 'abstand_hoch',
+                  'winkel', 'neigung', 'tempo'],
+              },
+              a: { type: 'string', description: 'Koerperteil, Rollenname oder "com"' },
+              b: { type: 'string', description: 'zweites Koerperteil, wo die Art es braucht' },
+              c: { type: 'string', description: 'drittes Koerperteil, nur bei winkel' },
+              bisFrame: { type: 'integer', description: 'Zielframe, nur bei tempo' },
+              name: { type: 'string', description: 'eigener Name der Messung' },
+            },
+            required: ['art', 'a'],
+          },
+        },
+      },
+      required: ['frame', 'fragen'],
+    }
+  },
+  {
+    name: 'list_poses',
+    description: 'Zeigt alle gesetzten Haltungen mit ihrem Frame, der Zahl der Gelenke und ob '
+      + 'eine Wurzelbewegung dabei ist. Der Ueberblick ueber die eigene Arbeit: ohne ihn weisst '
+      + 'du nicht, was du schon gesetzt hast, und kannst nichts umsortieren.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'move_pose',
+    description: 'Verschiebt eine gesetzte Haltung auf einen anderen Frame — der Schritt, mit '
+      + 'dem du den zeitlichen Ablauf zurechtrueckst, nachdem die Haltungen stehen. Kommt eine '
+      + 'Bewegung zu frueh, ruecke sie nach hinten, statt sie neu zu bauen. Auf dem Zielframe '
+      + 'darf noch keine Haltung liegen.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        von: { type: 'integer', minimum: 0, description: 'Frame, auf dem die Haltung jetzt liegt' },
+        nach: { type: 'integer', minimum: 0, description: 'Frame, auf den sie soll' }
+      },
+      required: ['von', 'nach']
+    }
+  },
+  {
+    name: 'delete_pose',
+    description: 'Loescht eine gesetzte Haltung. Danach wird an dieser Stelle zwischen den '
+      + 'benachbarten Haltungen durchgeblendet, als haette es sie nie gegeben. Fuer Haltungen, '
+      + 'die sich als falsch erwiesen haben — undo nimmt nur den letzten Schritt zurueck.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        frame: { type: 'integer', minimum: 0, description: 'Frame, dessen Haltung weg soll' }
+      },
+      required: ['frame']
+    }
+  },
+  {
+    name: 'describe_pose',
+    description: 'Sagt in Zahlen, wie die Figur in einem Frame steht: Weltpositionen der Koerperteile in '
+      + 'Metern, Schwerpunkt, Hoehe ueber dem Boden, Bodenkontakt, und ob der Frame eine gesetzte '
+      + 'Haltung ist oder eine Ueberblendung. Das Gegenstueck zu look: dort das Bild, hier die '
+      + 'Zahlen.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        frame: { type: 'integer', minimum: 0, description: 'Frame, dessen Haltung gefragt ist' }
+      },
+      required: ['frame']
+    }
+  },
+  {
     name: 'undo',
-    description: 'Nimmt die letzte Änderung zurück, macht sie also rückgängig: den letzten '
-      + 'Schritt an Phasen oder Overrides, z. B. wenn das Ergebnis dem Menschen nicht gefällt.',
+    description: 'Nimmt die letzte Aenderung zurueck. Es gibt kein Loeschen einzelner Haltungen und kein '
+      + 'Verschieben: eine Haltung auf einem Frame ueberschreibt man, indem man set_pose erneut auf '
+      + 'denselben Frame aufruft.',
     inputSchema: leer
   },
   {
     name: 'validate',
-    description: 'Prüft, ob die gesamte Timeline in Ordnung ist — phasenabhängig, mit '
-      + 'vollständigem Bericht und einem Bildstreifen der kritischen Frames. Anders als look '
-      + 'zeigt es nicht nur, sondern prüft und beanstandet. Alle Zahlen in den Einheiten des '
-      + 'Weltvertrags (Meter, Grad, Sekunden).',
+    description: 'Prueft die gesamte Bewegung und meldet, was nicht stimmt: Bodendurchdringung, '
+      + 'Selbstdurchdringung, verletzte Gelenkgrenzen, rutschende Fuesse, Gleichgewicht, Flugbahn - '
+      + 'jeweils mit Frame und Betrag in Metern oder Grad. Dazu die mit set_intent gesetzten '
+      + 'Kriterien. Liefert immer einen Bildstreifen mit. Braucht gesetzte Kriterien.',
     inputSchema: leer
   },
   {
     name: 'look',
-    description: 'Zeigt, wie die Figurenbewegung aussieht: erzeugt einen Bildstreifen aus '
-      + 'gewählten Frames und Ansichten — front = von vorn, side = von der Seite, quarter = '
-      + 'aus dem Viertel, top = von oben — im Charakter-Bezugssystem, immer annotiert. Ansinnen '
-      + 'wie „zeig mir von vorne/von der Seite, wie das aussieht“ gehört hierher. Prüft nichts '
-      + 'und beanstandet nichts; zum Prüfen dient validate. Frames ganzzahlig im Timeline-Bezug.',
+    description: 'Zeigt, wie die Bewegung aussieht: gerenderte Bilder der angegebenen Frames, annotiert mit '
+      + 'Bodengitter, Schwerpunkt und Kontaktpunkten. Braucht keine Vorbereitung und keine '
+      + 'Kriterien - loest selbst. In der Antwort steht ausserdem, ob die Timeline ueberhaupt '
+      + 'Bewegung enthaelt. NACH JEDER AENDERUNG AUFRUFEN: Zahlen allein zeigen nicht, ob eine '
+      + 'Bewegung richtig aussieht.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -240,8 +493,9 @@ export const KATALOG = [
   },
   {
     name: 'ask_human',
-    description: 'Stellt dem Menschen eine Frage mit Antwortmöglichkeiten und wartet auf einen '
-      + 'Klick; die Antwort kommt im selben Aufruf zurück. Budget: siehe UI-Anzeige.',
+    description: 'Fragt den Menschen am Bildschirm etwas, das sich nicht messen laesst - Geschmack, eine '
+      + 'Entscheidung zwischen zwei Varianten. Der Aufruf wartet auf den Klick. Nur fuer Fragen, '
+      + 'die man nicht selbst mit describe_rig, describe_pose oder look beantworten kann.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -256,11 +510,32 @@ export const KATALOG = [
   },
   {
     name: 'export_clip',
-    description: 'Exportiert die Timeline als glTF mit Wurzelbewegung in Meter, Y-oben, '
-      + 'Charakter-vorne +Z. Rotationen als Quaternionen.',
+    description: 'Schreibt die fertige Bewegung als glTF heraus, mit Wurzelbewegung, in Metern und Y-oben. '
+      + 'Letzter Schritt, wenn die Bewegung steht.',
     inputSchema: leer
   }
 ];
 
+/**
+ * Die Werkzeugkiste: fertige Bewegungen und Endeffektor-Ziele.
+ *
+ * Sie bleiben im Katalog und bleiben aufrufbar, aber der AGENT SIEHT SIE NICHT.
+ * Grund ist ein zweimal reproduzierter Befund: Steht add_phase neben set_pose,
+ * baut der Agent die ganze Bewegung aus fertigen Phasen und setzt keine
+ * einzige eigene Haltung — im zweiten Lauf sieben Phasen, null Haltungen.
+ * Die bequemere Tuer gewinnt, egal was in der Beschreibung steht.
+ *
+ * Dazu kommt: von den zehn Verben sind nur vier ueberhaupt geloest
+ * (GEBAUTE_VERBEN in src/solver/loeser.js); die uebrigen sechs nehmen den
+ * Aufruf an und halten die Pose. Der Agent lief damit in eine Wand.
+ *
+ * Die Kiste ist damit nicht weg, sondern spaeter zuschaltbar — als das, was
+ * sie sein soll: eine Bibliothek, aus der man sich bedienen KANN.
+ */
+export const KISTE = KATALOG.filter((t) => t.kiste).map((t) => t.name);
+
+/** Was der Agent sieht. */
+export const KATALOG_SICHTBAR = KATALOG.filter((t) => !t.kiste);
+
 /** Erwartete Anzahl. Weicht KATALOG davon ab, ist etwas verlorengegangen. */
-export const KATALOG_GROESSE = 16;
+export const KATALOG_GROESSE = 22;

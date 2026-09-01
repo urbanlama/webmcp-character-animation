@@ -12,7 +12,9 @@
 //            ablehnen, mit Grund und Zahl im Fehlerfeld.
 //   Tools    Ein document.modelContext-Mock wird VOR dem Seitenladen eingesetzt;
 //            die Seite muss genau einmal createToolLayer damit aufrufen und genau
-//            KATALOG_GROESSE Werkzeuge bei ihm registrieren.
+//            KATALOG_SICHTBAR.length Werkzeuge bei ihm registrieren — die
+//            Werkzeugkiste (KISTE) ist fuer den Agenten absichtlich unsichtbar
+//            und zaehlt nicht mit.
 //
 // Kein Pixelvergleich, keine Screenshots: die Ansicht prüft src/scene/
 // view.test.mjs rechnerisch über die projizierten Boxecken.
@@ -25,7 +27,8 @@ import { fileURLToPath } from 'node:url';
 
 import { chromium } from 'playwright';
 import { XBOT_PFAD, wuerfelOhneSkelett } from '../src/scene/testdaten.mjs';
-import { KATALOG, KATALOG_GROESSE } from '../src/tools/catalog.js';
+import { ZEILEN_STANDARD } from '../src/ui/agentenspur.js';
+import { FRAME_MAX, KATALOG, KATALOG_GROESSE, KATALOG_SICHTBAR } from '../src/tools/catalog.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // PORT=0: das Betriebssystem vergibt einen freien Port, der Server meldet ihn.
@@ -70,7 +73,7 @@ async function hochladen(page, pfad) {
   await page.waitForFunction(() => {
     const s = document.getElementById('status');
     const e = document.getElementById('error');
-    return !!s && (s.textContent.indexOf('Knochen') >= 0 || e.style.display === 'block');
+    return !!s && (s.textContent.indexOf('bones') >= 0 || e.style.display === 'block');
   }, null, { timeout: 30000 });
 
   return page.evaluate(() => ({
@@ -123,13 +126,27 @@ test('Browser, Positivfall: Xbot-Upload nennt 67 Knochen und hängt das Modell i
   await page.goto(basis, { waitUntil: 'load' });
   assert.equal(await page.evaluate(() => !!window.__boot?.bereit), true,
     'Seitenmodul wurde nicht ausgeführt: window.__boot.bereit ist nach dem Laden nicht gesetzt');
-  // Ohne document.modelContext baut die Seite keine Werkzeugschicht — der
-  // normale Uploadlauf bleibt unverändert.
-  assert.equal(await page.evaluate(() => window.__tools), null,
-    'ohne document.modelContext darf window.__tools nicht gesetzt sein');
+  // Ohne document.modelContext steht die Werkzeugschicht trotzdem — sie ist
+  // dann nur bei niemandem registriert. Sichtbar gesagt wird das im Hinweis;
+  // der normale Uploadlauf bleibt unverändert.
+  const ohneKontext = await page.evaluate(() => ({
+    schicht: !!window.__tools,
+    registriert: window.__registrierungsaufrufe ?? 0,
+    hinweisSichtbar: !document.getElementById('hinweis').hidden,
+    hinweis: document.getElementById('hinweis').textContent,
+  }));
+  assert.equal(ohneKontext.schicht, true,
+    'ohne document.modelContext muss window.__tools trotzdem stehen: die Werkzeuge sollen '
+    + 'auch ohne Flag prüfbar sein');
+  assert.equal(ohneKontext.registriert, 0,
+    `ohne document.modelContext darf nichts registriert werden, waren: ${ohneKontext.registriert}`);
+  assert.equal(ohneKontext.hinweisSichtbar, true,
+    'ohne document.modelContext muss die Seite sichtbar sagen, was fehlt');
+  assert.match(ohneKontext.hinweis, /enable-webmcp-testing/,
+    `Hinweis muss den Weg nennen, war: "${ohneKontext.hinweis}"`);
 
   const befund = await hochladen(page, XBOT_PFAD);
-  const gefunden = Number((befund.status.match(/(\d+)\s+Knochen/) || [])[1]);
+  const gefunden = Number((befund.status.match(/(\d+)\s+bones/) || [])[1]);
 
   assert.equal(gefunden, 67,
     `Statuszeile muss 67 Knochen nennen, war: "${befund.status}"`);
@@ -159,7 +176,7 @@ test('Browser, Negativfall: Würfel ohne Skelett wird sichtbar mit Zahl abgelehn
   await page.close();
 });
 
-test('Browser, Werkzeugschicht: Mock-Kontext vor dem Laden beweist genau 16 registrierte Tools', async () => {
+test(`Browser, Werkzeugschicht: Mock-Kontext vor dem Laden beweist genau ${KATALOG_SICHTBAR.length} registrierte Tools`, async () => {
   const page = await browser.newPage();
   await modelContextMockEinsetzen(page);
   await page.goto(basis, { waitUntil: 'load' });
@@ -177,14 +194,14 @@ test('Browser, Werkzeugschicht: Mock-Kontext vor dem Laden beweist genau 16 regi
 
   assert.ok(befund.schicht,
     'window.__tools muss gesetzt sein: die Seite muss createToolLayer mit dem echten document.modelContext aufrufen');
-  assert.equal(befund.aufrufe, KATALOG_GROESSE,
-    `registerTool muss genau ${KATALOG_GROESSE}-mal aufgerufen sein, war: ${befund.aufrufe} — `
+  assert.equal(befund.aufrufe, KATALOG_SICHTBAR.length,
+    `registerTool muss genau ${KATALOG_SICHTBAR.length}-mal aufgerufen sein, war: ${befund.aufrufe} — `
     + 'genau einmal createToolLayer, kein zweites Mal');
   assert.equal(befund.beimMock.length, new Set(befund.beimMock).size,
     `jeder Name darf genau einmal registriert sein, es sind ${befund.beimMock.length} Aufrufe `
     + `mit ${new Set(befund.beimMock).size} verschiedenen Namen`);
-  assert.deepEqual(befund.beimMock, KATALOG.map((t) => t.name),
-    `beim Mock müssen genau die ${KATALOG_GROESSE} Katalogwerkzeuge liegen, `
+  assert.deepEqual(befund.beimMock, KATALOG_SICHTBAR.map((t) => t.name),
+    `beim Mock müssen genau die ${KATALOG_SICHTBAR.length} sichtbaren Katalogwerkzeuge liegen, `
     + `es sind ${befund.beimMock.length}: ${befund.beimMock.join(', ')}`);
   assert.deepEqual(befund.schicht, befund.beimMock,
     'die Schicht und der Mock müssen dieselben Werkzeuge sehen');
@@ -279,7 +296,7 @@ test('Browser, Rückfrage sichtbar: gestellte Frage erscheint, der Klick liefert
     `2 Antwortmöglichkeiten müssen klickbar sein, es sind ${vorher.knoepfe.length}`);
   assert.match(vorher.knoepfe[0].text, /linker Fuß/);
   assert.match(vorher.knoepfe[1].text, /rechter Fuß/);
-  assert.match(vorher.budget, /2 von 3 Fragen/,
+  assert.match(vorher.budget, /2 of 3 questions/,
     `die Budgetanzeige muss den Stand nennen, war: "${vorher.budget}"`);
 
   // Der Klick des Menschen — kein antworte() aus dem Testcode.
@@ -350,7 +367,9 @@ test('Browser, zwei Varianten: beide stehen nebeneinander, ein Klick wählt eine
 test('Browser, Rückfrage Negativfall: Abbruch und Neuladen lassen die Timeline bitgleich', async () => {
   const page = await seiteMitWerkzeugen();
 
-  // Eine Timeline, die Schaden nehmen könnte.
+  // Eine Timeline, die Schaden nehmen könnte. add_phase steht in der
+  // Werkzeugkiste und sieht der Agent nicht mehr (KISTE), für den
+  // Aufbau hier zählt das nicht — rufe() ist der Weg ohne Katalogsicht.
   const aufbau = await page.evaluate(async () => {
     const t = window.__tools;
     const a = await t.rufe('set_duration', { frameCount: 90 });
@@ -486,7 +505,7 @@ test('Browser, Rückfrage: Panel und Figur überlappen sich weder bei 1440 noch 
   await page.setViewportSize({ width: 1440, height: 900 });
 
   const befund = await hochladen(page, XBOT_PFAD);
-  assert.equal(Number((befund.status.match(/(\d+)\s+Knochen/) || [])[1]), 67,
+  assert.equal(Number((befund.status.match(/(\d+)\s+bones/) || [])[1]), 67,
     `für die Messung muss Xbot stehen, Status war: "${befund.status}"`);
   await keineFrageOffen(page);
 
@@ -564,7 +583,7 @@ const PROFIL_UNSICHER = {
 test('Browser, Rollen: der fragliche Knochen leuchtet, der Klick legt die Rolle fest', async () => {
   const page = await seiteMitWerkzeugen();
   const befund = await hochladen(page, XBOT_PFAD);
-  assert.equal(Number((befund.status.match(/(\d+)\s+Knochen/) || [])[1]), 67,
+  assert.equal(Number((befund.status.match(/(\d+)\s+bones/) || [])[1]), 67,
     `Xbot muss stehen, Status war: "${befund.status}"`);
   await keineFrageOffen(page);
 
@@ -701,10 +720,12 @@ function spurLesen(page) {
 test('Browser, Agentenspur: jeder Werkzeugaufruf des Agenten wird sichtbar, ohne den Aufruf zu verändern', async () => {
   const page = await seiteMitWerkzeugen();
 
-  // Negativfall zuerst: solange nichts läuft, steht auch nichts da.
-  const leer = await spurLesen(page);
-  assert.equal(leer.sichtbar, false,
-    `ohne Aufruf darf die Spur nicht erscheinen, sie zeigte ${leer.zeilen.length} Zeilen`);
+  // Ausgangsstand: die Seite laedt das Beispielmodell beim Start selbst und
+  // meldet die Vermessung in der Spur. Gezaehlt wird deshalb der ZUWACHS,
+  // nicht der absolute Stand — sonst haengt der Test daran, ob der Autostart
+  // schon durch war.
+  await page.waitForTimeout(600);
+  const vorher = await spurLesen(page);
 
   const gut = await agentRuft(page, 'set_duration', { frameCount: 90 });
   assert.equal(gut.isError, false, `der Aufruf muss durchlaufen, war: "${gut.text}"`);
@@ -712,30 +733,38 @@ test('Browser, Agentenspur: jeder Werkzeugaufruf des Agenten wird sichtbar, ohne
 
   const nachEinem = await spurLesen(page);
   assert.equal(nachEinem.sichtbar, true, 'nach dem ersten Aufruf ist die Spur da');
-  assert.equal(nachEinem.zeilen.length, 1,
-    `1 Zeile erwartet, es sind ${nachEinem.zeilen.length}`);
-  assert.equal(nachEinem.zeilen[0].werkzeug, 'set_duration');
+  assert.equal(nachEinem.zeilen.length, vorher.zeilen.length + 1,
+    `genau 1 Zeile mehr erwartet (vorher ${vorher.zeilen.length}), `
+    + `es sind ${nachEinem.zeilen.length}`);
+  assert.equal(nachEinem.zeilen[0].werkzeug, 'set_duration',
+    'der neueste Aufruf steht oben');
   assert.match(nachEinem.zeilen[0].zeit, /^\d{2}:\d{2}:\d{2}$/,
     `die Zeile nennt eine Uhrzeit, war: "${nachEinem.zeilen[0].zeit}"`);
   assert.match(nachEinem.zeilen[0].ergebnis, /\d/,
     `die Zeile nennt das Ergebnis mit Zahl, war: "${nachEinem.zeilen[0].ergebnis}"`);
   assert.equal(nachEinem.zeilen[0].fehler, false);
-  assert.match(nachEinem.titel, /1 Aufruf/, `der Titel zählt mit, war: "${nachEinem.titel}"`);
+  assert.match(nachEinem.titel, new RegExp(`${nachEinem.zeilen.length} calls?`),
+    `der Titel zählt mit, war: "${nachEinem.titel}"`);
 
-  // Ein abgelehnter Aufruf wird als Fehlschlag geführt, nicht verschwiegen.
-  const schlecht = await agentRuft(page, 'add_phase',
-    { verb: 'takeoff', from: 12, to: 970, params: { vy: 4.2 } });
+  // Die Spur muss den abgelehnten Agenten-Aufruf sichtbar führen. Der
+  // vorherige Fall benutzte add_phase mit from 12 / to 970 — ein Werkzeug
+  // der Kiste, das der Agent nicht mehr sieht und das über getTools() nicht
+  // mehr erreichbar ist. Der Negativfall bleibt: set_duration mit frameCount
+  // 970 wird vom Handler nach plan.md 5.4 abgelehnt, weil 970 über FRAME_MAX
+  // liegt; die Meldung nennt die Grenze (AGENTS.md, Zahl im Fehlertext).
+  const schlecht = await agentRuft(page, 'set_duration', { frameCount: 970 });
   assert.equal(schlecht.isError, true,
-    `Frame 970 liegt außerhalb von 90 und muss abgelehnt werden, war: "${schlecht.text}"`);
+    `frameCount 970 liegt über FRAME_MAX ${FRAME_MAX} und muss abgelehnt werden, war: "${schlecht.text}"`);
 
   const nachZwei = await spurLesen(page);
-  assert.equal(nachZwei.zeilen.length, 2,
-    `2 Zeilen erwartet, es sind ${nachZwei.zeilen.length}`);
-  assert.equal(nachZwei.zeilen[0].werkzeug, 'add_phase',
+  assert.equal(nachZwei.zeilen.length, vorher.zeilen.length + 2,
+    `genau 2 Zeilen mehr als zu Beginn erwartet (vorher ${vorher.zeilen.length}), `
+    + `es sind ${nachZwei.zeilen.length}`);
+  assert.equal(nachZwei.zeilen[0].werkzeug, 'set_duration',
     'der neueste Aufruf steht oben');
   assert.equal(nachZwei.zeilen[0].fehler, true,
     'der abgelehnte Aufruf muss als Fehlschlag zu sehen sein');
-  assert.match(nachZwei.zeilen[0].ergebnis, /abgelehnt/);
+  assert.match(nachZwei.zeilen[0].ergebnis, /rejected/);
   assert.equal(nachZwei.zeilen[1].werkzeug, 'set_duration',
     'der ältere Aufruf rutscht nach unten');
 
@@ -748,17 +777,23 @@ test('Browser, Agentenspur: jeder Werkzeugaufruf des Agenten wird sichtbar, ohne
   await page.close();
 });
 
-test('Browser, Agentenspur: sie bleibt kurz — mehr als 8 Aufrufe füllen keine Wand', async () => {
+test('Browser, Agentenspur: sie bleibt kurz — mehr als die Obergrenze an Aufrufen füllt keine Wand', async () => {
   const page = await seiteMitWerkzeugen();
-  for (let i = 0; i < 11; i += 1) {
-    await agentRuft(page, 'set_duration', { frameCount: 60 + i });
+  // Etwas über der Grenze: die Spur muss ein Fenster bleiben, nicht eine Wand.
+  const mehrAlsDieGrenze = ZEILEN_STANDARD + 3;
+  for (let i = 0; i < mehrAlsDieGrenze; i += 1) {
+    await agentRuft(page, 'set_duration', { frameCount: 60 + (i % 200) });
   }
   const spur = await spurLesen(page);
-  assert.equal(spur.zeilen.length, 8,
-    `höchstens 8 Zeilen sichtbar, es sind ${spur.zeilen.length}`);
-  assert.match(spur.titel, /11 Aufrufe/,
-    `gezählt werden trotzdem alle, Titel war: "${spur.titel}"`);
-  assert.equal(await page.evaluate(() => window.__tools.store.lies().frameCount), 70,
+  assert.equal(spur.zeilen.length, ZEILEN_STANDARD,
+    `höchstens ${ZEILEN_STANDARD} Zeilen sichtbar, es sind ${spur.zeilen.length}`);
+  // Einträge fallen vorne wieder heraus, sobald die Obergrenze erreicht ist —
+  // der Titel zählt nur, was noch im Fenster liegt, nicht die Gesamtzahl.
+  assert.match(spur.titel, new RegExp(`${ZEILEN_STANDARD} calls`),
+    `gezählt werden alle im Fenster bis zur Obergrenze, Titel war: "${spur.titel}"`);
+  // Aelteste fallen hinten raus, der neueste steht oben.
+  assert.equal(await page.evaluate(() => window.__tools.store.lies().frameCount),
+    60 + ((mehrAlsDieGrenze - 1) % 200),
     'der letzte Aufruf hat gewirkt');
 
   await page.close();
@@ -823,22 +858,29 @@ test('Browser, Unterpfad: die Seite läuft vollständig unter …/webmcp/, ohne 
   // three.js kommt über die Import-Map; ohne sie steht keine Szene.
   assert.equal(await page.evaluate(() => !!window.__boot?.bereit), true,
     `das Seitenmodul muss durchgelaufen sein, Fehler: ${fehler.join(' | ') || 'keine'}`);
-  assert.equal(await page.evaluate(() => window.__registrierungsaufrufe ?? 0), KATALOG_GROESSE,
-    `unter dem Unterpfad müssen dieselben ${KATALOG_GROESSE} Werkzeuge registriert sein`);
+  assert.equal(await page.evaluate(() => window.__registrierungsaufrufe ?? 0), KATALOG_SICHTBAR.length,
+    `unter dem Unterpfad müssen dieselben ${KATALOG_SICHTBAR.length} Werkzeuge registriert sein`);
 
   // Der ganze Weg, nicht nur das Laden: Modell rein, Rollenfrage sichtbar.
   const befund = await hochladen(page, XBOT_PFAD);
-  assert.equal(Number((befund.status.match(/(\d+)\s+Knochen/) || [])[1]), 67,
+  assert.equal(Number((befund.status.match(/(\d+)\s+bones/) || [])[1]), 67,
     `der Upload muss unter dem Unterpfad genauso laufen, Status war: "${befund.status}"`);
   assert.equal(befund.fehlerSichtbar, false,
     `kein Fehlerfeld erwartet, war: "${befund.fehler}"`);
 
-  await page.waitForFunction(() => !document.getElementById('frage').hidden,
-    null, { timeout: 10000 });
-  const panel = await panelLesen(page);
-  assert.equal(panel.knoepfe.length, 2,
-    `auch die Rückfrage muss unter dem Unterpfad stehen, sie zeigte ${panel.knoepfe.length} Karten`);
-  await page.click('#frage-optionen button[data-index="0"]');
+  // KEINE Rollenrückfrage beim Xbot — und das ist die Zusicherung.
+  //
+  // Der Xbot ist ein Mixamo-Rig: seine Knochen heißen mixamorigLeftLeg,
+  // mixamorigRightShoulder und so fort. Die Zuordnung steht damit im Namen und
+  // wird nicht geschätzt (erkenneKonvention in src/rig/detect.js). Vorher
+  // schätzte die Geometrie 0,54 für den Unterschenkel, und die Seite stellte
+  // dem Menschen achtzehn Fragen zu einem Modell, das sie selbst mitliefert —
+  // ein Agent hielt das für eine Vorbedingung und begann zu bestätigen, statt
+  // zu animieren. Gefragt wird jetzt nur noch bei Rigs, die sich nicht selbst
+  // benennen.
+  await new Promise((r) => setTimeout(r, 1200));
+  assert.equal(await page.evaluate(() => document.getElementById('frage').hidden), true,
+    'beim Xbot darf keine Rollenrückfrage stehen: die Knochennamen benennen die Rollen');
 
   assert.deepEqual(wache.abgewiesen, [],
     `kein einziger Pfad darf ab Wurzel gehen, abgewiesen wurden: ${wache.abgewiesen.join(', ')}`);

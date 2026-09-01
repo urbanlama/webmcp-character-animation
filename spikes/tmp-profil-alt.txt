@@ -1,0 +1,40 @@
+pelvis.tilt sign=1 limit=[-40,40] measured=0.2516
+pelvis.roll sign=-1 limit=[-30,30] measured=-0.2513
+pelvis.turn sign=1 limit=[-90,90]
+spine.bend sign=1 limit=[-25,35] measured=0.2168
+spine.side sign=-1 limit=[-25,25] measured=-0.2165
+spine.turn sign=1 limit=[-25,25]
+neck.bend sign=1 limit=[-40,40] measured=0.0913
+neck.side sign=-1 limit=[-30,30] measured=-0.0938
+neck.turn sign=1 limit=[-45,45]
+head.bend sign=1 limit=[-35,30] measured=0.0594
+head.side sign=-1 limit=[-30,30] measured=-0.0609
+head.turn sign=1 limit=[-45,45]
+shoulder_l.shrug sign=1 limit=[-20,25] measured=0.284
+shoulder_l.fwd sign=-1 limit=[-25,25] measured=-0.2823
+shoulder_r.shrug sign=-1 limit=[-25,20] measured=-0.2834
+shoulder_r.fwd sign=1 limit=[-25,25] measured=0.285
+arm_l.lift sign=1 limit=[-40,170] measured=0.2475
+arm_l.swing sign=-1 limit=[-130,90] measured=-0.2475
+arm_l.twist sign=1 limit=[-90,90]
+arm_r.lift sign=-1 limit=[-170,40] measured=-0.2475
+arm_r.swing sign=1 limit=[-90,130] measured=0.2475
+arm_r.twist sign=1 limit=[-90,90]
+elbow_l.bend sign=1 limit=[-2,150] measured=0.1522
+elbow_l.twist sign=1 limit=[-90,90]
+elbow_r.bend sign=-1 limit=[-150,2] measured=-0.1522
+elbow_r.twist sign=1 limit=[-90,90]
+hip_l.flex sign=-1 limit=[-30,130] measured=-0.344
+hip_l.spread sign=1 limit=[-45,30] measured=0.3336
+hip_l.twist sign=1 limit=[-45,45]
+hip_r.flex sign=-1 limit=[-30,130] measured=-0.344
+hip_r.spread sign=-1 limit=[-30,45] measured=0.3336
+hip_r.twist sign=1 limit=[-45,45]
+knee_l.bend sign=1 limit=[0,150] measured=-0.1921
+knee_r.bend sign=1 limit=[0,150] measured=-0.1921
+ankle_l.point sign=1 limit=[-45,55] measured=-0.0631
+ankle_l.tilt sign=1 limit=[-25,25] measured=0.0299
+ankle_r.point sign=1 limit=[-45,55] measured=-0.0631
+ankle_r.tilt sign=-1 limit=[-25,25] measured=0.0299
+toes_l.bend sign=1 limit=[-40,60] measured=-0.0317
+toes_r.bend sign=1 limit=[-40,60] measured=-0.0317

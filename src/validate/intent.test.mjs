@@ -9,11 +9,18 @@
 // Der Abnahmetest "Absicht" braucht einen Salto — den gibt es noch nicht
 // (der Löser entsteht parallel), also wird er als von Hand konstruierte
 // Timeline geprüft, die einen Salto beschreibt.
+//
+// BEZEICHNER (Auftrag "Drei Nahtstellen", Punkt 1): die sieben Bausteine heißen
+// hier genau so wie im Werkzeugkatalog, den der Agent sieht — INTENT_ARTEN in
+// src/tools/catalog.js. Der letzte Abschnitt dieses Tests vergleicht die beiden
+// Listen direkt; ein zweiter Namenssatz ist damit nicht nur unüblich, sondern
+// rot.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pruefeAbsicht } from './intent.js';
+import { pruefeAbsicht, pruefeKriterien, BAUSTEINE } from './intent.js';
 import { pruefePhysik } from './physics.js';
+import { INTENT_ARTEN } from '../tools/catalog.js';
 
 const FPS = 30;
 
@@ -33,14 +40,19 @@ const RIG = {
 };
 
 // Knochen-ids des Prüfrigs:
-//   pelvis, foot_l, foot_r, hand_r, hand_l, head_top
+//   pelvis, foot_l, foot_r, hand_r, hand_l, neck, head_top
 // Ein Salto-Konstrukt, Frame für Frame von Hand gelegt.
 
 const H1 = 1.8;   // Körperhöhe, Referenz aller Anteile
 
-/** Ein Frame-Aufbauhelfer: bones + contact + optional com. */
-const frame = (bones, contact = 'kontakt', extra = {}) =>
-  ({ bones, contact, ...extra });
+/**
+ * Ein Frame-Aufbauhelfer: positions + contact + optional com.
+ * `positions` ist dasselbe Feld, das src/validate/physics.js liest — ein
+ * gelöster Frame trägt seine Knochendaten unter einem Namen (BRETT.md,
+ * Eintrag AP5; Auftrag "Drei Nahtstellen", Punkt 2).
+ */
+const frame = (positionen, contact = 'kontakt', extra = {}) =>
+  ({ positions: positionen, contact, ...extra });
 
 // ── Konstrukt: Rückwärtssalto aus dem Stand (60 Frames, 2 s) ────────────────
 // Phasen (Frames):
@@ -129,27 +141,28 @@ const TOTE_TIMELINE = () => {
   return { fps: FPS, frameCount: n, solved: { frames } };
 };
 
+/**
+ * Die sieben Kriterien des Salto, in den Namen des Werkzeugkatalogs.
+ * `scheitel: false` lässt die Scheitelhöhen-Grenzen weg — ohne jeden Flug-Frame
+ * ist die Scheitelhöhe nicht messbar, und die Prüfung wirft dann, statt einen
+ * Check zu verlieren.
+ */
+const SALTO_ABSICHT = ({ scheitel = true } = {}) => [
+  { kind: 'rotation', part: 'head_top', axis: 'x', from: 15, to: 45, minDeg: 300 },
+  { kind: 'airtime', minSek: 0.5, maxSek: 1.2,
+    ...(scheitel ? { minScheitel: 0.7, maxScheitel: 1.4 } : {}) },
+  { kind: 'travel', part: 'pelvis', minHoehe: 0.2, richtung: [0, 0, -1] },
+  { kind: 'contact_change', foot: 'foot_r', von: 14, bis: 15 },
+  { kind: 'clearance', partA: 'hand_l', partB: 'hand_r', minAnteil: 0.5, minDauerSek: 1.0 },
+  { kind: 'part_height', part: 'foot_r', minAnteil: 0.2 },
+  { kind: 'part_speed', part: 'pelvis', minHoeheProSek: 0.8 },
+];
+
 // ── Abnahmetest "Absicht": Salto erfüllt, tote Timeline scheitert ───────────
 
 test('Absicht: der konstruierte Salto erfüllt alle sieben Bausteine', () => {
   const t = saltoTimeline();
-  const intent = [
-    // 1. Drehung: Kopf-Kette dreht 360 Grad um die x-Achse im Flug
-    { kind: 'drehung', part: 'head_top', axis: 'x', from: 15, to: 45, minDeg: 300 },
-    // 2. Flugphase: mindestens 0,5 s, Scheitel unter 1,4 Körperhöhen
-    { kind: 'flugphase', minSek: 0.5, maxSek: 1.2, minScheitel: 0.7, maxScheitel: 1.4 },
-    // 3. Ortsveränderung: Becken bewegt sich rückwärts
-    { kind: 'ortsveraenderung', part: 'pelvis', minHoehe: 0.2, richtung: [0, 0, -1] },
-    // 4. Kontaktwechsel: der rechte Fuß hebt bei Frame 15
-    { kind: 'kontaktwechsel', foot: 'foot_r', von: 14, bis: 15 },
-    // 5. Abstand: beide Hände weit auseinander, für mindestens 1 s
-    { kind: 'abstand', partA: 'hand_l', partB: 'hand_r', minAnteil: 0.5, minDauerSek: 1.0 },
-    // 6. Höhe: die Füße übersteigen 0,2 Körperhöhen
-    { kind: 'hoehe', part: 'foot_r', minAnteil: 0.2 },
-    // 7. Tempo: das Becken bewegt sich mit mindestens 0,8 Körperhöhen/s
-    { kind: 'tempo', part: 'pelvis', minHoeheProSek: 0.8 },
-  ];
-  const r = pruefeAbsicht(RIG, t, intent);
+  const r = pruefeAbsicht(RIG, t, SALTO_ABSICHT());
   assert.equal(r.checks.length, 7);
   for (const c of r.checks) {
     assert.equal(c.passed, true, `Baustein ${c.name}: ${JSON.stringify(c)}`);
@@ -172,12 +185,12 @@ test('Absicht: eine bewegungslose Timeline besteht die PHYSIKPRÜFUNG', () => {
     // gemessen mit dem Segmentabstand-Verfahren der Physikprüfung.
     restDistances: { 'arm_l|kopf': 0.18 },
   };
-  // Die Physikprüfung liest frame.positions (ihr eigener Vertrag, plan.md 5.3),
-  // die Absichts- und Stilprüfung lesen frame.bones.
+  // Physik- und Absichtsprüfung lesen dasselbe Feld: positions. Der Schulter-
+  // punkt des Segments kommt in dieselbe Tabelle.
   const framesPhysik = t.solved.frames.map((f) => ({
     ...f,
     positions: {
-      ...f.bones,
+      ...f.positions,
       // Segment-Endpunkt arm_l: Schulter über der rechten Hand am Kopf-Höhenbereich.
       shoulder_l: [0.30, 1.45, 0],
     },
@@ -188,17 +201,9 @@ test('Absicht: eine bewegungslose Timeline besteht die PHYSIKPRÜFUNG', () => {
 
 test('Absicht: dieselbe bewegungslose Timeline fällt durch die ABSICHTSPRÜFUNG', () => {
   const t = TOTE_TIMELINE();
-  const intent = [
-    { kind: 'drehung', part: 'pelvis', axis: 'x', from: 0, to: 59, minDeg: 300 },
-    { kind: 'flugphase', minSek: 0.5 },
-    { kind: 'ortsveraenderung', part: 'pelvis', minHoehe: 0.2, richtung: [0, 0, -1] },
-    { kind: 'kontaktwechsel', foot: 'foot_r', von: 14, bis: 15 },
-    { kind: 'abstand', partA: 'hand_l', partB: 'hand_r', minAnteil: 0.5, minDauerSek: 1.0 },
-    { kind: 'hoehe', part: 'foot_r', minAnteil: 0.2 },
-    { kind: 'tempo', part: 'pelvis', minHoeheProSek: 0.8 },
-  ];
-  const r = pruefeAbsicht(RIG, t, intent);
+  const r = pruefeAbsicht(RIG, t, SALTO_ABSICHT({ scheitel: false }));
   assert.equal(r.passed, false, 'die tote Timeline darf die Absichtsprüfung nicht bestehen');
+  assert.equal(r.checks.length, 7);
   for (const c of r.checks) {
     assert.equal(c.passed, false, `Baustein ${c.name} muss auf einer toten Timeline scheitern`);
     assert.match(c.message, /\d/, `Meldung von ${c.name} enthält eine Zahl`);
@@ -207,99 +212,104 @@ test('Absicht: dieselbe bewegungslose Timeline fällt durch die ABSICHTSPRÜFUNG
 
 // ── Je Baustein ein erfüllter und ein verletzter Fall ────────────────────────
 
-// 1. drehung
-test('drehung: Kopf-Kette dreht 360 Grad — erfüllt minDeg 300', () => {
+// 1. rotation
+test('rotation: Kopf-Kette dreht 360 Grad — erfüllt minDeg 300', () => {
   const t = saltoTimeline();
   const r = pruefeAbsicht(RIG, t, [
-    { kind: 'drehung', part: 'head_top', axis: 'x', from: 15, to: 45, minDeg: 300 }]);
+    { kind: 'rotation', part: 'head_top', axis: 'x', from: 15, to: 45, minDeg: 300 }]);
+  assert.equal(r.checks[0].name, 'rotation');
   assert.equal(r.checks[0].passed, true);
 });
 
-test('drehung: dieselbe Drehung erfüllt minDeg 500 NICHT — Meldung mit Ist und Soll', () => {
+test('rotation: dieselbe Drehung erfüllt minDeg 500 NICHT — Meldung mit Ist und Soll', () => {
   const t = saltoTimeline();
   const r = pruefeAbsicht(RIG, t, [
-    { kind: 'drehung', part: 'head_top', axis: 'x', from: 15, to: 45, minDeg: 500 }]);
+    { kind: 'rotation', part: 'head_top', axis: 'x', from: 15, to: 45, minDeg: 500 }]);
   assert.equal(r.checks[0].passed, false);
   assert.match(r.checks[0].message, /Grad/);
   assert.match(r.checks[0].message, /\d/);
 });
 
-// 2. flugphase
-test('flugphase: 30 Frames Flug bei 30 fps ergeben 1,0 s — erfüllt minSek 0,5', () => {
+// 2. airtime
+test('airtime: 30 Frames Flug bei 30 fps ergeben 1,0 s — erfüllt minSek 0,5', () => {
   const t = saltoTimeline();
-  const r = pruefeAbsicht(RIG, t, [{ kind: 'flugphase', minSek: 0.5 }]);
+  const r = pruefeAbsicht(RIG, t, [{ kind: 'airtime', minSek: 0.5 }]);
+  assert.equal(r.checks[0].name, 'airtime');
   assert.equal(r.checks[0].passed, true);
 });
 
-test('flugphase: dieselbe Flugphase verletzt maxSek 0,3', () => {
+test('airtime: dieselbe Flugphase verletzt maxSek 0,3', () => {
   const t = saltoTimeline();
-  const r = pruefeAbsicht(RIG, t, [{ kind: 'flugphase', maxSek: 0.3 }]);
+  const r = pruefeAbsicht(RIG, t, [{ kind: 'airtime', maxSek: 0.3 }]);
   assert.equal(r.checks[0].passed, false);
   assert.match(r.checks[0].message, /Sekunden/);
 });
 
-test('flugphase: Scheitelhöhe außerhalb des Bereichs wird als eigener Check gemeldet', () => {
+test('airtime: Scheitelhöhe außerhalb des Bereichs wird als eigener Check gemeldet', () => {
   const t = saltoTimeline();
-  const r = pruefeAbsicht(RIG, t, [{ kind: 'flugphase', minSek: 0.3, minScheitel: 99 }]);
+  const r = pruefeAbsicht(RIG, t, [{ kind: 'airtime', minSek: 0.3, minScheitel: 99 }]);
   assert.equal(r.passed, false);
-  const scheitel = r.checks.find((c) => c.name === 'flugphase.scheitel');
-  assert.ok(scheitel, 'Scheitelhöhe wird als eigener Check gemeldet');
+  const scheitel = r.checks.find((c) => c.name === 'airtime.apex');
+  assert.ok(scheitel, `Scheitelhöhe wird als eigener Check gemeldet: ${JSON.stringify(r.checks)}`);
   assert.equal(scheitel.passed, false);
   assert.match(scheitel.message, /Körperhöhen/);
 });
 
-// 3. ortsveraenderung
-test('ortsveraenderung: Becken bewegt sich rückwärts — erfüllt', () => {
+// 3. travel
+test('travel: Becken bewegt sich rückwärts — erfüllt', () => {
   const t = saltoTimeline();
   const r = pruefeAbsicht(RIG, t, [
-    { kind: 'ortsveraenderung', part: 'pelvis', minHoehe: 0.2, richtung: [0, 0, -1] }]);
+    { kind: 'travel', part: 'pelvis', minHoehe: 0.2, richtung: [0, 0, -1] }]);
+  assert.equal(r.checks[0].name, 'travel');
   assert.equal(r.checks[0].passed, true);
 });
 
-test('ortsveraenderung: dieselbe Bewegung nach VORN verletzt minHoehe nach vorn', () => {
+test('travel: dieselbe Bewegung nach VORN verletzt minHoehe nach vorn', () => {
   const t = saltoTimeline();
   const r = pruefeAbsicht(RIG, t, [
-    { kind: 'ortsveraenderung', part: 'pelvis', minHoehe: 0.2, richtung: [0, 0, 1] }]);
+    { kind: 'travel', part: 'pelvis', minHoehe: 0.2, richtung: [0, 0, 1] }]);
   assert.equal(r.checks[0].passed, false);
   assert.match(r.checks[0].message, /Körperhöhen/);
 });
 
-// 4. kontaktwechsel
-test('kontaktwechsel: Fuß hebt exakt bei Frame 15 — erfüllt', () => {
+// 4. contact_change
+test('contact_change: Fuß hebt exakt bei Frame 15 — erfüllt', () => {
   const t = saltoTimeline();
   const r = pruefeAbsicht(RIG, t, [
-    { kind: 'kontaktwechsel', foot: 'foot_r', von: 14, bis: 15 }]);
+    { kind: 'contact_change', foot: 'foot_r', von: 14, bis: 15 }]);
+  assert.equal(r.checks[0].name, 'contact_change');
   assert.equal(r.checks[0].passed, true);
 });
 
-test('kontaktwechsel: geforderter Abhebe-Frame 44 weicht vom gemessenen ab', () => {
+test('contact_change: geforderter Abhebe-Frame 30 weicht vom gemessenen ab', () => {
   const t = saltoTimeline();
   const r = pruefeAbsicht(RIG, t, [
-    { kind: 'kontaktwechsel', foot: 'foot_r', von: 14, bis: 30 }]);
+    { kind: 'contact_change', foot: 'foot_r', von: 14, bis: 30 }]);
   assert.equal(r.checks[0].passed, false);
   assert.match(r.checks[0].message, /Frame \d+/);
 });
 
-// 5. abstand
-test('abstand: Hände sind 0,6 Körperhöhen auseinander — erfüllt', () => {
+// 5. clearance
+test('clearance: Hände sind 0,6 Körperhöhen auseinander — erfüllt', () => {
   const t = saltoTimeline();
   const r = pruefeAbsicht(RIG, t, [
-    { kind: 'abstand', partA: 'hand_l', partB: 'hand_r', minAnteil: 0.5, minDauerSek: 1.0 }]);
+    { kind: 'clearance', partA: 'hand_l', partB: 'hand_r', minAnteil: 0.5, minDauerSek: 1.0 }]);
+  assert.equal(r.checks[0].name, 'clearance');
   assert.equal(r.checks[0].passed, true);
 });
 
-test('abstand: geforderter Mindestabstand 5 Körperhöhen ist unerreichbar', () => {
+test('clearance: geforderter Mindestabstand 5 Körperhöhen ist unerreichbar', () => {
   const t = saltoTimeline();
   const r = pruefeAbsicht(RIG, t, [
-    { kind: 'abstand', partA: 'hand_l', partB: 'hand_r', minAnteil: 5.0 }]);
+    { kind: 'clearance', partA: 'hand_l', partB: 'hand_r', minAnteil: 5.0 }]);
   assert.equal(r.checks[0].passed, false);
   assert.match(r.checks[0].message, /Körperhöhen/);
 });
 
-test('abstand: Mindestdauer wird gezählt — 3 s gefordert scheitern', () => {
+test('clearance: Mindestdauer wird gezählt — 3 s gefordert scheitern', () => {
   const t = saltoTimeline();
   const r = pruefeAbsicht(RIG, t, [
-    { kind: 'abstand', partA: 'hand_l', partB: 'hand_r', minAnteil: 0.5, minDauerSek: 3.0 }]);
+    { kind: 'clearance', partA: 'hand_l', partB: 'hand_r', minAnteil: 0.5, minDauerSek: 3.0 }]);
   assert.equal(r.passed, false);
   const dauer = r.checks.find((c) => c.unit === 'frames');
   assert.ok(dauer, 'Mindestdauer wird als eigener Check gemeldet');
@@ -307,32 +317,140 @@ test('abstand: Mindestdauer wird gezählt — 3 s gefordert scheitern', () => {
   assert.match(dauer.message, /Frames/);
 });
 
-// 6. hoehe
-test('hoehe: Füße übersteigen 0,2 Körperhöhen — erfüllt', () => {
+// 6. part_height
+test('part_height: Füße übersteigen 0,2 Körperhöhen — erfüllt', () => {
   const t = saltoTimeline();
-  const r = pruefeAbsicht(RIG, t, [{ kind: 'hoehe', part: 'foot_r', minAnteil: 0.2 }]);
+  const r = pruefeAbsicht(RIG, t, [{ kind: 'part_height', part: 'foot_r', minAnteil: 0.2 }]);
+  assert.equal(r.checks[0].name, 'part_height');
   assert.equal(r.checks[0].passed, true);
 });
 
-test('hoehe: Kopf über 5 Körperhöhen ist unerreichbar', () => {
+test('part_height: Kopf über 5 Körperhöhen ist unerreichbar', () => {
   const t = saltoTimeline();
-  const r = pruefeAbsicht(RIG, t, [{ kind: 'hoehe', part: 'head_top', minAnteil: 5 }]);
+  const r = pruefeAbsicht(RIG, t, [{ kind: 'part_height', part: 'head_top', minAnteil: 5 }]);
   assert.equal(r.checks[0].passed, false);
   assert.match(r.checks[0].message, /Körperhöhen/);
 });
 
-// 7. tempo
-test('tempo: Becken erreicht mehr als 0,8 Körperhöhen/s — erfüllt', () => {
+// 7. part_speed
+test('part_speed: Becken erreicht mehr als 0,8 Körperhöhen/s — erfüllt', () => {
   const t = saltoTimeline();
-  const r = pruefeAbsicht(RIG, t, [{ kind: 'tempo', part: 'pelvis', minHoeheProSek: 0.8 }]);
+  const r = pruefeAbsicht(RIG, t, [{ kind: 'part_speed', part: 'pelvis', minHoeheProSek: 0.8 }]);
+  assert.equal(r.checks[0].name, 'part_speed');
   assert.equal(r.checks[0].passed, true);
 });
 
-test('tempo: geforderte 50 Körperhöhen/s sind unerreichbar', () => {
+test('part_speed: geforderte 50 Körperhöhen/s sind unerreichbar', () => {
   const t = saltoTimeline();
-  const r = pruefeAbsicht(RIG, t, [{ kind: 'tempo', part: 'pelvis', minHoeheProSek: 50 }]);
+  const r = pruefeAbsicht(RIG, t, [{ kind: 'part_speed', part: 'pelvis', minHoeheProSek: 50 }]);
   assert.equal(r.checks[0].passed, false);
   assert.match(r.checks[0].message, /Körperhöhen pro Sekunde/);
+});
+
+// ── Kriterien auf Vollständigkeit VOR dem Speichern ──────────────────────────
+// Pro Baustein ein gültiger und ein unvollständiger Fall. Unvollständige
+// Kriterien dürfen nicht erst in der laufenden Prüfung als Wurf auffallen
+// ("part_height: erwartet part, bekommen undefined"), sondern schon beim
+// Setzen — deshalb pruefeKriterien, gegen dieselbe Feldtabelle, die
+// werteKriterium beim Messen erzwingt.
+
+test('pruefeKriterien: alle sieben gültigen Kriterien sind vollständig', () => {
+  const gueltig = [
+    { kind: 'rotation', part: 'head_top', axis: 'x', minDeg: 300 },
+    { kind: 'airtime', minSek: 0.5 },
+    { kind: 'travel', part: 'pelvis', minHoehe: 0.2, richtung: [0, 0, -1] },
+    { kind: 'contact_change', foot: 'foot_r', von: 14, bis: 15 },
+    { kind: 'clearance', partA: 'hand_l', partB: 'hand_r', minAnteil: 0.5 },
+    { kind: 'part_height', part: 'foot_r', minAnteil: 0.2 },
+    { kind: 'part_speed', part: 'pelvis', minHoeheProSek: 0.8 },
+  ];
+  const r = pruefeKriterien(gueltig);
+  assert.equal(r.ok, true, `vollständige Kriterien dürfen nicht abgelehnt werden: ${JSON.stringify(r.fehler)}`);
+  assert.deepEqual(r.fehler, []);
+});
+
+test('pruefeKriterien: je Baustein der unvollständige Fall wird mit Index, Art und Feld gemeldet', () => {
+  const unvollstaendig = [
+    { kind: 'rotation', part: 'head_top' },                                   // axis fehlt, kein min/maxDeg
+    { kind: 'airtime' },                                                      // weder minSek noch maxSek
+    { kind: 'travel', part: 'pelvis', richtung: [0, 0, -1] },                 // kein minHoehe/maxHoehe
+    { kind: 'contact_change', foot: 'foot_r', von: 14 },                      // bis fehlt
+    { kind: 'clearance', partA: 'hand_l', minAnteil: 0.5 },                   // partB fehlt
+    { kind: 'part_height', minAnteil: 0.2 },                                  // part fehlt
+    { kind: 'part_speed', part: 'pelvis', maxHoeheProSek: 5 },                // vollständig — als Kontrolle
+    { kind: 'part_speed', maxHoeheProSek: 5 },                                // part fehlt
+  ];
+  const r = pruefeKriterien(unvollstaendig);
+  assert.equal(r.ok, false, 'unvollständige Kriterien müssen abgelehnt werden');
+  // Jede Meldung nennt Index, Art, fehlendes Feld und den kompletten Bedarf:
+  for (const f of r.fehler) {
+    assert.match(f.meldung, new RegExp(`Kriterium ${f.index} von ${unvollstaendig.length} \\(` + f.kind + '\\)'),
+      `Meldung nennt nicht Index und Art: ${f.meldung}`);
+  }
+  const feld = (index) => r.fehler.filter((f) => f.index === index).map((f) => f.feld).sort();
+  assert.deepEqual(feld(0).sort(), ['axis', 'minDeg|maxDeg'], `rotation: ${JSON.stringify(r.fehler)}`);
+  assert.deepEqual(feld(1), ['minSek|maxSek'], `airtime: ${JSON.stringify(r.fehler)}`);
+  assert.deepEqual(feld(2), ['minHoehe|maxHoehe'], `travel: ${JSON.stringify(r.fehler)}`);
+  assert.deepEqual(feld(3), ['bis'], `contact_change: ${JSON.stringify(r.fehler)}`);
+  assert.deepEqual(feld(4), ['partB'], `clearance: ${JSON.stringify(r.fehler)}`);
+  assert.deepEqual(feld(5), ['part'], `part_height: ${JSON.stringify(r.fehler)}`);
+  assert.deepEqual(feld(6), [], 'vollständiges part_speed-Kriterium erzeugt keinen Fehler');
+  assert.deepEqual(feld(7), ['part'], `part_speed: ${JSON.stringify(r.fehler)}`);
+  // part_height ohne Felder — genau der Fall aus dem Fehlerbericht. Die
+  // Meldung nennt das fehlende Feld und den ganzen Bedarf der Art:
+  const ph = r.fehler.find((f) => f.kind === 'part_height');
+  assert.ok(ph, 'part_height ohne part wird gemeldet');
+  assert.match(ph.meldung, /'part' fehlt/);
+  assert.match(ph.meldung, /part_height braucht part, minAnteil oder maxAnteil/);
+});
+
+// ── Nahtstelle Werkzeugkatalog ↔ Absichtsprüfung ─────────────────────────────
+
+test('Die Bausteinliste der Prüfung ist die des Werkzeugkatalogs', () => {
+  // Kein dritter Namenssatz, keine Reihenfolge als Vertragsbestandteil: die
+  // Mengen müssen identisch sein.
+  assert.deepEqual([...BAUSTEINE].sort(), [...INTENT_ARTEN].sort(),
+    `src/validate/intent.js und src/tools/catalog.js nennen Verschiedenes: `
+    + `Prüfung ${BAUSTEINE.join(', ')} — Katalog ${INTENT_ARTEN.join(', ')}`);
+  assert.equal(BAUSTEINE.length, 7, `plan.md 6.6 kennt 7 Bausteine, es sind ${BAUSTEINE.length}`);
+});
+
+test('Jede Art des Katalogs wird von der Prüfung angenommen', () => {
+  // Der Weg, den ein Agent geht: set_intent schreibt die Namen des Katalogs,
+  // validate legt sie der Prüfung vor. Kriterium "angenommen" ist, dass die
+  // Prüfung die Art kennt — eine Meldung über fehlende Parameter heißt: bekannt.
+  const t = saltoTimeline();
+  const alle = {
+    part: 'head_top', axis: 'x', from: 15, to: 45, minDeg: 1,
+    minSek: 0, minScheitel: 0, maxScheitel: 99,
+    minHoehe: 0, richtung: [0, 0, -1],
+    foot: 'foot_r', von: 14, bis: 15,
+    partA: 'hand_l', partB: 'hand_r', minAnteil: 0,
+    minHoeheProSek: 0,
+  };
+  for (const art of INTENT_ARTEN) {
+    assert.doesNotThrow(() => pruefeAbsicht(RIG, t, [{ kind: art, ...alle }]),
+      `der Katalog bietet "${art}" an, die Prüfung lehnt die Art ab`);
+    const r = pruefeAbsicht(RIG, t, [{ kind: art, ...alle }]);
+    assert.ok(BAUSTEINE.includes(r.checks[0].name),
+      `der Check heißt "${r.checks[0].name}", erwartet ein Name des Katalogs: ${JSON.stringify(r.checks)}`);
+  }
+});
+
+test('Negativfall zur Namenserweiterung: die deutschen Bausteinnamen der ersten Bauform sind Geschichte', () => {
+  // Wird hier NICHT still zurückübersetzt. Ein alten Name muss abgelehnt
+  // werden, sonst existieren zwei Namen für dieselbe Sache weiter — genau die
+  // Nahtstelle, die den Durchlauf blockiert hat.
+  const t = saltoTimeline();
+  const deutsch = ['drehung', 'flugphase', 'ortsveraenderung', 'kontaktwechsel',
+    'abstand', 'hoehe', 'tempo'];
+  for (const art of deutsch) {
+    assert.throws(() => pruefeAbsicht(RIG, t, [{ kind: art, part: 'foot_r', minAnteil: 0 }]),
+      new RegExp(`kind = .*${art}`), `der alte Name "${art}" wurde angenommen`);
+  }
+  // Und die Ablehnung nennt, was stattdessen gemeint sein könnte: alle sieben.
+  assert.throws(() => pruefeAbsicht(RIG, t, [{ kind: 'hoehe', part: 'foot_r' }]),
+    /rotation.*airtime.*travel.*contact_change.*clearance.*part_height.*part_speed/);
 });
 
 // ── Fehlermeldungen mit Zahl, Eingabeprüfung ─────────────────────────────────
@@ -340,7 +458,7 @@ test('tempo: geforderte 50 Körperhöhen/s sind unerreichbar', () => {
 test('Frame außerhalb der Timeline wird mit Zahl abgelehnt', () => {
   const t = saltoTimeline();
   assert.throws(
-    () => pruefeAbsicht(RIG, t, [{ kind: 'hoehe', part: 'foot_r', minAnteil: 0.2, from: 60, to: 70 }]),
+    () => pruefeAbsicht(RIG, t, [{ kind: 'part_height', part: 'foot_r', minAnteil: 0.2, from: 60, to: 70 }]),
     /0 bis 59/);
 });
 
@@ -348,22 +466,32 @@ test('unbekannter Baustein wird abgelehnt', () => {
   const t = saltoTimeline();
   assert.throws(
     () => pruefeAbsicht(RIG, t, [{ kind: 'farbe', part: 'foot_r' }]),
-    /farbe.*drehung/);
+    /farbe.*rotation/);
 });
 
 test('fehlende Körperhöhe im Profil wird abgelehnt', () => {
   const t = saltoTimeline();
   assert.throws(
     () => pruefeAbsicht({ ...RIG, world: { ...RIG.world, height: 0 } }, t,
-      [{ kind: 'hoehe', part: 'foot_r', minAnteil: 0.2 }]),
+      [{ kind: 'part_height', part: 'foot_r', minAnteil: 0.2 }]),
     /world\.height = 0/);
 });
 
 test('Timeline ohne gelöste Frames wird abgelehnt', () => {
   const leer = { fps: FPS, frameCount: 60, solved: { frames: [] } };
   assert.throws(
-    () => pruefeAbsicht(RIG, leer, [{ kind: 'hoehe', part: 'foot_r', minAnteil: 0.2 }]),
+    () => pruefeAbsicht(RIG, leer, [{ kind: 'part_height', part: 'foot_r', minAnteil: 0.2 }]),
     /0 gelösten Frames|erwartet Array/);
+});
+
+test('Frame ohne Knochentabelle wird mit Zahl abgelehnt', () => {
+  // Die Absichtsprüfung liest positions — derselbe Feldname wie in der
+  // Physikprüfung. Ein Frame, der sie nicht mitbringt, wird nicht geraten.
+  const t = saltoTimeline();
+  t.solved.frames[7] = { contact: 'kontakt', com: [0, 1, 0] };
+  assert.throws(
+    () => pruefeAbsicht(RIG, t, [{ kind: 'part_height', part: 'foot_r', minAnteil: 0.2 }]),
+    /frames\[7\]\.positions fehlt/);
 });
 
 test('leere Absichtsliste ist keine Absicht', () => {

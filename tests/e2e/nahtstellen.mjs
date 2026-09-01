@@ -1,8 +1,9 @@
 // AP8 — Vertikalschnitt: die Nahtstellen HINTER der Blockade.
 //
-// Der Lauf (./durchlauf.mjs) endet heute beim Phasenlöser. Damit sind die
-// Übergaben ab Schritt 6 aufwärts nicht erreicht — aber nicht jede von ihnen ist
-// ungeprüft, solange man den fehlenden Löser umgehen kann, ohne ihn zu ersetzen.
+// Der Lauf (./durchlauf.mjs) kam früher nur bis zum Phasenlöser; heute löst er
+// und endet an der Berichtsschicht. Die Übergaben dahinter sind damit weiterhin
+// nicht durch den Lauf selbst erreicht — aber nicht jede von ihnen ist
+// ungeprüft, solange man die Blockade umgehen kann, ohne ein Teil zu ersetzen.
 //
 // Diese Datei stellt deshalb Fragen, die KEINE gelöste Bewegung brauchen:
 //
@@ -166,12 +167,16 @@ export async function nahtstellen({ profil, gltf, moduleUrl, katalogArten }) {
   }
 
   // ── S4: Bildgrenze Bericht ↔ Renderer ──────────────────────────────────────
+  // MAX_BILDFRAMES (report.js) liegt UNTER FRAMES_MAX (strip.js): der Bericht
+  // darf nie mehr Frames wählen, als der Renderer annimmt — umgekehrt ist
+  // Reserve erlaubt, der Renderer nimmt noch die an, die der Bericht wählt.
   const { MAX_BILDFRAMES } = await import(moduleUrl('src/validate/report.js'));
   const { FRAMES_MAX } = await import(moduleUrl('src/render/strip.js'));
   notier('Bildgrenze Bericht ↔ Renderer',
-    MAX_BILDFRAMES === FRAMES_MAX ? 'ok' : 'befund',
-    MAX_BILDFRAMES === FRAMES_MAX
-      ? `MAX_BILDFRAMES = FRAMES_MAX = ${MAX_BILDFRAMES}`
+    MAX_BILDFRAMES <= FRAMES_MAX ? 'ok' : 'befund',
+    MAX_BILDFRAMES <= FRAMES_MAX
+      ? `MAX_BILDFRAMES = ${MAX_BILDFRAMES} liegt unter FRAMES_MAX = ${FRAMES_MAX} — `
+      + 'der Bericht wählt nie mehr, als der Renderer annimmt'
       : `src/validate/report.js wählt bis zu ${MAX_BILDFRAMES} Frames, `
       + `src/render/strip.js nimmt höchstens ${FRAMES_MAX} an — `
       + `${Math.abs(MAX_BILDFRAMES - FRAMES_MAX)} Frames mehr, als der Renderer annimmt`,

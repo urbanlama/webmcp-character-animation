@@ -23,11 +23,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import * as THREE from 'three';
 
 import { loadGLB, getBounds } from '../scene/load.js';
-import { XBOT_PFAD, alsArrayBuffer } from '../scene/testdaten.mjs';
+import { XBOT_PFAD, alsArrayBuffer, REPO_ROOT, glbZerlegen, glbBauen } from '../scene/testdaten.mjs';
 import { validateRigProfile } from '../contracts/rig-profile.js';
+import { detectRig } from './detect.js';
 import {
   measureRigProfile,
   measureMasses,
@@ -505,9 +508,21 @@ test('Sohlen, Negativfall: angehobene Ferse wird erkannt, nicht stillschweigend 
   const flach = await ladeXbot();
   const flachProfil = measureRigProfile(flach, { fileName: 'Xbot.glb' });
 
+  // Der Ballenstand ist eine verstellte Pose. Die Erkennung liest die
+  // Blickrichtung darin nicht mehr eindeutig; sie meldet die Fußrolle nur mit
+  // Konfidenz 0,58 und rutscht die ganze Beinkette ein Gelenk nach unten
+  // (foot_l auf den Zehenknochen). Das ist die Rückfragezone aus plan.md 5.1:
+  // dort wird gemessen, aber gefragt, statt zu raten. Diese Prüfung will die
+  // Sohle eines bekannten Fußes sehen, nicht die einer vorläufigen Zuordnung,
+  // und gibt deshalb die Antwort des Menschen gleich mit: dieselbe Zuordnung,
+  // die dieselbe Figur im ruhigen Stand liefert, über opts.roles.
+  const antwort = {};
+  for (const [rolle, v] of Object.entries(detectRig(await ladeXbot()).roles)) {
+    antwort[rolle] = v.bone;
+  }
   const ballen = await aufDemBallen(20);
-  const { stats } = measureSoles(ballen);
-  const ballenProfil = measureRigProfile(ballen, { fileName: 'ballen.glb' });
+  const { stats } = measureSoles(ballen, { roles: antwort });
+  const ballenProfil = measureRigProfile(ballen, { fileName: 'ballen.glb', roles: antwort });
 
   for (const seite of ['l', 'r']) {
     assert.ok(stats[seite].coverage < SOLE_COVERAGE_MIN,
@@ -570,6 +585,163 @@ test('Vorzeichen, Negativfall: ein absichtlich invertiertes Vorzeichen wird geme
   assert.notStrictEqual(kaputt.joints.hip_l.dof.flex.sign, korrekt.joints.hip_l.dof.flex.sign,
     `die Invertierung hat das gemeldete Vorzeichen nicht geändert (beide ${korrekt.joints.hip_l.dof.flex.sign}) — der Testhaken wirkt nicht`);
   void gelenke; void lastwerk;
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reihe 4b — Vorzeichen-Normierung links/rechts
+//
+// Der gemeldete Fehler: die Grenzwerte waren links und rechts gespiegelt
+// (arm_r.lift [-170, 40]). Ein Agent, der beide Arme mit +80 hebt, wurde
+// rechts auf 40 geklemmt. Nach der Normierung gilt: das gemessene Vorzeichen
+// trägt die Spiegelung, die Grenzen sind auf beiden Seiten gleich.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Paare spiegelbildlicher Gelenke für die Grenz- und Richtungsvergleiche. */
+const SEITENPAARE = [
+  ['shoulder_l', 'shoulder_r'], ['arm_l', 'arm_r'],
+  ['elbow_l', 'elbow_r'], ['hip_l', 'hip_r'],
+  ['knee_l', 'knee_r'], ['ankle_l', 'ankle_r'], ['toes_l', 'toes_r'],
+];
+
+function symmetrieluecken(joints) {
+  const bo = [];
+
+  // 1. Paare gleicher Gelenke: Grenzwerte links und rechts identisch. Genau
+  //    hier klemmte vorher die rechte Seite anders als die linke.
+  for (const [links, rechts] of SEITENPAARE) {
+    if (!joints[links] || !joints[rechts]) continue;
+    for (const [dof, l] of Object.entries(joints[links].dof)) {
+      const r = joints[rechts].dof[dof];
+      if (!r) { bo.push(`${rechts}.${dof}: fehlt, links vorhanden`); continue; }
+      if (l.limit[0] !== r.limit[0] || l.limit[1] !== r.limit[1]) {
+        bo.push(`${links}.${dof} und ${rechts}.${dof} haben verschiedene Grenzen: ` +
+          `[${l.limit}] gegen [${r.limit}] — ein Agent, der beide Seiten mit ` +
+          'demselben positiven Wert bewegt, wird rechts anders geklemmt als links');
+      }
+    }
+  }
+
+  // 2. Die Grenzen gelten für den normalisierten Wert: die Anatomie muss nach
+  //    + zeigen. Ein Maximum <= 0 hieße: der positive Wert des Freiheitsgrads
+  //    ist immer verboten — genau der arm_r.lift-Fehler. Nur das Knie darf
+  //    bei 0 beginnen (gestrecktes Knie ist die 0, Beugung geht nach +).
+  for (const [gelenk, j] of Object.entries(joints)) {
+    for (const [dof, spec] of Object.entries(j.dof)) {
+      const istKnie = gelenk === 'knee_l' || gelenk === 'knee_r';
+      if (!istKnie && spec.limit[1] <= 0) {
+        bo.push(`${gelenk}.${dof}: Maximum ${spec.limit[1]} <= 0 — ein positiver ` +
+          'Wert des Freiheitsgrads wäre immer an der Grenze; nach der Normierung ' +
+          'zeigt die Anatomie nach +');
+      }
+      // 3. Die Richtung-Beschreibung muss da sein und von + handeln.
+      if (typeof spec.richtung !== 'string' || !/^\w+: \+/.test(spec.richtung)) {
+        bo.push(`${gelenk}.${dof}: richtung „${JSON.stringify(spec.richtung)}“ — ` +
+          'erwartet ein Satz der Form „name: + wirkt so, - anders“');
+      }
+    }
+  }
+  return bo;
+}
+
+test('Normierung, Positivfall: Grenzwerte links und rechts identisch, Richtung beschrieben', async () => {
+  const gltf = await ladeXbot();
+  const { joints } = measureJoints(gltf);
+
+  const bo = symmetrieluecken(joints);
+  assert.deepStrictEqual(bo, [], `Normierung hat Lücken:\n  ${bo.join('\n  ')}`);
+
+  // Konkret der gemeldete Fall: arm_l.lift und arm_r.lift lauten identisch,
+  // +80 ist auf BEIDEN Seiten innerhalb der Grenzen.
+  for (const seite of ['l', 'r']) {
+    const [lo, hi] = joints[`arm_${seite}`].dof.lift.limit;
+    assert.ok(lo <= 80 && 80 <= hi,
+      `arm_${seite}.lift: Grenze [${lo}, ${hi}] enthält +80 nicht — ein Agent, der ` +
+      'beide Arme mit +80 hebt, würde auf dieser Seite geklemmt');
+  }
+});
+
+test('Normierung, Nachmessen an der Haut: +80 auf beiden Seiten hebt beide Hände gleich hoch', async () => {
+  // Der Nachweis, der den gemeldeten Fehler am Bild zeigt, in Zahlen: derselbe
+  // positive Wert, dieselben Grenzen, symmetrische Wirkung. Der Solver wendet
+  // das gemessene Vorzeichen an (kinematik.js: roh = sign * wert); der Test
+  // macht dasselbe und misst den Höhengewinn beider Hände.
+  const gltf = await ladeXbot();
+  const { gelenke } = hautwerke(gltf.scene);
+  const { joints } = measureJoints(gltf);
+
+  const huelle = huellenhochAchse(gltf.scene);
+  const WINKEL = 80;
+  const steig = {};
+  for (const seite of ['l', 'r']) {
+    const pr = seite === 'l' ? 'Left' : 'Right';
+    const { verschiebung } = wirkung(
+      gltf.scene, gelenke, gelenke.size ? [...gelenke.values()][0].skeleton : null,
+      'mixamorig' + pr + 'Arm', 'mixamorig' + pr + 'HandMiddle3',
+      joints[`arm_${seite}`].dof.lift.axis,
+      joints[`arm_${seite}`].dof.lift.sign * WINKEL);
+    steig[seite] = verschiebung.y;
+  }
+
+  // Symmetrie des Modells: beide Hände steigen gleich weit. Toleranz 2 % der
+  // Körperhöhe (Rechenrauschen der Haut messen, keine getippten Meter).
+  const differenz = Math.abs(steig.l - steig.r);
+  const huelle2 = huellenhochAchse(gltf.scene);
+  const toleranz = 0.02 * huelle2.hoehe;
+  assert.ok(differenz < toleranz,
+    `+80 lift lädt die linke Hand um ${steig.l.toFixed(4)} m, die rechte um ` +
+    `${steig.r.toFixed(4)} m in die Höhe — Differenz ${differenz.toFixed(4)} m über der ` +
+    `Toleranz ${toleranz.toFixed(4)} m: eine Seite geht anders hoch als die andere`);
+  assert.ok(steig.l > 0 && steig.r > 0,
+    `positiver lift muss beide Arme nach oben bringen: links ${steig.l.toFixed(4)} m, ` +
+    `rechts ${steig.r.toFixed(4)} m`);
+});
+
+test('Normierung, Negativfall: gespiegelte Grenzen werden gefunden', () => {
+  // Der alte Zustand als Fälschung eingespeist — die Prüfung muss ihn melden:
+  // rechts andere Grenzen, links normal. Würde sie stillschweigend bestehen,
+  // wäre sie stumpf (AGENTS.md, Regel 2).
+  const alt = {
+    arm_l: { dof: {
+      lift: { limit: [-40, 170], richtung: 'lift: + hebt den linken Arm nach oben, - senkt ihn' },
+    } },
+    arm_r: { dof: {
+      lift: { limit: [-170, 40], richtung: 'lift: + hebt den rechten Arm nach oben, - senkt ihn' },
+    } },
+  };
+  const bo = symmetrieluecken(alt);
+  assert.ok(bo.length >= 1,
+    `die gespiegelten Grenzen [-40,170] gegen [-170,40] müssen beanstandet werden, ` +
+    `es kam ${bo.length === 0 ? 'keine' : bo.length} Beanstandung`);
+  assert.ok(bo.some((b) => /arm_r\.lift/.test(b)),
+    `die Beanstandung muss arm_r.lift nennen: ${bo.join(' | ')}`);
+  assert.ok(bo.some((b) => /\[\s*-40,\s*170\s*\]/.test(b) || /\[\s*-170,\s*40\s*\]/.test(b)),
+    `die Beanstandung nennt die Grenzwerte: ${bo.join(' | ')}`);
+});
+
+test('Normierung: richtung-Sätze kommen für alle Freiheitsgrade mit', async () => {
+  const gltf = await ladeXbot();
+  const { joints } = measureJoints(gltf);
+
+  // Jeder dof-Datensatz trägt richtung — Twist wie gemessen.
+  let gezahlt = 0;
+  const luecken = [];
+  for (const [gelenk, j] of Object.entries(joints)) {
+    for (const [dof, spec] of Object.entries(j.dof)) {
+      gezahlt++;
+      if (typeof spec.richtung !== 'string' || spec.richtung.length < 10) {
+        luecken.push(`${gelenk}.${dof}`);
+      }
+      // Nichts darf als „gemessen“ mit fehlendem Messwert durchgehen — die
+      // richtung ist Zusatz, die Messspur bleibt unverändert.
+      if (spec.signSource === 'gemessen' && !Number.isFinite(spec.measured)) {
+        luecken.push(`${gelenk}.${dof}: signSource gemessen ohne measured`);
+      }
+    }
+  }
+  assert.ok(gezahlt >= 40,
+    `nur ${gezahlt} Freiheitsgrade im Ergebnis — erwartet werden alle 40 des Katalogs (18 Gelenke)`);
+  assert.deepStrictEqual(luecken, [],
+    `fehlende richtung-Felder oder Messspuren:\n  ${luecken.join('\n  ')}`);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -720,4 +892,312 @@ test('Vertrag, Negativfall: ein kaputtes Profil wird mit Feldnamen abgelehnt', a
   const bo = vollstaendigkeitbeanstandungen(teilvermessen, (await ladeXbot()).scene);
   assert.strictEqual(bo.length, 2,
     `nur mit einem von ${2} SkinnedMeshes gemessenes Profil ergibt ${bo.length} Beanstandungen, erwartet 2:\n  ${bo.join('\n  ')}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reihe „Rollen“ — woher die Vermessung weiß, welcher Knochen was ist
+//
+// Bis hierher stand in measure.js ein Namensschema: „mixamorig“ + „LeftFoot“.
+// Damit war jede Messung an eine Benennung gebunden und ein fremdes Modell
+// wurde abgelehnt, obwohl seine Geometrie vollständig messbar ist. Die Rollen
+// kommen jetzt aus der geometrischen Erkennung (detect.js). Diese Reihe prüft
+// genau das und nichts sonst: dieselbe Geometrie muss dieselben Maße ergeben,
+// egal wie die Knochen heißen.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Benennt alle Knochen um in `bone_000…` und liefert die Übersetzung alt→neu. */
+function umbenennen(gltf) {
+  const uebersetzung = new Map();
+  let nr = 0;
+  gltf.scene.traverse((obj) => {
+    if (!obj.isBone) return;
+    const neu = `bone_${String(nr).padStart(3, '0')}`;
+    uebersetzung.set(obj.name, neu);
+    obj.name = neu;
+    nr++;
+  });
+  assert.ok(nr > 20, `erwartet ein Skelett mit vielen Knochen, umbenannt wurden ${nr}`);
+  return uebersetzung;
+}
+
+/**
+ * Entfernt alle Textilverweise aus einem GLB. Node kann eingebettete Bilder
+ * nicht entschlüsseln — three.js' GLTFLoader ruft `self.URL`, und `self` gibt
+ * es in Node nicht. Für die Vermessung zählt kein Pixel, nur Vertices,
+ * Gewichte und Gelenke; Geometrie und Skin bleiben unangetastet.
+ */
+function ohneTexturen(puffern) {
+  const { json, bin } = glbZerlegen(puffern);
+  const streichen = (o) => {
+    for (const schluessel of Object.keys(o)) {
+      if (/Texture$/i.test(schluessel)) delete o[schluessel];
+    }
+  };
+  for (const material of json.materials || []) {
+    streichen(material);
+    if (material.pbrMetallicRoughness) streichen(material.pbrMetallicRoughness);
+    for (const erweiterung of Object.values(material.extensions || {})) streichen(erweiterung);
+  }
+  return glbBauen(json, bin);
+}
+
+test('Rollen, Positivfall: umbenannte Knochen ändern kein einziges Maß', async () => {
+  const originalGltf = await ladeXbot();
+  const original = measureRigProfile(originalGltf, { fileName: 'Xbot.glb' });
+
+  const anonym = await ladeXbot();
+  const uebersetzung = umbenennen(anonym);
+  const getarnt = measureRigProfile(anonym, { fileName: 'Xbot.glb' });
+
+  // 1. Dieselben Rollen auf denselben Knochen — nur eben unter neuem Namen.
+  for (const rolle of ['pelvis', 'foot_l', 'foot_r']) {
+    assert.strictEqual(getarnt.roles[rolle].bone, uebersetzung.get(original.roles[rolle].bone),
+      `Rolle ${rolle} sitzt nach dem Umbenennen auf „${getarnt.roles[rolle].bone}“, erwartet „${uebersetzung.get(original.roles[rolle].bone)}“ (vorher „${original.roles[rolle].bone}“) — die Zuordnung hängt am Namen`);
+    assert.strictEqual(getarnt.roles[rolle].confidence, original.roles[rolle].confidence,
+      `Konfidenz der Rolle ${rolle} fällt von ${original.roles[rolle].confidence} auf ${getarnt.roles[rolle].confidence}, sobald die Knochen anders heißen`);
+  }
+
+  // 2. Dieselben Maße. Verglichen wird das ganze Profil; die Felder, die den
+  //    Knochennamen TRAGEN, werden vorher über die Übersetzung zurückgeführt.
+  const zurueck = (name) => uebersetzung.get(name) ?? name;
+  const uebersetzt = structuredClone(original);
+  uebersetzt.bones = uebersetzt.bones.map((b) => ({
+    ...b, id: zurueck(b.id), parent: b.parent === null ? null : zurueck(b.parent),
+  }));
+  for (const r of Object.values(uebersetzt.roles)) r.bone = zurueck(r.bone);
+  for (const j of Object.values(uebersetzt.joints)) j.bone = zurueck(j.bone);
+  uebersetzt.segments = uebersetzt.segments.map((s) => ({ ...s, from: zurueck(s.from), to: zurueck(s.to) }));
+  uebersetzt.soles = uebersetzt.soles.map((s) => ({ ...s, bone: zurueck(s.bone) }));
+
+  assert.deepStrictEqual(getarnt, uebersetzt,
+    `das Profil des umbenannten Modells weicht ab — Körperhöhe ${getarnt.world.height} gegen ${original.world.height} m,`
+    + ` ${getarnt.segments.length} gegen ${original.segments.length} Segmente,`
+    + ` ${Object.keys(getarnt.joints).length} gegen ${Object.keys(original.joints).length} Gelenke,`
+    + ` ${getarnt.warnings.length} gegen ${original.warnings.length} Warnungen`);
+});
+
+test('Rollen, Positivfall: fremde Rigs werden vermessen, nicht abgelehnt', async () => {
+  // Drei Modelle aus fremder Hand, drei verschiedene Benennungen: CesiumMan
+  // („Skeleton_torso_joint_1“), RiggedFigure („leg_joint_L_3“), Soldier
+  // (Mixamo, aber ohne Zehenendknochen und mit anderer Kettenlänge).
+  const namen = ['CesiumMan', 'RiggedFigure', 'Soldier', 'Michelle'];
+  const ergebnisse = [];
+  for (const name of namen) {
+    const roh = ohneTexturen(readFileSync(join(REPO_ROOT, 'models', 'fremde', name + '.glb')));
+    const gltf = await loadGLB(roh.buffer.slice(roh.byteOffset, roh.byteOffset + roh.byteLength));
+    const profil = measureRigProfile(gltf, { fileName: name + '.glb' });
+    ergebnisse.push({ name, profil });
+
+    assert.strictEqual(validateRigProfile(profil).ok, true,
+      `${name}: vermessenes Profil besteht den Vertrag nicht — ${validateRigProfile(profil).errors.map((e) => e.field).join(', ')}`);
+    assert.ok(profil.world.height > 0,
+      `${name}: Körperhöhe ${profil.world.height} m`);
+    assert.ok(profil.segments.length >= 6,
+      `${name}: nur ${profil.segments.length} von ${14} Segmenten messbar, erwartet mindestens 6 — Warnungen: ${profil.warnings.join(' | ')}`);
+    assert.ok(profil.soles.length === 8,
+      `${name}: ${profil.soles.length} Sohlenpunkte, erwartet 8 (vier Ecken je Fuß)`);
+    // Jede Pflichtrolle sitzt auf einem Knochen, den dieses Modell wirklich hat.
+    const vorhandene = new Set(profil.bones.map((b) => b.id));
+    for (const rolle of ['pelvis', 'foot_l', 'foot_r']) {
+      assert.ok(vorhandene.has(profil.roles[rolle].bone),
+        `${name}: Rolle ${rolle} zeigt auf „${profil.roles[rolle].bone}“, das Skelett hat ${vorhandene.size} Knochen — der gibt es nicht`);
+    }
+  }
+  assert.strictEqual(ergebnisse.length, namen.length,
+    `${ergebnisse.length} von ${namen.length} fremden Modellen vermessen`);
+});
+
+test('Rollen, Negativfall: ein Nicht-Humanoid wird geometrisch abgelehnt, nicht wegen fehlender Namen', async () => {
+  // RobotExpressive: eine Figur, deren Skelett keine aufrechte zweibeinige
+  // Körperform hat. Die Ablehnung muss von der Geometrie kommen.
+  const roh = ohneTexturen(readFileSync(join(REPO_ROOT, 'models', 'fremde', 'RobotExpressive.glb')));
+  const gltf = await loadGLB(roh.buffer.slice(roh.byteOffset, roh.byteOffset + roh.byteLength));
+
+  assert.throws(
+    () => measureRigProfile(gltf, { fileName: 'RobotExpressive.glb' }),
+    (fehler) => {
+      assert.match(fehler.message, /\d/,
+        `jede Ablehnung muss eine Zahl nennen, war: "${fehler.message}"`);
+      assert.doesNotMatch(fehler.message, /mixamorig|Knochen „[A-Za-z]*(Left|Right|Hips)/,
+        `die Ablehnung stützt sich auf einen Knochennamen statt auf Geometrie: "${fehler.message}"`);
+      assert.match(fehler.message, /Achsenwert|Erkennung abgelehnt|ohne Kandidaten|Segmenten messbar/,
+        `die Ablehnung nennt keinen geometrischen Grund: "${fehler.message}"`);
+      return true;
+    },
+    'ein Modell ohne menschliche Körperform muss abgelehnt werden, statt als Mensch vermessen zu werden'
+  );
+});
+
+
+test('Rollen, mittlere Zone: eine unsichere Pflichtrolle wird gemessen und zur Bestätigung markiert', async () => {
+  // plan.md 5.1 kennt drei Zonen, nicht zwei. Michelle ist der Beleg, warum
+  // die mittlere gebraucht wird: 65 Knochen, ein vollständiges Mixamo-Rig —
+  // und trotzdem findet die Erkennung die Blickrichtung nicht eindeutig und
+  // gibt den Füßen nur 0,58. Solange „unter 0,90“ gleich „abgelehnt“ hieß,
+  // fiel dieses Modell durch, obwohl seine Füße gefunden waren.
+  const roh = ohneTexturen(readFileSync(join(REPO_ROOT, 'models', 'fremde', 'Michelle.glb')));
+  const gltf = await loadGLB(roh.buffer.slice(roh.byteOffset, roh.byteOffset + roh.byteLength));
+  const profil = measureRigProfile(gltf, { fileName: 'Michelle.glb' });
+
+  const fuss = profil.roles.foot_l;
+  assert.ok(fuss.confidence >= 0.5 && fuss.confidence < 0.9,
+    `Testvoraussetzung: foot_l müsste in der Rückfragezone liegen, ist aber ${fuss.confidence}`);
+  assert.strictEqual(fuss.confirm, true,
+    `foot_l mit Konfidenz ${fuss.confidence} ist nicht als bestätigungsbedürftig markiert — der Mensch wird nie gefragt`);
+  assert.ok(profil.world.height > 0 && profil.segments.length > 0,
+    `trotz unsicherer Rolle muss gemessen werden: ${profil.segments.length} Segmente, Höhe ${profil.world.height} m`);
+  assert.strictEqual(validateRigProfile(profil).ok, true,
+    `Profil mit bestätigungsbedürftiger Rolle besteht den Vertrag nicht: ${validateRigProfile(profil).errors.map((e) => e.field).join(', ')}`);
+
+  const meldung = profil.warnings.filter((w) => /Pflichtrolle foot_l/.test(w));
+  assert.strictEqual(meldung.length, 1,
+    `${meldung.length} Warnungen zur unsicheren Pflichtrolle foot_l, erwartet genau eine: ${profil.warnings.join(' | ')}`);
+  assert.match(meldung[0], /0\.58/,
+    `die Warnung nennt die gemessene Konfidenz nicht: "${meldung[0]}"`);
+
+  // Gegenprobe: eine sichere Rolle wird nicht markiert und erzeugt keine Warnung.
+  const sicher = measureRigProfile(await ladeXbot(), { fileName: 'Xbot.glb' });
+  assert.strictEqual(sicher.roles.foot_l.confirm, undefined,
+    `Rolle mit Konfidenz ${sicher.roles.foot_l.confidence} ist als bestätigungsbedürftig markiert, obwohl sie sicher ist`);
+  assert.strictEqual(sicher.warnings.length, 0,
+    `sicher erkanntes Modell meldet ${sicher.warnings.length} Warnungen: ${sicher.warnings.join(' | ')}`);
+});
+
+test('Rollen, mittlere Zone: die Antwort des Menschen ersetzt die unsichere Zuordnung', async () => {
+  // Der Mensch bestätigt über confirm_role (src/ui/rollen-bestaetigung.js);
+  // seine Antwort kommt als opts.roles herein. Danach ist die Rolle festgelegt
+  // und nicht mehr bestätigungsbedürftig.
+  const roh = ohneTexturen(readFileSync(join(REPO_ROOT, 'models', 'fremde', 'Michelle.glb')));
+  const laden = async () => {
+    const g = await loadGLB(roh.buffer.slice(roh.byteOffset, roh.byteOffset + roh.byteLength));
+    return g;
+  };
+  const ohneAntwort = measureRigProfile(await laden(), { fileName: 'Michelle.glb' });
+  const antwort = {
+    foot_l: ohneAntwort.roles.foot_l.bone,
+    foot_r: ohneAntwort.roles.foot_r.bone,
+  };
+  const mitAntwort = measureRigProfile(await laden(), { fileName: 'Michelle.glb', roles: antwort });
+
+  assert.strictEqual(mitAntwort.roles.foot_l.confidence, 1,
+    `bestätigte Rolle trägt Konfidenz ${mitAntwort.roles.foot_l.confidence}, erwartet 1`);
+  assert.strictEqual(mitAntwort.roles.foot_l.confirm, undefined,
+    'bestätigte Rolle ist immer noch als bestätigungsbedürftig markiert');
+  assert.strictEqual(mitAntwort.warnings.filter((w) => /Pflichtrolle/.test(w)).length, 0,
+    `nach der Bestätigung bleiben Rollenwarnungen stehen: ${mitAntwort.warnings.filter((w) => /Pflichtrolle/.test(w)).join(' | ')}`);
+  assert.strictEqual(mitAntwort.world.height, ohneAntwort.world.height,
+    `die Bestätigung derselben Zuordnung ändert die Körperhöhe von ${ohneAntwort.world.height} auf ${mitAntwort.world.height} m`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reihe „Bestätigungen messen neu“ — confirm_role ist keine Kosmetik
+//
+// Befund (spikes/rollen/BEFUND.md): eine bestätigte oder korrigierte Rolle
+// lief über NICHT in die Vermessung — describe_body zeigte bitidentische
+// Segmente, Massen, Sohlen und Gelenke, wie auch immer der Mensch korrigierte.
+// Die Vermessung (Pfad A dieser Erhebung) hatte nie ein Problem: mit
+// korrigierter Rollentabelle aufgerufen, misst sie ohnehin neu. Die Reihe hier
+// prüft genau diese Nachbedingung an der Vermessung: JEDE abweichende
+// Bestätigung muss das Profil neu bilden — über beide Kanäle (opts.roles und
+// opts.bestaetigteRollen aus dem Tool-Store), mit identischen Zahlen.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Gesamtmasse eines Profils, gerundet wie die Segmentmeldungen. */
+const gesamtMasse = (profil) => +profil.segments.reduce((a, s) => a + s.mass, 0).toFixed(4);
+
+test('Bestätigung, Positivfall: eine abweichende Beckenrolle misst das Profil neu', async () => {
+  const ohne = measureRigProfile(await ladeXbot(), { fileName: 'Xbot.glb' });
+  const falschesBecken = ohne.roles.pelvis.bone === 'mixamorigHips' ? 'mixamorigSpine' : 'mixamorigHips';
+
+  const korrigiert = measureRigProfile(await ladeXbot(), {
+    fileName: 'Xbot.glb',
+    bestaetigteRollen: { pelvis: falschesBecken },
+  });
+
+  // Die Rolle selbst sitzt auf dem neuen Knochen, bestätigt, Konfidenz 1.
+  assert.strictEqual(korrigiert.roles.pelvis.bone, falschesBecken,
+    `Korrektur ist nicht eingetroffen: pelvis zeigt weiter auf „${korrigiert.roles.pelvis.bone}“ statt „${falschesBecken}“`);
+  assert.strictEqual(korrigiert.roles.pelvis.confidence, 1,
+    `bestätigte Rolle trägt Konfidenz ${korrigiert.roles.pelvis.confidence}, erwartet 1`);
+
+  // Das gemessene Profil muss gefolgt sein — Zahlen vergleichen, nicht nur Felder.
+  const torsoOhne = ohne.segments.find((s) => s.id === 'torso');
+  const torsoMit = korrigiert.segments.find((s) => s.id === 'torso');
+  assert.notStrictEqual(torsoMit.from, torsoOhne.from,
+    `Segment torso beginnt weiter an „${torsoMit.from}“ — die Segmentachse ist der Korrektur nicht gefolgt`);
+  assert.notStrictEqual(torsoMit.radius, torsoOhne.radius,
+    `torso-Radius blieb bitidentisch (${torsoMit.radius} m) — es wurde nicht neu gemessen`);
+  assert.notStrictEqual(gesamtMasse(korrigiert), gesamtMasse(ohne),
+    `Gesamtmasse blieb bei ${gesamtMasse(ohne)} kg — Massen sind der Korrektur nicht gefolgt`);
+  assert.notStrictEqual(torsoMit.mass, torsoOhne.mass,
+    `torso-Masse blieb bitidentisch (${torsoMit.mass} kg) — Massenmessung lief nicht neu`);
+});
+
+test('Bestätigung, Positivfall: Fuß-Korrektur zieht Sohle, Gelenk und Masse nach', async () => {
+  const gltfErkannt = await ladeXbot();
+  const zehLinks = detectRig(gltfErkannt).roles.toe_l.bone;
+  const ohne = measureRigProfile(await ladeXbot(), { fileName: 'Xbot.glb' });
+
+  const korrigiert = measureRigProfile(await ladeXbot(), {
+    fileName: 'Xbot.glb',
+    bestaetigteRollen: { foot_l: zehLinks },
+  });
+
+  assert.strictEqual(korrigiert.roles.foot_l.bone, zehLinks,
+    `foot_l zeigt weiter auf „${korrigiert.roles.foot_l.bone}“, statt auf die Korrektur „${zehLinks}“`);
+
+  // Sohle: am neuen Knochen, in neuen lokal-Koordinaten gemessen.
+  const sohleOhne = ohne.soles.find((s) => s.id === 'sole_l_front_out');
+  const sohleMit = korrigiert.soles.find((s) => s.id === 'sole_l_front_out');
+  assert.strictEqual(sohleMit.bone, zehLinks,
+    `Sohle sitzt weiter am alten Knochen „${sohleMit.bone}“ — die Sohlenmessung lief nicht über die korrigierte Rolle`);
+  assert.notDeepStrictEqual(sohleMit.local, sohleOhne.local,
+    `Sohle „sole_l_front_out“ in bitidentisch lokal gemessen ${JSON.stringify(sohleMit.local)} — keine Neumessung`);
+
+  // Gelenk: ankle_l sitzt an der neuen Fußrolle.
+  assert.strictEqual(korrigiert.joints.ankle_l.bone, zehLinks,
+    `Gelenk ankle_l sitzt weiter auf „${korrigiert.joints.ankle_l.bone}“ — die Gelenkmessung folgt der Korrektur nicht`);
+
+  // Masse des Fußsegments: ein Zeh wiegt weniger als ein ganzer Fuß.
+  const fussOhne = ohne.segments.find((s) => s.id === 'foot_l');
+  const fussMit = korrigiert.segments.find((s) => s.id === 'foot_l');
+  assert.ok(fussMit.mass < fussOhne.mass,
+    ` Fußmasse stieg von ${fussOhne.mass} auf ${fussMit.mass} kg — die Fuß-Korrektur hat die Messung nicht neu durchlaufen`);
+});
+
+test('Bestätigung, Negativfall: bestätigter Nicht-Knochen wird mit Zahl abgelehnt', async () => {
+  const gltf = await ladeXbot();
+  assert.throws(
+    () => measureRigProfile(gltf, { fileName: 'Xbot.glb', bestaetigteRollen: { foot_l: 'gibt-es-nicht' } }),
+    (fehler) => {
+      assert.match(fehler.message, /\d/,
+        `Ablehnung muss eine Zahl nennen, war: "${fehler.message}"`);
+      assert.match(fehler.message, /gibt-es-nicht/,
+        `Ablehnung muss den abgewiesenen Knochennamen nennen, war: "${fehler.message}"`);
+      return true;
+    },
+    'eine Bestätigung auf einen Knochen außerhalb des Skeletts darf nicht stillschweigend durchgehen');
+});
+
+test('Bestätigung, Kontrollfall: dieselbe Zuordnung bestätigt misst exakt dasselbe', async () => {
+  // Der Kontrollfall für den Positivfall über: Ein reines Bestätigen (der
+  // Mensch wählt den Vorschlag) darf kein anderes Profil geben — sonst wäre
+  // die Neumessung kein Messen, sondern eine zweite Zufallszahl.
+  const gltf = await ladeXbot();
+  const ohne = measureRigProfile(gltf, { fileName: 'Xbot.glb' });
+  const antwort = {};
+  for (const [rolle, v] of Object.entries(detectRig(await ladeXbot()).roles)) {
+    antwort[rolle] = v.bone;
+  }
+  const bestaetigt = measureRigProfile(await ladeXbot(), {
+    fileName: 'Xbot.glb',
+    bestaetigteRollen: antwort,
+  });
+
+  assert.deepStrictEqual(bestaetigt.segments, ohne.segments,
+    'Bestätigen aller erkannten Zuordnungen ändert die Segmente — die Neumessung lief, ohne dass geändert wurde');
+  assert.deepStrictEqual(bestaetigt.soles, ohne.soles,
+    'Bestätigen derselben Zuordnung ändert die Sohlen');
+  assert.strictEqual(gesamtMasse(bestaetigt), gesamtMasse(ohne),
+    `Gesamtmasse wandert von ${gesamtMasse(ohne)} auf ${gesamtMasse(bestaetigt)} kg — die Bestätigung derselben Zuordnung misst zu`);
 });

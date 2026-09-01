@@ -47,6 +47,33 @@ export const VERTEX_STRIDE = 5;
 export const FOV_DEGREES = 38;
 
 /**
+ * Verfahrensparameter: Lage der Nah-Clipping-Ebene, relativ zum Abstand
+ * zwischen Kamera und Boxoberfläche. near muss kleiner als dieser Abstand
+ * bleiben, sonst schneidet sie die Figur; er darf aber auch nicht bei 0
+ * liegen, sonst leidet die Tiefenpräzision. 0,01 lässt 1 % Luft gegen
+ * Rechenrauschen.
+ */
+export const NEAR_ANTEIL = 0.01;
+
+/**
+ * Verfahrensparameter: unterste Grenze für near, relativ zum Abstand der
+ * entferntesten Boxecke. Steht die Kamera in der Box hinein (sehr tief
+ * herangezoomt), ist der Abstand zur Oberfläche 0 — eine Nah-Ebene von 0
+ * ergäbe eine entartete Projektionsmatrix. Der Boden liegt weit unter jedem
+ * noch darstellbaren Abstand und schneidet nichts: die Clipping-Ebene liegt
+ * dann knapp vor der Kamera, nicht irgendwo im Körper.
+ */
+export const NEAR_MIN_ANTEIL = 0.001;
+
+/**
+ * Verfahrensparameter: Lage der Fern-Clipping-Ebene hinter dem Kugelmittelpunkt,
+ * in Kugelradien. 1 würde exakt den hintersten Kugelpunkt treffen; 2 hält eine
+ * volle Kugelbreite Reserve. Da far bei jeder Bewegung nachgezogen wird
+ * (applyClipPlanes), muss der Reserve keine Zoomstufe vorausplanen.
+ */
+export const FAR_FAKTOR = 2;
+
+/**
  * Sammelt Vertexpositionen des Modells in Weltkoordinaten.
  *
  * Wichtig und teuer erkauft: Bei einem SkinnedMesh liegen die rohen
@@ -226,15 +253,113 @@ export function frameCamera(camera, object3D) {
   camera.lookAt(center);
   camera.up.set(0, 1, 0);
 
-  // Clipping-Ebenen aus der Box: vor der vorderen Fläche beginnen, hinter der
-  // hinteren enden, mit je einer halben Boxtiefe Reserve für Bewegung.
-  const near = Math.max(clearance - halfDepth, distance * 0.01);
-  const far = distance + size[depthAxis] * 2 + size.y;
-  camera.near = near;
-  camera.far = far;
+  // Clipping-Ebenen ueber applyClipPlanes, nicht mit einer eigenen Formel.
+  //
+  // Vorher stand hier `near = clearance - halfDepth` — gerechnet gegen die
+  // vordere Flaeche der BINDEPOSE. Gemessen am Xbot ergab das near = 3,43 m
+  // bei einer Kamera in 3,77 m Abstand: alles, was der Kamera naeher kommt
+  // als die T-Pose, wurde abgeschnitten. Ein nach vorn gebeugtes Knie tut
+  // genau das, und im Bild fehlte es.
+  //
+  // Der Fehler blieb lange unsichtbar, weil applyClipPlanes erst bei der
+  // ersten Kamerabewegung greift: wer einmal drehte, sah das Problem nicht
+  // mehr. Beide Wege rechnen jetzt dieselbe Formel, mit derselben Reserve
+  // fuer bewegte Gliedmassen.
+  const { near, far } = applyClipPlanes(camera, box);
 
   camera.updateProjectionMatrix();
   camera.updateMatrixWorld(true);
 
   return { box, center, distance, forward, near, far, margin: FRAME_MARGIN };
+}
+
+/**
+ * Setzt near und far so, dass das Modell aus jeder Kameraposition vollständig
+ * sichtbar bleibt — gerechnet aus dem tatsächlichen Abstand der Kamera zur
+ * Bounding Box, nicht aus einem festen Wert.
+ *
+ * Der alte Rahmenwert genügt genau einmal: beim Start. Danach dreht und zoomt
+ * der Nutzer, die Kamera nähert sich der Figur oder entfernt sich — und die
+ * stehengebliebenen Clipping-Ebenen schneiden Arme ab (near) oder den ganzen
+ * Körper (far). Diese Funktion wird deshalb nach jeder Kamerabewegung
+ * gerufen (kamerasteuerung.js, im change-Horcher).
+ *
+ * near gegen die Box**ecke** zu rechnen war ein gemessener Fehler: sitzt die
+ * Kamera knapp über dem Scheitel, liegt die nächste Ecke seitlich versetzt
+ * rund 0,3 m weit, die Kopffläche aber nur Zentimeter — die Ecke überschätzte
+ * near und schnitt genau dann den Kopf ab. Gerechnet wird deshalb gegen die
+ * Box**oberfläche** (Box3.distanceToPoint; 0, wenn die Kamera innerhalb
+ * liegt). Liegt sie innerhalb, wird near auf den tinyen Boden gesetzt: die
+ * Ebene liegt dann knapp vor der Kamera, nichts im Körper wird geschnitten.
+ *
+ * far deckt die entfernteste Boxecke ab, mit Reserve (FAR_FAKTOR).
+ *
+ * @param {THREE.PerspectiveCamera} camera
+ * @param {THREE.Box3} box gemessene Bounding Box des Modells (getBounds)
+ * @returns {{near: number, far: number}}
+ */
+export function applyClipPlanes(camera, box) {
+  if (!box || typeof box.distanceToPoint !== 'function') {
+    throw new Error(
+      `Clipping-Ebenen nicht berechenbar: ${String(box)} ist keine THREE.Box3, ` +
+      'erwartet wird die Box aus getBounds'
+    );
+  }
+  if (!(camera.far > camera.near)) {
+    throw new Error(
+      `Clipping-Ebenen nicht berechenbar: camera.far ${camera.far} muss größer als ` +
+      `camera.near ${camera.near} sein`
+    );
+  }
+
+  // Die Box stammt aus der BINDEPOSE, gemessen einmal beim Laden. Sobald die
+  // Figur animiert wird, ragen Gliedmassen darueber hinaus: ein vorgestrecktes
+  // Knie, ein Arm ueber dem Kopf. Gerechnet gegen die enge Box schneidet near
+  // dann genau diese Teile ab — im Agentenlauf verschwanden die Unterschenkel,
+  // sobald die Figur in die Hocke ging.
+  //
+  // Eine mitwachsende Box gibt es nicht: die Bounding Box eines Skinned Mesh
+  // folgt der Verformung durch die Knochen nicht. Deshalb wird die gemessene
+  // Box um eine ganze Koerperhoehe nach allen Seiten aufgeweitet — weiter als
+  // das kann kein Glied einer Figur von ihrer Bindepose abweichen. Der Preis
+  // ist etwas Tiefenauflösung, der Gewinn: es wird nie etwas abgeschnitten.
+  const _weit = new THREE.Vector3();
+  box.getSize(_weit);
+  const reserve = Math.max(_weit.x, _weit.y, _weit.z);
+  const weiteBox = box.clone().expandByScalar(reserve);
+
+  // Abstand der Kamera zur Boxoberfläche, 0, wenn sie innerhalb liegt. Genau
+  // dieser Abstand ist die Strecke, die near freihalten muss.
+  const oberflaeche = weiteBox.distanceToPoint(camera.position);
+
+  const _ecke = new THREE.Vector3();
+  let entferntesteEcke = 0;
+  for (const x of [weiteBox.min.x, weiteBox.max.x]) {
+    for (const y of [weiteBox.min.y, weiteBox.max.y]) {
+      for (const z of [weiteBox.min.z, weiteBox.max.z]) {
+        _ecke.set(x, y, z);
+        const abstand = camera.position.distanceTo(_ecke);
+        if (abstand > entferntesteEcke) entferntesteEcke = abstand;
+      }
+    }
+  }
+
+  // Innen (Oberflächenabstand 0): near auf den tinyen Boden, die Nah-Ebene
+  // liegt dann knapp vor der Kamera und schneidet nichts im Körper.
+  const near = Math.max(
+    oberflaeche * (1 - NEAR_ANTEIL),
+    entferntesteEcke * NEAR_MIN_ANTEIL
+  );
+  const far = entferntesteEcke * FAR_FAKTOR;
+  if (!(near < far)) {
+    throw new Error(
+      `Clipping-Ebenen entartet: near ${near.toFixed(6)} m >= far ${far.toFixed(6)} m ` +
+      'bei Kameraabstand ' + camera.position.distanceTo(weiteBox.getCenter(_ecke)).toFixed(6) + ' m ' +
+      'zur Boxmitte'
+    );
+  }
+  camera.near = near;
+  camera.far = far;
+  camera.updateProjectionMatrix();
+  return { near, far };
 }

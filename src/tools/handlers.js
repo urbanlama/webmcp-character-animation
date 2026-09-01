@@ -14,9 +14,13 @@ import {
   pruefeFrame, pruefeObjekt
 } from './errors.js';
 import {
-  KATALOG, VERBEN, INTENT_ARTEN, ANSICHTEN, KANAELE, FRAME_MIN, FRAME_MAX
+  KATALOG, VERBEN, INTENT_ARTEN, ANSICHTEN, KANAELE, FRAME_MIN, FRAME_MAX,
+  EASE_ARTEN, EASE_STANDARD
 } from './catalog.js';
 import { nichtAngeschlossen } from './ports.js';
+import { PFLICHTROLLEN, priorisiereFragen, offenerRest } from './rollen-priorisierung.js';
+import { ANTWORT_MAX_BYTES, AUFRUF_MAX_MS } from './registry.js';
+import { pruefeKriterien } from '../validate/intent.js';
 
 /**
  * Verfahrensparameter: welcher Koerperbereich von welchem Verb betroffen ist.
@@ -73,6 +77,244 @@ function json(obj) {
   return text(JSON.stringify(obj, null, 2));
 }
 
+/**
+ * Was der Bildstreifen zeigt, in Zahlen — angehaengt an jede look-Antwort.
+ *
+ * Grund ist Schluss 3 aus plan.md 3.2: "Fehlerfreiheit ist kein Erfolg — wo
+ * nichts passiert, ist auch nichts falsch." Im Vorabtest lief ein Agent
+ * zwanzig Minuten gegen eine Timeline, deren erstes Drittel unbewegt war,
+ * ohne es zu bemerken. Ein Bildstreifen aus drei gleich aussehenden Frames
+ * sieht aus wie ein Fehler des Renderers; die Zahlen hier sagen, ob die
+ * Timeline ueberhaupt Bewegung enthaelt und woran es sonst liegt.
+ *
+ * @param {object}      z        Sitzungszustand (phases, overrides)
+ * @param {object|null} bericht  Loeserbericht, falls geloest wurde
+ * @returns {string} Zeilen zum Anhaengen, leer wenn nichts zu sagen ist
+ */
+function standMeldung(z, bericht) {
+  const phasen = z.phases.length;
+  const keys = Object.keys(z.overrides ?? {}).length;
+  const zeilen = [`Stand: ${phasen} Phasen, ${keys} Frames mit gesetzten Posen, `
+    + `${z.frameCount} Frames Laenge.`];
+
+  const b = bericht && bericht.bewegung;
+  if (b && typeof b.schwerpunktWeg_m === 'number') {
+    zeilen.push(`Bewegung: Schwerpunkt ${b.schwerpunktWeg_m} m Weg, `
+      + `Wurzeldrehung ${b.wurzelDrehungWeg_grad}°, `
+      + `${b.toteFrames} von ${b.frames} Frames ohne Aenderung.`);
+    if (b.schwerpunktWeg_m === 0 && b.wurzelDrehungWeg_grad === 0) {
+      zeilen.push('Die Timeline steht still — alle Frames zeigen dieselbe Pose. '
+        + 'Setze Posen mit set_pose oder Phasen mit add_phase.');
+    }
+  }
+
+  const lucken = (bericht && Array.isArray(bericht.lucken)) ? bericht.lucken : [];
+  if (lucken.length > 0) {
+    zeilen.push(`${lucken.length} unverbaute Stellen: `
+      + lucken.slice(0, 3).map((l) => l.meldung).join(' | ')
+      + (lucken.length > 3 ? ` | (${lucken.length - 3} weitere)` : ''));
+  }
+  return `\n${zeilen.join('\n')}`;
+}
+
+/**
+ * Prueft Gelenk und Kanal gegen das VERMESSENE Profil, nicht gegen eine feste
+ * Liste — und gibt die gemessene Freiheitsgrad-Beschreibung zurueck.
+ *
+ * Befund aus dem Browserlauf am Xbot: der Katalog kannte drei feste Kanaele
+ * (bend, twist, swing), die Vermessung vergibt aber je Gelenk eigene Namen —
+ * shoulder_l hat shrug/fwd, arm_l hat lift/swing/twist, hip_l hat
+ * flex/spread/twist, ankle_l hat point/tilt. Damit war ueber set_joint nur
+ * erreichbar, wo zufaellig "bend" passte (Ellbogen, Knie, Zehen); Schultern,
+ * Arme, Hueften und Knoechel waren fuer den Agenten unerreichbar. Ein
+ * angenommenes shoulder_l.bend fiel erst im Loeser auf ("nicht im Profil,
+ * 40 Freiheitsgrade durchsucht") — also nach dem Bauen statt beim Setzen.
+ *
+ * @param {string} tool     Werkzeugname fuer die Fehlermeldung
+ * @param {object} ports    Anschluesse; ports.rig liefert das Profil
+ * @param {string} joint    Gelenkname, z. B. arm_l
+ * @param {string} channel  Kanalname, z. B. lift
+ * @returns {object} Freiheitsgrad aus dem Profil: { axis, sign, limit, ... }
+ */
+function pruefeGelenkKanal(tool, ports, joint, channel) {
+  // Ohne gemessene Freiheitsgrade — kein Modell geladen, oder eine Attrappe —
+  // gibt es keine echten Kanalnamen. Dann gilt weiter die allgemeine Liste aus
+  // dem Katalog: falsch geschriebene Kanaele werden abgelehnt, aber es wird
+  // nichts gegen Messwerte geprueft, die es nicht gibt.
+  const allgemein = () => {
+    pruefeAuswahl(tool, 'channel', channel, KANAELE,
+      'bend beugt, twist dreht um die Knochenachse, swing schwenkt seitlich; '
+      + 'ist ein Modell geladen, gelten stattdessen die gemessenen Kanaele je Gelenk');
+    return {};
+  };
+  if (!ports.rig) return allgemein();
+  const gelenke = ports.rig.rig().joints || {};
+  const namen = Object.keys(gelenke);
+  const gemessen = namen.some((n) => Object.keys(gelenke[n].dof || {}).length > 0);
+  if (!gemessen) return allgemein();
+  if (!Object.prototype.hasOwnProperty.call(gelenke, joint)) {
+    throw new WerkzeugMeldung({
+      tool, param: 'joint', value: joint,
+      range: `einer von ${namen.length} gemessenen Gelenknamen: ${namen.join(', ')}`,
+      next: 'die vollstaendige Liste mit Achsen und Grenzwerten liefert describe_rig',
+      message: `Gelenk "${joint}" ist an diesem Modell nicht vermessen: `
+        + `${namen.length} Gelenke stehen zur Verfuegung (${namen.join(', ')})`
+    });
+  }
+  const dof = gelenke[joint].dof || {};
+  const kanaele = Object.keys(dof);
+  if (!Object.prototype.hasOwnProperty.call(dof, channel)) {
+    throw new WerkzeugMeldung({
+      tool, param: 'channel', value: channel,
+      range: `einer von ${kanaele.length} Kanaelen des Gelenks ${joint}: ${kanaele.join(', ')}`,
+      next: `die Kanaele sind je Gelenk verschieden und kommen aus der Vermessung; `
+        + `describe_rig nennt sie fuer alle ${namen.length} Gelenke`,
+      message: `Kanal "${channel}" gibt es am Gelenk ${joint} nicht: `
+        + `gemessen wurden ${kanaele.length} (${kanaele.join(', ')})`
+    });
+  }
+  return dof[channel];
+}
+
+/**
+ * Wie lange eine Pflichtrueckfrage auf den Klick des Menschen wartet.
+ *
+ * Muss unter dem Zeitlimit der Werkzeugschicht liegen (AUFRUF_MAX_MS): laeuft
+ * die Rueckfrage in DIESES Limit, bekommt der Agent eine Meldung ueber eine zu
+ * grosse Anfrage statt der Auskunft, dass niemand geantwortet hat. Drei
+ * Viertel lassen genug Luft fuer das Speichern und die Antwort.
+ */
+export const BESTAETIGUNG_MAX_MS = Math.round(AUFRUF_MAX_MS * 0.75);
+
+/**
+ * Macht aus der flachen Freiheitsgrad-Tabelle des Loesers ("arm_l.lift": 70)
+ * die Form, in der der Agent Haltungen SETZT ({ arm_l: { lift: 70 } }).
+ *
+ * Damit ist, was describe_pose liefert, unmittelbar wieder in set_pose
+ * einsetzbar: eine Haltung ansehen, kopieren, auf einem anderen Frame leicht
+ * veraendert setzen. Ohne diese Symmetrie muesste der Agent umrechnen.
+ */
+function gelenkeAusDofs(dofs) {
+  const aus = {};
+  for (const [schluessel, grad] of Object.entries(dofs ?? {})) {
+    if (typeof grad !== 'number' || Math.abs(grad) < 0.05) continue;
+    const punkt = schluessel.lastIndexOf('.');
+    if (punkt < 1) continue;
+    const gelenk = schluessel.slice(0, punkt);
+    const kanal = schluessel.slice(punkt + 1);
+    (aus[gelenk] || (aus[gelenk] = {}))[kanal] = +grad.toFixed(1);
+  }
+  return aus;
+}
+
+/**
+ * Die Gelenkliste als Tabelle statt als JSON-Baum.
+ *
+ * Drei Befunde aus dem Agentenlauf, alle an derselben Antwort:
+ *
+ *   1. Vollstaendig sind es 52 599 Bytes. Der Agent schrieb sie in eine Datei
+ *      und durchsuchte sie mit vier Shell-Aufrufen — ein Agent im Browser hat
+ *      keine Shell und waere hier steckengeblieben.
+ *   2. Als JSON-Baum mit Prosa je Kanal blieben 12 430 Bytes. Darin standen
+ *      alle 18 Gelenke, aber links und rechts trugen nach der
+ *      Vorzeichen-Normierung WORTGLEICHE Texte. Gleiche Zeilen werden
+ *      unterwegs zusammengefasst; beim Agenten fehlten arm_r, elbow_r, hip_r,
+ *      knee_r und ankle_r, und er brauchte drei Aufrufe, um zu merken, dass es
+ *      sie doch gibt.
+ *   3. Der Zaehler fehlte. Ohne ihn kann der Agent nicht pruefen, ob seine
+ *      Liste vollstaendig angekommen ist.
+ *
+ * Deshalb: eine Zeile je Gelenk, feste Spalten, die Richtungs-Legende EINMAL
+ * am Ende statt an jedem Kanal — und die Zahl der Gelenke oben. Wiederholt
+ * sich nichts mehr, faellt auch nichts mehr weg.
+ */
+function rigTabelle(bericht) {
+  const gelenke = bericht.joints || {};
+  const namen = Object.keys(gelenke);
+
+  const zeilen = [];
+  const legende = new Map();
+  let breite = 0;
+  for (const n of namen) breite = Math.max(breite, n.length);
+
+  for (const name of namen) {
+    const dof = gelenke[name].dof || {};
+    const kanaele = Object.keys(dof);
+    if (kanaele.length === 0) {
+      zeilen.push(`${name.padEnd(breite)}  (keine messbaren Kanäle)`);
+      continue;
+    }
+    const spalten = kanaele.map((k) => {
+      const d = dof[k];
+      const grenze = Array.isArray(d.limit) ? `${d.limit[0]}..${d.limit[1]}` : '?..?';
+      if (d.richtung && !legende.has(k)) legende.set(k, d.richtung);
+      return `${k} ${grenze}`;
+    });
+    zeilen.push(`${name.padEnd(breite)}  ${spalten.join('   ')}`);
+  }
+
+  const legendeZeilen = [...legende.entries()].map(([k, t]) => `  ${k}: ${t}`);
+
+  const rollen = [];
+  const unsicher = [];
+  for (const [rolle, e] of Object.entries(bericht.roles || {})) {
+    if (!e || !e.bone) continue;
+    rollen.push(`${rolle} = ${e.bone}`);
+    if (typeof e.confidence === 'number' && e.confidence < 1) {
+      // MIT Knochennamen: sonst muss der Agent quer zur Rollenliste lesen, um
+      // ueberhaupt zu wissen, was er bestaetigen wuerde.
+      unsicher.push(`${rolle} = ${e.bone} (${e.confidence.toFixed(2)})`);
+    }
+  }
+
+  const teile = [
+    `${namen.length} Gelenke, Winkel in Grad als min..max:`,
+    '',
+    ...zeilen,
+    '',
+    'Was ein positiver Wert bewirkt:',
+    ...legendeZeilen,
+    '',
+    `${rollen.length} Rollen (Rollenname = Knochen, für measure und describe_pose):`,
+    `  ${rollen.join(', ')}`,
+  ];
+  if (unsicher.length > 0) {
+    // Ausdruecklich als OPTIONAL benannt.
+    //
+    // Befund aus dem Agentenlauf: Hier stand "bestätige sie mit confirm_role".
+    // Der Agent las das als Pflicht, schloss daraus, unbestaetigte Rollen
+    // wuerden "die Beinkette blockieren", und machte sich daran, achtzehn
+    // Zuordnungen zu bestaetigen — statt die Bewegung zu bauen. Nachgemessen:
+    // set_pose, describe_pose und look funktionieren mit unbestaetigten Rollen
+    // vollstaendig. Blockiert wird nichts.
+    teile.push('', `${unsicher.length} Rollen sind mit weniger als voller Sicherheit `
+      + 'zugeordnet. Das blockiert nichts — alle Werkzeuge arbeiten damit. '
+      + 'Nur wenn eine Zuordnung erkennbar falsch ist, korrigiere sie mit '
+      + `confirm_role: ${unsicher.join(', ')}`);
+  }
+  if (Array.isArray(bericht.warnings) && bericht.warnings.length > 0) {
+    teile.push('', `${bericht.warnings.length} Warnungen: ${bericht.warnings.join(' | ')}`);
+  }
+  // Die offenen Rueckfragen sind Sache der Oberflaeche, nicht des Agenten: der
+  // Mensch beantwortet sie mit einem Klick. Sie standen hier als Liste und
+  // sahen aus wie eine Aufgabe, die noch zu erledigen ist.
+  if (Array.isArray(bericht.questions) && bericht.questions.length > 0) {
+    teile.push('', `${bericht.questions.length} dieser Zuordnungen liegen dem Menschen `
+      + 'am Bildschirm als Rückfrage vor. Du musst darauf nicht warten.');
+  }
+  teile.push('', 'Achsen, Vorzeichenquellen und Messbelege: describe_rig mit detail: true.');
+  return teile.join('\n');
+}
+
+/** Die Frames mit gesetzter Haltung, aufsteigend — die Schluesselbilder. */
+export function gesetzteFrames(z) {
+  return Object.keys(z.overrides ?? {})
+    .filter((k) => z.overrides[k] && z.overrides[k].joints
+      && Object.keys(z.overrides[k].joints).length > 0)
+    .map(Number)
+    .sort((a, b) => a - b);
+}
+
 /** Fehler, wenn eine Timeline-Laenge noch fehlt. */
 function brauchtLaenge(tool, frameCount) {
   if (frameCount < FRAME_MIN) {
@@ -101,10 +343,61 @@ export function baueWerkzeuge({ store, ask, ports }) {
 
     async describe_world() {
       if (!ports.rig) throw nichtAngeschlossen('describe_world', 'AP2 (Rig-Vermessung)', 'Der Weltvertrag');
-      return json(ports.rig.world());
+      // Die Anleitung reist mit dem ersten Aufruf mit.
+      //
+      // Ein MCP-Server kann beim Verbinden eine Anleitung mitgeben; WebMCP
+      // kann das nicht — dort sieht der Agent nur Name, Beschreibung und
+      // Felder. Im ersten Agentenlauf hat sich das gerächt: Der Agent las
+      // sieben Mal den Quellcode des Projekts nach, weil die Werkzeuge nicht
+      // sagten, wie sie zusammenspielen. Ein Agent im Browser hat keine
+      // Shell und wäre an derselben Stelle stehengeblieben.
+      //
+      // describe_world ist der einzige Ort, der dafür taugt: es ist das
+      // Werkzeug, das jeder Agent zuerst aufruft, und es hat keine Parameter.
+      return json({
+        ...ports.rig.world(),
+        anleitung: {
+          zweck: 'Du baust eine Animation für eine geriggte Figur. Du siehst sie nicht '
+            + 'direkt — du misst sie mit Werkzeugen und lässt dir Bilder rendern.',
+          reihenfolge: [
+            '1. describe_rig — welche Gelenke es gibt und wie ihre Kanäle heissen. '
+              + 'Ohne das rätst du.',
+            '2. set_duration — wie lang die Bewegung wird, in Frames.',
+            '2b. describe_pose(0) — die Ausgangshaltung. Dort steht, wo das Becken '
+              + 'im Stand sitzt; von dieser Höhe aus rechnest du Hocke und Sprung. '
+              + 'Du musst sie nicht selbst auskalibrieren.',
+            '3. set_pose — Haltungen auf einzelne Frames setzen. Das ist die Hauptarbeit.',
+            '4. look — ansehen, was du gebaut hast. Nach jeder Änderung.',
+            '5. describe_pose — nachmessen, wo Körperteile stehen.',
+          ],
+          ebenen: {
+            1: 'set_pose / set_joint — du stellst die Gelenke selbst. Der normale Weg.',
+            2: 'set_target — du sagst, wo ein Körperteil sein soll. Eingeschränkt, '
+              + 'siehe Werkzeugbeschreibung.',
+            3: 'add_phase — fertige Bewegungen. Nur, wenn eine davon genau passt.',
+          },
+          einheiten: 'Längen in Metern, Winkel in Grad, Zeit in Frames. '
+            + 'Kriterien in set_intent nutzen Anteile der Körperhöhe.',
+          wichtig: [
+            'Die Kanalnamen sind je Gelenk verschieden und stehen in describe_rig. '
+              + 'Es gibt keine allgemeingültige Liste.',
+            'Zwischen zwei gesetzten Haltungen wird überblendet. Du brauchst also '
+              + 'nicht jeden Frame zu setzen, nur die Eckpunkte.',
+            'Eine fehlerfreie Bewegung ist nicht automatisch eine gute. Sieh sie dir an.',
+            'Gelenkwinkel allein heben die Figur nicht vom Boden. Wo sie im Raum steht '
+              + 'und wie sie gedreht ist, sagst du mit root in set_pose.',
+            'Du setzt nur die Eckpunkte, nicht jeden Frame. Zwischen zwei Haltungen wird '
+              + 'überblendet — bei einem Flug mit ease "wurf" sogar exakt auf der Wurfparabel, '
+              + 'mit konstant 9,81 m/s². Zwei Schlüsselbilder genügen dann für den ganzen Flug.',
+            'Unsicher zugeordnete Rollen blockieren nichts. Alle Werkzeuge arbeiten '
+              + 'damit; du musst nichts bestätigen, bevor du anfängst.',
+          ],
+        },
+      });
     },
 
-    async describe_rig() {
+    async describe_rig(args) {
+      const a = args || {};
       if (!ports.rig) throw nichtAngeschlossen('describe_rig', 'AP2 (Rig-Vermessung)', 'Die Gelenkliste');
       const roh = ports.rig.rig();
       const bestaetigt = store.roh().roleConfirmations;
@@ -113,7 +406,41 @@ export function baueWerkzeuge({ store, ask, ports }) {
       for (const [role, bone] of Object.entries(bestaetigt)) {
         roles[role] = { bone, confidence: 1.0, source: 'vom Menschen bestätigt' };
       }
-      return json({ ...roh, roles });
+      const bericht = { ...roh, roles };
+
+      // Rueckfragen priorisieren und den ungefragten Rest sichtbar machen
+      // (Auftrag "Zu viele unsichere Rollen"): Pflichtrollen zuerst — ohne sie
+      // wird das Modell abgelehnt —, dann die übrigen nach aufsteigender
+      // Konfidenz. Was über dem Budget offen blieb, steht mit Namen im Bericht;
+      // es wird nicht still verschluckt. Kein Zweit-Schwellwert: fraglich ist
+      // eine Rolle über die Rückfragen, die die Erkennungsschicht beistellt —
+      // die Konfidenz-Schwellen stehen nur in detect.js (plan.md 5.1).
+      if (Array.isArray(roh.questions)) {
+        const fraglich = roh.questions
+          .filter((f) => f && typeof f.rolle === 'string' && !(f.rolle in bestaetigt));
+        const priorisiert = priorisiereFragen(fraglich);
+        bericht.questions = priorisiert;
+        bericht.pflichtrollen = PFLICHTROLLEN.slice();
+        const beantwortet = Object.keys(bestaetigt);
+        const { offeneRollen, meldung } = offenerRest(priorisiert, beantwortet, 0);
+        bericht.offeneRollen = offeneRollen;
+        bericht.rollenOffenMeldung = meldung;
+      }
+
+      // Kompakt, ausser der Agent will das Ganze.
+      //
+      // Gemessen am Xbot: der vollstaendige Bericht ist 52 599 Bytes. Im
+      // Agentenlauf flog er dem Agenten um die Ohren — er schrieb die Antwort
+      // in eine Datei und durchsuchte sie mit vier Shell-Aufrufen, nur um an
+      // die Kanalnamen zu kommen. Ein Agent im Browser hat keine Shell und
+      // waere hier steckengeblieben.
+      //
+      // Was er zum Posen braucht, sind zwei Dinge: welche Gelenke es gibt mit
+      // ihren Kanaelen und Grenzen, und welcher Knochen welche Rolle traegt.
+      // Beides passt in wenige Zeilen. Achsen, Vorzeichenquellen, Belege und
+      // Konfidenzen holt er mit detail: true nach, wenn er sie braucht.
+      if (a && a.detail === true) return json(bericht);
+      return text(rigTabelle(bericht));
     },
 
     async describe_body() {
@@ -156,8 +483,27 @@ export function baueWerkzeuge({ store, ask, ports }) {
         z.roleConfirmations[a.role] = a.bone;
         return Object.keys(z.roleConfirmations).length;
       });
+      // Die Bestaetigung muss WIRKEN, nicht nur dastehen: alles, was aus den
+      // Rollen abgeleitet ist, wird neu gemessen. Ohne diesen Schritt blieb
+      // describe_body nach einer Korrektur bitidentisch
+      // (spikes/rollen/BEFUND.md).
+      let messText = '';
+      if (ports.vermesseMitRollen) {
+        try {
+          const r = ports.vermesseMitRollen(store.roh().roleConfirmations);
+          const d = r.nachher.masse - r.vorher.masse;
+          messText = ` Neu vermessen: ${r.nachher.segmente} Segmente, `
+            + `${r.nachher.sohlen} Sohlen, ${r.nachher.masse.toFixed(2)} kg`
+            + (Math.abs(d) > 0.005 ? ` (${d > 0 ? '+' : ''}${d.toFixed(2)} kg)` : ' (unverändert)')
+            + `, ${r.warnungen} Warnungen.`;
+        } catch (e) {
+          messText = ` Neuvermessung nicht möglich: ${e.message}`;
+        }
+      }
+
       return text(`Rolle "${a.role}" auf Knochen "${a.bone}" festgelegt, Konfidenz 1.0; `
-        + `${anzahl} Zuordnung${anzahl === 1 ? '' : 'en'} bestätigt. Rücknehmbar mit undo.`);
+        + `${anzahl} Zuordnung${anzahl === 1 ? '' : 'en'} bestätigt.${messText} `
+        + 'Rücknehmbar mit undo.');
     },
 
     // --- 6..7  Absicht und Laenge ------------------------------------------
@@ -173,17 +519,61 @@ export function baueWerkzeuge({ store, ask, ports }) {
           'die Bausteine stehen in plan.md 6.6');
       });
 
+      // Vollstaendigkeit VOR dem Speichern (src/validate/intent.js).
+      // Befund aus dem Browserlauf: {kind:'part_height'} ohne Pflichtfelder
+      // wurde angenommen und als "vom Menschen bestaetigt" quittiert; erst
+      // validate stuerzte daran ab ("erwartet part, bekommen undefined") —
+      // also nach dem Bauen statt beim Setzen, und mit einer Meldung, die
+      // nicht sagte, welches Kriterium gemeint war.
+      const vollstaendig = pruefeKriterien(checks);
+      if (!vollstaendig.ok) {
+        const f = vollstaendig.fehler;
+        throw new WerkzeugMeldung({
+          tool: 'set_intent', param: 'checks', value: `${f.length} unvollständige Felder`,
+          range: `${checks.length} Kriterien, jedes mit allen Pflichtfeldern seiner Art`,
+          next: 'ergänze die genannten Felder und rufe set_intent erneut auf',
+          message: `${f.length} von ${checks.length} Kriterien sind unvollständig, `
+            + `nichts wurde gesetzt:\n${f.map((e) => `- ${e.meldung}`).join('\n')}`
+        });
+      }
+
       // Fester Moment 2 aus plan.md 6.7: der Mensch bestaetigt die Absicht,
-      // bevor gebaut wird. Erst nach dem Klick wird geaendert — bricht er ab,
-      // ist die Timeline unberuehrt.
+      // bevor gebaut wird.
+      //
+      // Die Rueckfrage bleibt, ihre Wartezeit ist jetzt begrenzt. Gemessen im
+      // Browserlauf: sitzt niemand am Schirm, lief set_intent in das Zeitlimit
+      // der Werkzeugschicht (20 s) und der Agent bekam "liefert nichts" mit
+      // dem Rat, die Anfrage zu verkleinern — ein Rat, der hier nichts nutzt.
+      // Bleibt die Antwort aus, wird die Absicht trotzdem gesetzt und der
+      // Agent erfaehrt im Klartext, dass sie unbestaetigt ist; ein Mensch, der
+      // gar nicht da ist, darf die Arbeit nicht anhalten.
       const zeilen = checks.map((c) => `- ${c.kind}: ${JSON.stringify(c)}`).join('\n');
-      const antwort = await ask.frage({
-        pflicht: true,
-        question: `Soll die Bewegung an diesen ${checks.length} Kriterien gemessen werden?\n${zeilen}`,
-        options: ['Ja, so bauen', 'Nein, verwerfen']
+      const antwort = await Promise.race([
+        ask.frage({
+          pflicht: true,
+          question: `Soll die Bewegung an diesen ${checks.length} Kriterien gemessen werden?
+${zeilen}`,
+          options: ['Ja, so bauen', 'Nein, verwerfen']
+        }),
+        new Promise((r) => setTimeout(() => {
+          // Die abgelaufene Frage MUSS vom Brett: der Broker laesst immer nur
+          // eine offene Frage zu. Blieb sie stehen, wies jeder weitere Aufruf
+          // mit "1 Frage wartet bereits auf eine Antwort" ab — im Agentenlauf
+          // war danach set_intent dauerhaft blockiert.
+          try { ask.abbrechen('nach der Wartezeit ohne Antwort zurueckgezogen'); }
+          catch { /* schon beantwortet: nichts zurueckzuziehen */ }
+          r({ index: -1, answer: null });
+        }, BESTAETIGUNG_MAX_MS))
+      ]).catch((e) => {
+        // abbrechen() lehnt die wartende Zusage ab. Das ist hier kein Fehler,
+        // sondern der Ablauf der Wartezeit — er darf set_intent nicht kippen.
+        if (String(e && e.message || e).includes('zurueckgezogen')) {
+          return { index: -1, answer: null };
+        }
+        throw e;
       });
 
-      if (antwort.index !== 0) {
+      if (antwort.index > 0) {
         throw new WerkzeugMeldung({
           tool: 'set_intent', param: 'Bestätigung', value: 0,
           range: `1 Bestätigung für ${checks.length} Kriterien`,
@@ -193,9 +583,14 @@ export function baueWerkzeuge({ store, ask, ports }) {
         });
       }
 
-      store.aendere((z) => { z.intent = { checks }; });
-      return text(`${checks.length} Erfolgskriterien festgelegt und vom Menschen bestätigt: `
-        + `${checks.map((c) => c.kind).join(', ')}.`);
+      const bestaetigt = antwort.index === 0;
+      store.aendere((z) => { z.intent = { checks, bestaetigt }; });
+      return text(`${checks.length} Erfolgskriterien festgelegt: `
+        + `${checks.map((c) => c.kind).join(', ')}.`
+        + (bestaetigt
+          ? ' Vom Menschen bestätigt.'
+          : ` Unbestätigt: nach ${BESTAETIGUNG_MAX_MS / 1000} Sekunden kam keine Antwort vom `
+            + 'Schirm. Die Kriterien gelten; frage bei Zweifeln mit ask_human nach.'));
     },
 
     async set_duration(args) {
@@ -372,8 +767,8 @@ export function baueWerkzeuge({ store, ask, ports }) {
       pruefeText('set_joint', 'joint', a.joint, 'Gelenknamen liefert describe_rig');
       pruefeZahl('set_joint', 'angleDeg', a.angleDeg, -180, 180, 'Grad',
         'die Grenzwerte je Gelenk stehen in describe_rig');
-      pruefeAuswahl('set_joint', 'channel', a.channel, KANAELE,
-        'bend beugt, twist dreht um die Knochenachse, swing schwenkt seitlich');
+      pruefeText('set_joint', 'channel', a.channel, 'Kanalnamen liefert describe_rig je Gelenk');
+      const dof = pruefeGelenkKanal('set_joint', ports, a.joint, a.channel);
 
       store.aendere((z) => {
         const o = z.overrides[String(a.frame)] || (z.overrides[String(a.frame)] = {});
@@ -381,9 +776,512 @@ export function baueWerkzeuge({ store, ask, ports }) {
         const g = joints[a.joint] || (joints[a.joint] = {});
         g[a.channel] = a.angleDeg;
       });
+      // Der Loeser klemmt harte Gelenkgrenzen (plan.md 6.4, Rang 1) und meldet
+      // den Betrag. Damit der Agent das nicht erst nach dem Bauen erfaehrt,
+      // steht die Grenze schon hier — mit dem Wert, der tatsaechlich ankommt.
+      const grenze = Array.isArray(dof.limit) ? dof.limit : null;
+      const geklemmt = grenze
+        ? Math.min(grenze[1], Math.max(grenze[0], a.angleDeg))
+        : a.angleDeg;
+      const hinweis = grenze && geklemmt !== a.angleDeg
+        ? ` Die gemessene Grenze laesst ${grenze[0]}…${grenze[1]}° zu — beim Loesen `
+          + `wird auf ${zahl(geklemmt)}° geklemmt.`
+        : (grenze ? ` Gemessene Grenze: ${grenze[0]}…${grenze[1]}°.` : '');
+
       return text(`${a.joint}.${a.channel} in Frame ${a.frame} auf ${zahl(a.angleDeg)} Grad gesetzt; `
-        + `${Object.keys(store.roh().overrides).length} Frames haben jetzt Overrides. `
-        + 'Rücknehmbar mit undo.');
+        + `${Object.keys(store.roh().overrides).length} Frames haben jetzt Overrides.`
+        + hinweis
+        + ' Rücknehmbar mit undo.');
+    },
+
+    /**
+     * Eine ganze Koerperhaltung auf einen Frame — der Schluesselbild-Weg.
+     *
+     * set_joint schreibt einen Kanal je Aufruf. Eine vollstaendige Haltung am
+     * Xbot sind 18 Gelenke mit zusammen 40 Freiheitsgraden; als Einzelaufrufe
+     * ist das keine Arbeitsweise, mit der ein Agent eine Bewegung baut. Hier
+     * geht die Haltung in einem Aufruf rein.
+     *
+     * Die angegebenen Gelenke ERSETZEN die Haltung des Frames, sie werden
+     * nicht dazugemischt: ein Schluesselbild ist die Haltung, nicht ein
+     * Nachtrag zur vorigen. Wer einzelne Winkel nachbessern will, nimmt
+     * danach set_joint.
+     */
+    async set_pose(args) {
+      const a = pruefeObjekt('set_pose', 'Argumente', args, 'übergib {frame, joints}');
+      const z0 = store.roh();
+      brauchtLaenge('set_pose', z0.frameCount);
+      pruefeFrame('set_pose', 'frame', a.frame, z0.frameCount);
+      pruefeObjekt('set_pose', 'joints', a.joints,
+        'Gelenkname auf Kanal auf Grad, z. B. {"elbow_l": {"bend": 80}}');
+
+      const ease = a.ease === undefined ? EASE_STANDARD : a.ease;
+      pruefeAuswahl('set_pose', 'ease', ease, EASE_ARTEN,
+        'smooth blendet weich, linear gleichfoermig, hold haelt und springt');
+
+      // Die Wurzel: wo die Figur steht und wohin sie schaut.
+      //
+      // Ohne sie setzt der Agent zwar Gelenkwinkel, aber die Figur klebt am
+      // Boden. Im Agentenlauf endete das mit "die Figur hebt nie ab — alle
+      // Frames melden Kontakt": ein Sprung ist mit Gelenkwinkeln allein nicht
+      // baubar, egal wie gut die Haltungen sind.
+      let wurzel = null;
+      if (a.root !== undefined && a.root !== null) {
+        const r = pruefeObjekt('set_pose', 'root', a.root,
+          'übergib {pos: [x, y, z]} in Metern und/oder {turnGrad: Zahl}');
+        wurzel = {};
+        if (r.pos !== undefined) {
+          const pos = pruefeListe('set_pose', 'root.pos', r.pos, 3, 3,
+            'Position des Beckens [x, y, z] in Metern, Weltsystem aus describe_world');
+          pos.forEach((v, i) => pruefeZahl('set_pose', `root.pos[${i}]`, v, -1000, 1000, 'Meter',
+            'die Bodenhöhe und der Maßstab stehen in describe_world'));
+          wurzel.pos = pos.map(Number);
+        }
+        // Drehung: drehGrad je Achse, turnGrad als Kurzform fuer die Hochachse.
+        //
+        // Vorher gab es nur turnGrad. Damit war ein Salto nicht ausdrueckbar:
+        // die Hochachse dreht die Figur im Stand, fuer einen Ueberschlag
+        // braucht es die Querachse. Das Becken selbst ist auf +-40 Grad
+        // begrenzt (src/rig/measure.js), also kann auch kein Gelenk das
+        // ersetzen — die Drehung gehoert an die Wurzel.
+        const dreh = {};
+        if (r.turnGrad !== undefined) {
+          pruefeZahl('set_pose', 'root.turnGrad', r.turnGrad, -3600, 3600, 'Grad',
+            'Drehung der ganzen Figur um die Hochachse');
+          dreh.y = Number(r.turnGrad);
+        }
+        if (r.drehGrad !== undefined && r.drehGrad !== null) {
+          const d = pruefeObjekt('set_pose', 'root.drehGrad', r.drehGrad,
+            'Grad je Achse, z. B. {x: -360} fuer einen Rueckwaertssalto');
+          for (const achse of ['x', 'y', 'z']) {
+            if (d[achse] === undefined) continue;
+            pruefeZahl('set_pose', `root.drehGrad.${achse}`, d[achse], -3600, 3600, 'Grad',
+              'x nickt (Salto), y giert (Drehung im Stand), z rollt (seitlich)');
+            dreh[achse] = Number(d[achse]);
+          }
+        }
+        if (Object.keys(dreh).length > 0) wurzel.drehGrad = dreh;
+        if (Object.keys(wurzel).length === 0) {
+          throw new WerkzeugMeldung({
+            tool: 'set_pose', param: 'root', value: 0,
+            range: 'pos, turnGrad oder beides',
+            next: 'lass root weg, wenn die Figur stehen bleiben soll',
+            message: '0 Angaben in root: erwartet pos, turnGrad oder beides'
+          });
+        }
+      }
+
+      const namen = Object.keys(a.joints);
+      if (namen.length === 0) {
+        throw new WerkzeugMeldung({
+          tool: 'set_pose', param: 'joints', value: 0,
+          range: 'mindestens 1 Gelenk',
+          next: 'die Gelenknamen und ihre Kanäle liefert describe_rig',
+          message: '0 Gelenke übergeben: eine Haltung ohne Gelenk ändert nichts'
+        });
+      }
+
+      // Erst vollstaendig pruefen, dann schreiben. Sonst stuende nach einem
+      // Tippfehler im zwoelften Gelenk eine halbe Haltung im Frame.
+      const geprueft = [];
+      const geklemmt = [];
+      for (const gelenk of namen) {
+        const kanaele = pruefeObjekt('set_pose', `joints["${gelenk}"]`, a.joints[gelenk],
+          'Kanal auf Grad, z. B. {"bend": 80}');
+        for (const [kanal, grad] of Object.entries(kanaele)) {
+          pruefeZahl('set_pose', `joints["${gelenk}"].${kanal}`, grad, -180, 180, 'Grad',
+            'die Grenzwerte je Gelenk stehen in describe_rig');
+          const dof = pruefeGelenkKanal('set_pose', ports, gelenk, kanal);
+          const grenze = Array.isArray(dof.limit) ? dof.limit : null;
+          if (grenze) {
+            const g = Math.min(grenze[1], Math.max(grenze[0], grad));
+            if (g !== grad) geklemmt.push(`${gelenk}.${kanal} ${zahl(grad)}° → ${zahl(g)}° `
+              + `(Grenze ${grenze[0]}…${grenze[1]}°)`);
+          }
+          geprueft.push({ gelenk, kanal, grad });
+        }
+      }
+
+      store.aendere((z) => {
+        const o = z.overrides[String(a.frame)] || (z.overrides[String(a.frame)] = {});
+        o.joints = {};
+        o.ease = ease;
+        if (wurzel) o.root = wurzel; else delete o.root;
+        for (const { gelenk, kanal, grad } of geprueft) {
+          const g = o.joints[gelenk] || (o.joints[gelenk] = {});
+          g[kanal] = grad;
+        }
+      });
+
+      const schluessel = gesetzteFrames(store.roh());
+      const wurzelTeile = [];
+      if (wurzel && wurzel.pos) wurzelTeile.push(`Position [${wurzel.pos.join(', ')}] m`);
+      if (wurzel && wurzel.drehGrad) {
+        wurzelTeile.push('Drehung ' + Object.entries(wurzel.drehGrad)
+          .map(([a, g]) => `${a} ${zahl(g)}°`).join(', '));
+      }
+      const wurzelText = wurzelTeile.length > 0
+        ? ` Wurzel: ${wurzelTeile.join(', ')}.`
+        : ' Wurzel nicht gesetzt: die Figur bleibt, wo sie steht.';
+
+      return text(`Haltung auf Frame ${a.frame} gesetzt: ${namen.length} Gelenke, `
+        + `${geprueft.length} Winkel, Übergang "${ease}".${wurzelText} `
+        + `Die Timeline hat jetzt ${schluessel.length} gesetzte Frames `
+        + `(${schluessel.join(', ')}) auf ${z0.frameCount} Frames Länge.`
+        + (geklemmt.length
+          ? `\n${geklemmt.length} Winkel liegen außerhalb der gemessenen Gelenkgrenzen und `
+            + `werden beim Lösen geklemmt: ${geklemmt.join('; ')}`
+          : '')
+        + '\nRücknehmbar mit undo.');
+    },
+
+    /**
+     * Wie die Figur in einem Frame tatsaechlich steht — in Zahlen.
+     *
+     * Bis hierher konnte der Agent den Zustand nur als Bild sehen (look) oder
+     * als Fehlerliste (validate). Wo eine Hand im Raum ist, ob der Schwerpunkt
+     * ueber der Stuetzflaeche sitzt, wie weit ein Knie gebeugt ist — das stand
+     * nirgends abrufbar. Ein Animator sieht das im Viewport; ein Agent braucht
+     * es als Zahl, sonst keyframt er blind (plan.md 3.2, Schluss 1).
+     *
+     * Die Weltpositionen kommen aus derselben geloesten Bewegung, die auch der
+     * Bildstreifen zeigt — Bild und Zahlen beschreiben denselben Frame.
+     */
+    /**
+     * Das Messgeraet, das der Agent selbst ausrichtet.
+     *
+     * Der naheliegende Weg waere gewesen, fertige Urteile zu liefern: eine
+     * Funktion "ist die Hocke sauber?" mit eingebauter Antwort. Das geht aus
+     * zwei Gruenden nicht. Erstens ist jede Bewegung anders — ein Schritt
+     * braucht andere Fragen als ein Sprung, und fuer jede Bewegung ein
+     * Werkzeug zu bauen endet nie. Zweitens lernte der Agent dabei nichts
+     * ueber die Figur; er bekaeme ein Urteil, das jemand anders gefaellt hat.
+     *
+     * Hier bekommt er stattdessen sieben geometrische Grundmessungen und
+     * richtet sie selbst aus. "Steht das Knie vor dem Zeh" ist dann kein
+     * Werkzeug, sondern eine Frage, die er stellt — und fuer den naechsten
+     * Auftrag stellt er eine andere.
+     *
+     * Gemessen wird an der GELOESTEN Bewegung, also an dem, was tatsaechlich
+     * herauskommt, nicht an dem, was gesetzt wurde.
+     */
+    async measure(args) {
+      const a = pruefeObjekt('measure', 'Argumente', args, 'übergib {frame, fragen}');
+      const z0 = store.roh();
+      brauchtLaenge('measure', z0.frameCount);
+      pruefeFrame('measure', 'frame', a.frame, z0.frameCount);
+      const fragen = pruefeListe('measure', 'fragen', a.fragen, 1, 20,
+        'jede Frage ist ein Objekt mit art und den Körperteilen, die die Art braucht');
+      if (!ports.solver) {
+        throw nichtAngeschlossen('measure', 'AP5 (Löser)', 'Die gelöste Bewegung');
+      }
+
+      const { frames } = ports.solver.loese(alsTimeline(z0));
+      const holeFrame = (n) => (frames || []).find((x) => x.frame === n);
+      const f = holeFrame(a.frame);
+      if (!f) {
+        throw new WerkzeugMeldung({
+          tool: 'measure', param: 'frame', value: a.frame,
+          range: `ein gelöster Frame von 0 bis ${(frames || []).length - 1}`,
+          next: 'setze die Länge mit set_duration und Haltungen mit set_pose',
+          message: `Frame ${a.frame} wurde nicht gelöst: der Löser lieferte `
+            + `${(frames || []).length} Frames`
+        });
+      }
+
+      // Rollenname -> Weltposition. "com" ist der Schwerpunkt.
+      const rollen = (ports.rig && ports.rig.rig().roles) || {};
+      const welt = ports.rig ? ports.rig.world() : {};
+      const boden = welt.groundY ?? 0;
+      const vorne = Array.isArray(welt.forwardVektor) ? welt.forwardVektor : [0, 0, 1];
+      const seite = Array.isArray(welt.leftVektor) ? welt.leftVektor : [1, 0, 0];
+
+      const punkt = (frame, teil) => {
+        if (teil === 'com') return frame.com ?? null;
+        const eintrag = rollen[teil];
+        const knochen = eintrag && eintrag.bone;
+        if (!knochen) return null;
+        return (frame.positions && frame.positions[knochen]) ?? null;
+      };
+      const bekannt = ['com', ...Object.keys(rollen).filter((r) => rollen[r] && rollen[r].bone)];
+      const brauchePunkt = (frame, teil, feld, i) => {
+        const p = punkt(frame, teil);
+        if (!p) {
+          throw new WerkzeugMeldung({
+            tool: 'measure', param: `fragen[${i}].${feld}`, value: teil,
+            range: `einer von ${bekannt.length} Körperteilen: ${bekannt.join(', ')}`,
+            next: 'die Rollennamen und ihre Knochen liefert describe_rig',
+            message: `Körperteil "${teil}" ist an diesem Modell nicht zugeordnet: `
+              + `${bekannt.length} stehen zur Verfügung (${bekannt.join(', ')})`
+          });
+        }
+        return p;
+      };
+
+      const laenge = (v) => Math.hypot(v[0], v[1], v[2]);
+      const minus = (u, v) => [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+      const skalar = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+      const rund = (x) => +x.toFixed(4);
+
+      const ergebnisse = fragen.map((frage, i) => {
+        pruefeObjekt('measure', `fragen[${i}]`, frage, 'jede Frage ist ein Objekt mit art');
+        const art = frage.art;
+        const name = frage.name || `${art}(${[frage.a, frage.b, frage.c].filter(Boolean).join(', ')})`;
+        const pa = brauchePunkt(f, frage.a, 'a', i);
+
+        switch (art) {
+          case 'hoehe':
+            return { name, art, wert_m: rund(pa[1] - boden),
+              bedeutet: `${frage.a} steht ${rund(pa[1] - boden)} m über dem Boden` };
+          case 'abstand': {
+            const pb = brauchePunkt(f, frage.b, 'b', i);
+            const d = rund(laenge(minus(pa, pb)));
+            return { name, art, wert_m: d, bedeutet: `${frage.a} und ${frage.b} sind ${d} m auseinander` };
+          }
+          case 'abstand_vorne': {
+            const pb = brauchePunkt(f, frage.b, 'b', i);
+            const d = rund(skalar(minus(pa, pb), vorne));
+            return { name, art, wert_m: d,
+              bedeutet: d >= 0
+                ? `${frage.a} liegt ${d} m VOR ${frage.b}`
+                : `${frage.a} liegt ${Math.abs(d)} m HINTER ${frage.b}` };
+          }
+          case 'abstand_seite': {
+            const pb = brauchePunkt(f, frage.b, 'b', i);
+            const d = rund(skalar(minus(pa, pb), seite));
+            return { name, art, wert_m: d, bedeutet: `${frage.a} liegt ${d} m seitlich von ${frage.b}` };
+          }
+          case 'abstand_hoch': {
+            const pb = brauchePunkt(f, frage.b, 'b', i);
+            const d = rund(pa[1] - pb[1]);
+            return { name, art, wert_m: d,
+              bedeutet: d >= 0
+                ? `${frage.a} liegt ${d} m ÜBER ${frage.b}`
+                : `${frage.a} liegt ${Math.abs(d)} m UNTER ${frage.b}` };
+          }
+          case 'winkel': {
+            const pb = brauchePunkt(f, frage.b, 'b', i);
+            const pc = brauchePunkt(f, frage.c, 'c', i);
+            const u = minus(pa, pb); const v = minus(pc, pb);
+            const n = laenge(u) * laenge(v);
+            if (n < 1e-9) {
+              return { name, art, wert_grad: null,
+                bedeutet: `Winkel nicht messbar: ${frage.a} oder ${frage.c} fällt mit ${frage.b} zusammen` };
+            }
+            const g = +(Math.acos(Math.min(1, Math.max(-1, skalar(u, v) / n))) * 180 / Math.PI).toFixed(1);
+            return { name, art, wert_grad: g,
+              bedeutet: `Der Winkel bei ${frage.b} zwischen ${frage.a} und ${frage.c} beträgt ${g}°` };
+          }
+          case 'neigung': {
+            const pb = brauchePunkt(f, frage.b, 'b', i);
+            const u = minus(pb, pa);
+            const l = laenge(u);
+            if (l < 1e-9) {
+              return { name, art, wert_grad: null,
+                bedeutet: `Neigung nicht messbar: ${frage.a} und ${frage.b} fallen zusammen` };
+            }
+            const g = +(Math.acos(Math.min(1, Math.max(-1, Math.abs(u[1]) / l))) * 180 / Math.PI).toFixed(1);
+            const richtung = skalar(u, vorne) >= 0 ? 'nach vorne' : 'nach hinten';
+            return { name, art, wert_grad: g,
+              bedeutet: `Die Strecke ${frage.a} nach ${frage.b} weicht ${g}° von der Senkrechten ab, ${richtung}` };
+          }
+          case 'tempo': {
+            pruefeFrame('measure', `fragen[${i}].bisFrame`, frage.bisFrame, z0.frameCount);
+            const f2 = holeFrame(frage.bisFrame);
+            const pa2 = brauchePunkt(f2, frage.a, 'a', i);
+            const dt = Math.abs(frage.bisFrame - a.frame) / (z0.fps || 30);
+            if (dt <= 0) {
+              return { name, art, wert_m_pro_s: null,
+                bedeutet: 'Tempo nicht messbar: bisFrame ist derselbe Frame' };
+            }
+            const weg = laenge(minus(pa2, pa));
+            const v = +(weg / dt).toFixed(3);
+            return { name, art, wert_m_pro_s: v, weg_m: rund(weg), dauer_s: +dt.toFixed(3),
+              bedeutet: `${frage.a} legt zwischen Frame ${a.frame} und ${frage.bisFrame} `
+                + `${rund(weg)} m zurück, das sind ${v} m/s` };
+          }
+          default:
+            throw new WerkzeugMeldung({
+              tool: 'measure', param: `fragen[${i}].art`, value: art,
+              range: 'hoehe, abstand, abstand_vorne, abstand_seite, abstand_hoch, winkel, neigung, tempo',
+              next: 'die Bedeutung jeder Art steht in der Werkzeugbeschreibung',
+              message: `Messart "${art}" gibt es nicht: 8 Arten stehen zur Verfügung`
+            });
+        }
+      });
+
+      return json({
+        quelle: 'gemessen an der gelösten Bewegung',
+        frame: a.frame,
+        bodenhoehe_m: +boden.toFixed(5),
+        blickrichtung: vorne,
+        messungen: ergebnisse,
+      });
+    },
+
+    /** Der Ueberblick ueber die eigenen Schluesselbilder. */
+    async list_poses() {
+      const z0 = store.roh();
+      const frames = gesetzteFrames(z0);
+      if (frames.length === 0) {
+        return text(`0 Haltungen gesetzt auf ${z0.frameCount} Frames Länge. `
+          + 'Setze die erste mit set_pose.');
+      }
+      const zeilen = frames.map((f) => {
+        const o = z0.overrides[String(f)] || {};
+        const gelenke = Object.keys(o.joints || {});
+        const winkel = gelenke.reduce((n, g) => n + Object.keys(o.joints[g] || {}).length, 0);
+        const teile = [`Frame ${String(f).padStart(3)}`,
+          `${gelenke.length} Gelenke`, `${winkel} Winkel`, `Übergang ${o.ease || 'smooth'}`];
+        if (o.root && o.root.pos) teile.push(`Wurzel [${o.root.pos.join(', ')}] m`);
+        if (o.root && o.root.drehGrad) {
+          teile.push('Drehung ' + Object.entries(o.root.drehGrad)
+            .map(([a, g]) => `${a} ${g}°`).join(' '));
+        }
+        return `  ${teile.join(' · ')}`;
+      });
+      return text(`${frames.length} Haltungen auf ${z0.frameCount} Frames `
+        + `(${z0.fps} fps, ${(z0.frameCount / z0.fps).toFixed(2)} s):\n${zeilen.join('\n')}`);
+    },
+
+    /**
+     * Eine Haltung zeitlich verschieben.
+     *
+     * Der Ablauf, den ein Animator erwartet, ist zweistufig: erst die
+     * Haltungen bauen, dann den zeitlichen Verlauf zurechtruecken. Bisher war
+     * beides derselbe Schritt — der Frame musste beim Setzen feststehen, und
+     * es gab keinen Weg zurueck ausser undo von hinten.
+     */
+    async move_pose(args) {
+      const a = pruefeObjekt('move_pose', 'Argumente', args, 'übergib {von, nach}');
+      const z0 = store.roh();
+      brauchtLaenge('move_pose', z0.frameCount);
+      pruefeFrame('move_pose', 'von', a.von, z0.frameCount);
+      pruefeFrame('move_pose', 'nach', a.nach, z0.frameCount);
+
+      const gesetzt = gesetzteFrames(z0);
+      if (!gesetzt.includes(a.von)) {
+        throw new WerkzeugMeldung({
+          tool: 'move_pose', param: 'von', value: a.von,
+          range: gesetzt.length > 0
+            ? `einer von ${gesetzt.length} gesetzten Frames: ${gesetzt.join(', ')}`
+            : '0 gesetzte Frames vorhanden',
+          next: 'welche Haltungen es gibt, sagt list_poses',
+          message: `Auf Frame ${a.von} liegt keine Haltung: `
+            + `gesetzt sind ${gesetzt.length} (${gesetzt.join(', ') || 'keine'})`
+        });
+      }
+      if (a.nach !== a.von && gesetzt.includes(a.nach)) {
+        throw new WerkzeugMeldung({
+          tool: 'move_pose', param: 'nach', value: a.nach,
+          range: `ein Frame ohne Haltung; belegt sind ${gesetzt.join(', ')}`,
+          next: 'lösche die dortige Haltung mit delete_pose oder wähle einen anderen Frame',
+          message: `Auf Frame ${a.nach} liegt bereits eine Haltung: `
+            + 'sie würde überschrieben, das passiert nicht stillschweigend'
+        });
+      }
+
+      store.aendere((z) => {
+        z.overrides[String(a.nach)] = z.overrides[String(a.von)];
+        delete z.overrides[String(a.von)];
+      });
+      const jetzt = gesetzteFrames(store.roh());
+      return text(`Haltung von Frame ${a.von} auf Frame ${a.nach} verschoben. `
+        + `${jetzt.length} Haltungen: ${jetzt.join(', ')}. Rücknehmbar mit undo.`);
+    },
+
+    /** Eine Haltung entfernen. Danach blendet der Löser darüber hinweg. */
+    async delete_pose(args) {
+      const a = pruefeObjekt('delete_pose', 'Argumente', args, 'übergib {frame}');
+      const z0 = store.roh();
+      brauchtLaenge('delete_pose', z0.frameCount);
+      pruefeFrame('delete_pose', 'frame', a.frame, z0.frameCount);
+
+      const gesetzt = gesetzteFrames(z0);
+      if (!gesetzt.includes(a.frame)) {
+        throw new WerkzeugMeldung({
+          tool: 'delete_pose', param: 'frame', value: a.frame,
+          range: gesetzt.length > 0
+            ? `einer von ${gesetzt.length} gesetzten Frames: ${gesetzt.join(', ')}`
+            : '0 gesetzte Frames vorhanden',
+          next: 'welche Haltungen es gibt, sagt list_poses',
+          message: `Auf Frame ${a.frame} liegt keine Haltung: `
+            + `gesetzt sind ${gesetzt.length} (${gesetzt.join(', ') || 'keine'})`
+        });
+      }
+
+      store.aendere((z) => { delete z.overrides[String(a.frame)]; });
+      const jetzt = gesetzteFrames(store.roh());
+      return text(`Haltung auf Frame ${a.frame} gelöscht; `
+        + `${jetzt.length} Haltungen übrig${jetzt.length > 0 ? `: ${jetzt.join(', ')}` : ''}. `
+        + 'Dazwischen wird jetzt über diese Stelle hinweg überblendet. Rücknehmbar mit undo.');
+    },
+
+    async describe_pose(args) {
+      const a = pruefeObjekt('describe_pose', 'Argumente', args, 'übergib {frame}');
+      const z0 = store.roh();
+      brauchtLaenge('describe_pose', z0.frameCount);
+      pruefeFrame('describe_pose', 'frame', a.frame, z0.frameCount);
+      if (!ports.solver) {
+        throw nichtAngeschlossen('describe_pose', 'AP5 (Löser)', 'Die gelöste Haltung');
+      }
+
+      const { frames } = ports.solver.loese(alsTimeline(z0));
+      const f = (frames || []).find((x) => x.frame === a.frame);
+      if (!f) {
+        throw new WerkzeugMeldung({
+          tool: 'describe_pose', param: 'frame', value: a.frame,
+          range: `ein gelöster Frame von 0 bis ${(frames || []).length - 1}`,
+          next: 'setze die Länge mit set_duration und Haltungen mit set_pose',
+          message: `Frame ${a.frame} wurde nicht gelöst: der Löser lieferte `
+            + `${(frames || []).length} Frames`
+        });
+      }
+
+      // Weltpositionen nach Rollen statt nach Knochennamen: der Agent kennt
+      // "hand_l", nicht "mixamorigLeftHand". Rollen ohne erkannten Knochen
+      // werden weggelassen, nicht geraten.
+      const rollen = (ports.rig && ports.rig.rig().roles) || {};
+      const teile = {};
+      for (const [rolle, eintrag] of Object.entries(rollen)) {
+        const knochen = eintrag && eintrag.bone;
+        const p = knochen && f.positions ? f.positions[knochen] : null;
+        if (p) teile[rolle] = p.map((v) => +v.toFixed(4));
+      }
+
+      const schluessel = gesetzteFrames(z0);
+      const gesetzt = schluessel.includes(a.frame);
+      const vorher = schluessel.filter((k) => k < a.frame).pop();
+      const nachher = schluessel.find((k) => k > a.frame);
+      const boden = ports.rig ? (ports.rig.world().groundY ?? 0) : 0;
+
+      return json({
+        quelle: 'gelöst',
+        frame: a.frame,
+        von: z0.frameCount,
+        fps: z0.fps,
+        herkunft: gesetzt
+          ? 'gesetzte Haltung (set_pose oder set_joint)'
+          : (vorher !== undefined && nachher !== undefined
+            ? `überblendet zwischen Frame ${vorher} und ${nachher}`
+            : 'aus Phasen oder Ausgangshaltung, kein gesetzter Frame in der Nähe'),
+        naechsteSchluesselFrames: { davor: vorher ?? null, danach: nachher ?? null },
+        kontakt: f.contact ?? null,
+        schwerpunkt_m: f.com ? f.com.map((v) => +v.toFixed(4)) : null,
+        schwerpunktHoeheUeberBoden_m: f.com ? +(f.com[1] - boden).toFixed(4) : null,
+        wurzel: f.root
+          ? { pos_m: f.root.pos.map((v) => +v.toFixed(4)), quat: f.root.quat.map((v) => +v.toFixed(5)) }
+          : null,
+        koerperteile_m: teile,
+        // Die tatsaechlich gefahrenen Winkel — nach Gelenk und Kanal, in Grad.
+        // Das ist, was ein Animator im Viewport ablesen wuerde. Vorher stand
+        // hier nur, was der Agent selbst gesetzt hatte; bei ueberblendeten
+        // Frames war das leer, und er konnte seine eigene Haltung nicht sehen.
+        winkel_grad: gelenkeAusDofs(f.dofs),
+        gesetzteWinkel_grad: (z0.overrides[String(a.frame)] || {}).joints ?? {},
+        hinweis: 'Positionen in Metern im Weltsystem, y ist oben. '
+          + `Bodenebene bei ${+boden.toFixed(5)} m. Das Bild dazu liefert look.`
+      });
     },
 
     // --- 12  Undo -----------------------------------------------------------
@@ -413,16 +1311,72 @@ export function baueWerkzeuge({ store, ask, ports }) {
         throw nichtAngeschlossen('validate', 'AP4/AP6 (Prüfungen)', 'Der Validierungsbericht');
       }
 
+      // Befund aus dem echten Browserlauf: ohne gesetzte Absicht wirft der
+      // Bericht tief unten ein nacktes Error, das registry.js als "Absturz"
+      // verpackt — mit einem widersprüchlichen Parametervergleich und einem
+      // Rat, fehlende Felder mitzuschicken, den es nicht gibt (validate hat
+      // laut Schema 0 Parameter). Die Prüfung sitzt deshalb HIER, vor jedem
+      // anderen Aufruf, und wirft eine Werkzeugmeldung: sie kommt als
+      // isError-Antwort an, nicht als Absturz, und rät auf set_intent.
+      // Ohne gesetzte Kriterien prueft validate trotzdem: Physik und Stil
+      // brauchen keine Absicht. Vorher wurde hier abgewiesen und auf
+      // set_intent verwiesen — im Agentenlauf war das eine Sackgasse, denn
+      // set_intent wartet auf einen Menschen. Die Absichtsschicht entfaellt
+      // dann, und der Bericht sagt genau das.
+      const kriterien = z0.intent && Array.isArray(z0.intent.checks)
+        ? z0.intent.checks
+        : [];
+
       const timeline = alsTimeline(z0);
       if (ports.solver) timeline.solved = ports.solver.loese(timeline);
-      const bericht = ports.validator.pruefe(timeline, { intent: z0.intent });
+
+      // Die Absichtsschicht darf den ganzen Bericht nicht mitreissen.
+      //
+      // Gemessen im Agentenlauf: ein Kriterium mit richtung: "hoch" statt
+      // [x, y, z] kam durch pruefeKriterien (die prueft, ob Felder DA sind,
+      // nicht ob sie stimmen) und liess validate abstuerzen. Der Agent
+      // verlor damit auch die Physikpruefung, die voellig in Ordnung war.
+      // Jetzt faellt nur die Absichtsschicht aus, mit Grund im Bericht.
+      let bericht;
+      try {
+        bericht = ports.validator.pruefe(timeline, { intent: z0.intent });
+      } catch (e) {
+        if (kriterien.length === 0) throw e;
+        bericht = ports.validator.pruefe(timeline, { intent: [] });
+        bericht.absichtAusgefallen = `${kriterien.length} Absichtskriterien konnten nicht `
+          + `geprueft werden: ${String(e && e.message || e)}. Physik und Stil stehen `
+          + 'unveraendert; setze die Kriterien mit set_intent korrigiert neu.';
+      }
 
       // plan.md 5.3: "Jeder Bericht enthaelt immer einen Bildverweis. Zahlen
       // ohne Bild werden nicht ausgeliefert." Fehlt der Streifen, wird er hier
       // beschafft — nicht weggelassen.
-      let bilder = [];
+      // Bilddaten, die der Pruefer beim Bauen des Berichts schon gerendert hat
+      // (src/tools/ports.js). Sie gehen in die Antwort, der Bericht selbst
+      // traegt weiter nur die Verweise — sonst stuende das Bild zweimal drin.
+      let bilder = Array.isArray(bericht.bilddaten) ? bericht.bilddaten : [];
+      delete bericht.bilddaten;
+
+      // Befund 2, gemessen an Xbot (Auftrag "Zwei Befunde am Werkzeug validate"):
+      // 12 Frames × 2 Ansichten gaben eine Antwort von 527 KB jenseits der
+      // 512-KB-Grenze — der Aufruf wurde abgewiesen, NACHDEM gerechnet war.
+      // Der Streifen startet deshalb mit höchstens VALIDATE_FRAMES_MAX Frames.
+      // Ist die kritische Auswahl länger, bleiben die ERSTEN n Frames — bei
+      // sortierter Auswahl decken sie Stütz, Druck und Flug ab, die Landung
+      // kommt mit dem letzten Frame mit.
+      if (bericht.images && bericht.images.length > 0
+          && bilder[0] && Array.isArray(bilder[0].frames)
+          && bilder[0].frames.length > VALIDATE_FRAMES_MAX) {
+        const behalten = bilder[0].frames.slice(0, VALIDATE_FRAMES_MAX);
+        bilder = ports.renderer
+          ? ports.renderer.streifen({ frames: behalten, views: ['side', 'front'] })
+          : [];
+        bericht.images = bilder.map(({ view, frames: f, ref }) => ({ view, frames: f, ref }));
+      }
+
       if ((!bericht.images || bericht.images.length === 0) && ports.renderer) {
-        const frames = kritischeFrames(bericht, z0.frameCount);
+        const frames = kritischeFrames(bericht, z0.frameCount)
+          .slice(0, VALIDATE_FRAMES_MAX);
         bilder = ports.renderer.streifen({ frames, views: ['side', 'front'] });
         bericht.images = bilder.map(({ view, frames: f, ref }) => ({ view, frames: f, ref }));
       }
@@ -431,7 +1385,29 @@ export function baueWerkzeuge({ store, ask, ports }) {
           'Ein Bericht ohne Bildstreifen wird nicht ausgeliefert (plan.md 5.3)');
       }
 
-      return textMitBildern(JSON.stringify(bericht, null, 2), bilder);
+      // Zeitgrenze (Auftrag "Der Bildstreifen frisst den Rechner"): kürzt der
+      // Streifen Frames weg, um unter der gemessenen Zeitgrenze zu bleiben,
+      // steht das mit Zahlen im Antworttext — der Agent erfährt, welche Frames
+      // er nicht sieht und kann sie mit look je Frame nachfragen.
+      const warnung = bilder
+        .map((b) => (b && Array.isArray(b.warnungen)) ? b.warnungen.join(' | ') : '')
+        .filter((w) => w.includes('Zeitgrenze'))
+        .join(' | ');
+      // Fehlt die Absicht, wird trotzdem geprueft — und gesagt, welche
+      // Schicht dabei ausgelassen wurde. Nicht verweigern: set_intent wartet
+      // auf einen Menschen, und ohne Menschen kaeme der Agent nie zu einer
+      // Pruefung seiner Physik.
+      const ohneAbsicht = kriterien.length === 0
+        ? '\n0 Absichtskriterien gesetzt: geprueft wurden Physik und Stil. '
+          + 'Woran die Bewegung inhaltlich gemessen wird, legt set_intent fest '
+          + `(1 bis 20 Kriterien aus den ${INTENT_ARTEN.length} Arten: `
+          + `${INTENT_ARTEN.join(', ')}).`
+        : '';
+      const text = berichtTextKompakt(bericht, bilder)
+        + (warnung ? `\n(${warnung})` : '')
+        + ohneAbsicht;
+
+      return textMitBildern(text, bilder);
     },
 
     async look(args) {
@@ -449,12 +1425,32 @@ export function baueWerkzeuge({ store, ask, ports }) {
       if (!ports.renderer) {
         throw nichtAngeschlossen('look', 'AP9 (Bildstreifen)', 'Der Bildstreifen');
       }
+
+      // Befund aus dem Browserlauf am Xbot: look lehnte mit "0 geloeste Frames"
+      // ab und riet auf validate — validate wiederum verlangte zuerst
+      // set_intent, und set_intent wartete auf einen Klick. Drei Werkzeuge
+      // zwischen dem Agenten und dem ersten Bild, bei einem Werkzeug, das nur
+      // hinschauen soll. look loest deshalb selbst: der Bildstreifen zeigt
+      // immer den aktuellen Stand von phases und overrides, ohne Vorbedingung.
+      let loeserBericht = null;
+      if (ports.solver) {
+        loeserBericht = ports.solver.loese(alsTimeline(z0)).bericht ?? null;
+      }
+
       const bilder = ports.renderer.streifen({ frames: a.frames, views: a.views });
+      // Zeitgrenze (Auftrag "Der Bildstreifen frisst den Rechner"): hat der
+      // Streifen gekürzt, steht im Bericht, welche Frames das Bild zeigt und
+      // welche nicht — als Warnung mit Zahl aus dem Streifeneintrag.
+      const kuerzung = (bilder[0]?.warnungen ?? []).filter((w) => w.includes('Zeitgrenze'));
       return textMitBildern(
-        `Bildstreifen: ${a.frames.length} Frames (${a.frames.join(', ')}) in `
-        + `${a.views.length} Ansicht${a.views.length === 1 ? '' : 'en'} (${a.views.join(', ')}), `
-        + 'annotiert mit Achsenkreuz, Bodengitter, Schwerpunkt, Stützfläche und Kontaktpunkten.'
-        + (bilder[0] && bilder[0].warnung ? `\n${bilder[0].warnung}` : ''),
+        `Bildstreifen: ${bilder[0].frames.length} Frames (`
+        + `${bilder[0].frames.join(', ')}) — angefordert waren ${a.frames.length} `
+        + `(${a.frames.join(', ')}) — in ${a.views.length} Ansicht`
+        + `${a.views.length === 1 ? '' : 'en'} (${a.views.join(', ')}), annotiert mit `
+        + 'Achsenkreuz, Bodengitter, Schwerpunkt, Stützfläche und Kontaktpunkten.'
+        + (kuerzung.length ? `\n${kuerzung.join(' | ')}` : '')
+        + (bilder[0] && bilder[0].warnung ? `\n${bilder[0].warnung}` : '')
+        + standMeldung(z0, loeserBericht),
         bilder
       );
     },
@@ -486,7 +1482,10 @@ export function baueWerkzeuge({ store, ask, ports }) {
       }
       const timeline = alsTimeline(z0);
       if (ports.solver) timeline.solved = ports.solver.loese(timeline);
-      const e = ports.exporter.gltf(timeline);
+      // await, weil der echte Export (src/export/gltf.js) die Datei asynchron
+      // schreibt. Die Attrappe liefert ein einfaches Objekt — await laesst das
+      // unveraendert durch.
+      const e = await ports.exporter.gltf(timeline);
       return text(`Export: ${e.bytes} Bytes glTF, ${z0.frameCount} Frames bei ${z0.fps} fps, `
         + `${z0.phases.length} Phasen, Meter, Y-oben, Charakter-vorne +Z, Rotationen als `
         + `Quaternionen.${e.warnung ? `\n${e.warnung}` : ''}`);
@@ -517,4 +1516,168 @@ function kritischeFrames(bericht, frameCount) {
     for (let i = 0; i < n; i += 1) aus.add(Math.round((i * (frameCount - 1)) / Math.max(1, n - 1)));
   }
   return [...aus].sort((a, b) => a - b).slice(0, 12);
+}
+
+/**
+ * BENANNTER VERFAHRENSPARAMETER: hoechste Panelzahl eines validate-Streifens.
+ * Gemessen an Xbot, 60 Frames, 4 Phasen (Befund 2 aus dem Auftrag): 12 Frames
+ * × 2 Ansichten = 24 Panels ergeben ein PNG von 328 KB (2696 × 572 px); mit
+ * Base64 (~438 KB) und Berichttext (80 KB, pretty JSON) ist die Antwort 527 KB
+ * und überschreitet die gemessene 512-KB-Grenze — der Aufruf wurde als Fehler
+ * abgewiesen, obwohl er gerechnet hatte. Zwei spätere Messungen lehrten die
+ * feineren Zahlen: Base64 macht aus 447 KB PNG 596 KB Übertragung (Faktor 4/3),
+ * und der Berichttext ist kompakt 55 KB. Damit landet 6 Frames × 2 Ansichten
+ * (1856 × 784 px, PNG 447 KB) bei 651 KB — immer noch darüber. 4 Frames ×
+ * 2 Ansichten: ein Frame je Phase bei 4 Phasen, Bild ~1,0 MPix ≈ 333 KB
+ * Base64, gesamt mit Bericht ≈ 390 KB — messbar unter der Grenze. Wird der
+ * Wert angepasst, erneut gegen Xbot messen (Messskript:
+ * spikes/tmp-validate-messung.mjs) und die Zahl hier fortschreiben.
+ */
+export const VALIDATE_FRAMES_MAX = 4;
+
+/** BENANNTER VERFAHRENSPARAMETER (Auftrag "Der Bildstreifen frisst den Rechner",
+ *  Schritt 2): das Tool validate selbst sagt dem Streifen, wie viele Panels er
+ *  bringen darf — gemessen an Xbot, SwiftShader, dauerte der Vorher-Zustand
+ *  12 Frames × 2 Ansichten 1133 ms (24 Panels), und die Streifengrenze
+ *  PANELS_ZEIT_MAX in src/render/strip.js (24 Panels) kürzt jeden größeren
+ *  Aufruf. VALIDATE frägt maximal VALIDATE_FRAMES_MAX Frames × 2 Ansichten an,
+ *  also 8 Panels — die Grenze im Streifen bleibt nonetheless als hartes Netz
+ *  stehen (gemessen im Test "Zeitgrenze, Negativfall"). */
+
+/** Verfahrensparameter: Issues je Liste, die in der (seltenen) Kürzungsfassung
+ *  stehen bleiben. 200 ist mehr als jede bisher gemessene issue-Liste eines
+ *  Xbot-Laufs (höchste Zahl war 26 auf physics bei 90 Frames); die Kappung
+ *  greift also nur bei modellbedingten Ausreißern, nie im Normalfall. */
+export const ISSUES_KAPPUNG = 200;
+
+/** Bytelaenge eines Texts — UTF-8, gemessen, nicht geschaetzt. */
+function textBytes(t) {
+  return typeof TextEncoder !== 'undefined'
+    ? new TextEncoder().encode(t).length
+    : t.length;
+}
+
+/** Antwortgroesse in Bytes, mit den Bilddaten, die mitgehen. `data` ist die
+ *  Base64-Fassung — ihre Bytanzahl IST die Übertragungsgröße, sie wird nicht
+ *  nochmal umgerechnet. Der Fehler, hier PNG-Bytes weiterzureichen, verfälschte
+ *  die Schätzung um genau den 4/3-Faktor: gerechnet 527 KB, über die Leitung
+ *  658 KB (gemessen an Xbot, siehe VALIDATE_FRAMES_MAX). */
+function antwortBytes(bilder) {
+  let summe = 0;
+  for (const b of bilder) {
+    if (typeof b?.data === 'string') summe += b.data.length;
+  }
+  return summe;
+}
+
+/** Kürzt die issue-Listen von physics und style auf `max` Einträge je Liste
+ *  und zählt, wie viele dabei verworfen wurden. `text` ist die kompakte
+ *  JSON-Fassung des gekappten Berichts — er wird nur einmal gebaut, damit
+ *  Stufe 2 (weiter unten in berichtTextKompakt) dieselbe Zahl nutzen kann,
+ *  die Stufe 3 bei einem erneut zu großen Ergebnis hätte. */
+function kuerzeIssues(bericht, max) {
+  const gekappt = structuredClone(bericht);
+  let verworfen = 0;
+  for (const bereich of ['physics', 'style']) {
+    const liste = gekappt[bereich] && gekappt[bereich].issues;
+    if (Array.isArray(liste) && liste.length > max) {
+      verworfen += liste.length - max;
+      gekappt[bereich].issues = liste.slice(0, max);
+    }
+  }
+  gekappt.issuesVerworfen = verworfen;
+  return { bericht: gekappt, text: JSON.stringify(gekappt), verworfen };
+}
+
+/** Meldung über die Kappung — die Zahl der verworfenen Issues steht in ihr,
+ *  nichts verschwindet still (plan.md 5.5). */
+function hinweisKuezer(kuerzung, bilderBytes) {
+  const { text, verworfen } = kuerzung;
+  if (verworfen === 0) {
+    return `\n(Bericht ohne Einrückung: ${textBytes(text)} Byte kompakt-JSON `
+      + `+ ${bilderBytes} Byte Bilder überschreiten die ${ANTWORT_MAX_BYTES}-Byte-Grenze `
+      + 'der Antwort, geliefert wird kompakt — kein Inhalt fehlt)';
+  }
+  return `${text}\n(${verworfen} von ${verworfen + ISSUES_KAPPUNG} Issues in physics und `
+    + `style verworfen: ${textBytes(text)} Byte kompakt-JSON + ${bilderBytes} Byte Bilder `
+    + `überschreiten die ${ANTWORT_MAX_BYTES}-Byte-Grenze der Antwort — die ersten `
+    + `${ISSUES_KAPPUNG} je Liste stehen, Frames der verworfenen stehen in den Bildern)`;
+}
+
+/**
+ * Kürzt den Berichttext, wenn Text und Bilder zusammen das Antwortbudget
+ * sprengen (gemessen an Xbot, siehe VALIDATE_FRAMES_MAX): zuerst ohne
+ * Einrückung und mit gekappten issue-Listen, dann issue-Listen ganz ohne. Die
+ * Zahl der verworfenen Meldungen steht im Bericht — nichts verschwindet still.
+ */
+function berichtTextKompakt(bericht, bilder) {
+  const voll = JSON.stringify(bericht, null, 2);
+  const bilderBytes = antwortBytes(bilder);
+  if (textBytes(voll) + bilderBytes <= ANTWORT_MAX_BYTES) return voll;
+
+  const kompakt = JSON.stringify(bericht);
+  // Stufe 2 gilt nur dort, wo sie wirklich kürzt: bei einer langen issue-Liste
+  // ist kompakt MIT den Issues selbst schon zu groß (gemessen: 200 Issues in
+  // Stufe 1 ergeben kompakt 16 581 Byte, mit einem 517 120-Byte-Bild 533 701
+  // Byte jenseits der 524 288-Grenze), und die bloße Entfernung der Einrückung
+  // rettet das nie. Dann darf Stufe 2 nicht ablehnen, sondern die Kappung
+  // greift — sonst verschwänden alle Issues, wo das Kürzen auf 200 gereicht
+  // hätte. Gemessen, nicht geschätzt, siehe den Test "Kürzung, Positivfall".
+  const gekappt = kuerzeIssues(bericht, ISSUES_KAPPUNG);
+  if (textBytes(gekappt.text) + bilderBytes <= ANTWORT_MAX_BYTES) {
+    return `${gekappt.text}${hinweisKuezer(gekappt, bilderBytes)}`;
+  }
+  if (textBytes(kompakt) + bilderBytes <= ANTWORT_MAX_BYTES) {
+    return `${kompakt}\n(Bericht ohne Einrückung: ${textBytes(voll)} Byte pretty-JSON `
+      + `+ ${bilderBytes} Byte Bilder überschreiten die ${ANTWORT_MAX_BYTES}-Byte-Grenze `
+      + 'der Antwort, geliefert wird kompakt — kein Inhalt fehlt)';
+  }
+
+  // Auch die gekappte Fassung ist zu groß: die issue-Listen ganz weg. Die Zahl
+  // der verworfenen Meldungen steht im Bericht — nichts verschwindet still.
+  let verworfen = gekappt.verworfen;
+  const text = gekappt.text;
+  const hinweisKappung = hinweisKuezer(gekappt, bilderBytes);
+  if (textBytes(text + hinweisKappung) + bilderBytes > ANTWORT_MAX_BYTES) {
+    // Extremfall: auch die gekappte Fassung passt nicht. Das Bild bleibt — die
+    // Regel "kein Bericht ohne Bild" (plan.md 5.3) wiegt schwerer als die
+    // issue-Listen, die der Agent über look je Frame nachfragen kann.
+    // gekappt.bericht ist der gekappte Bericht; gekappt selbst ist der Bote
+    // { bericht, text, verworfen } — der wurde hier verschachtelt serialisiert,
+    // sodass die issue-Listen drinblieben und der Text 36 412 statt 324 Byte
+    // maß (gemessen, Test "Kürzung, Positivfall").
+    const gekappt2 = structuredClone(gekappt);
+    let ganzWeg = verworfen;
+    for (const bereich of ['physics', 'style']) {
+      const liste = gekappt2[bereich] && gekappt2[bereich].issues;
+      if (Array.isArray(liste) && liste.length > 0) {
+        ganzWeg += liste.length;
+        gekappt2[bereich].issues = [];
+      }
+    }
+    gekappt2.issuesVerworfen = ganzWeg;
+    const ohne = JSON.stringify(gekappt2);
+    const hinweisOhne = `\n(${ganzWeg} Issues komplett verworfen: `
+      + `${textBytes(voll)} Byte pretty-JSON + ${bilderBytes} Byte Bilder überschreiten `
+      + `die ${ANTWORT_MAX_BYTES}-Byte-Grenze der Antwort — rufe look mit den Frames `
+      + 'der kritischen Stellen auf, um je Frame nachzufragen';
+    if (textBytes(ohne + hinweisOhne) + bilderBytes > ANTWORT_MAX_BYTES) {
+      throw new WerkzeugMeldung({
+        tool: 'validate', param: 'Antwortgröße', value: textBytes(ohne + hinweisOhne) + bilderBytes,
+        range: `höchstens ${ANTWORT_MAX_BYTES} Byte`,
+        next: 'kürze die Timeline vorher mit set_duration',
+        message: `Antwort von validate ist ${textBytes(ohne + hinweisOhne) + bilderBytes} Byte `
+          + `groß, erlaubt sind ${ANTWORT_MAX_BYTES}; selbst ohne issue-Listen — `
+          + 'kürze die Timeline vorher mit set_duration'
+      });
+    }
+    return `${ohne}${hinweisOhne})`;
+  }
+  return `${text}${hinweisKappung}`;
+}
+
+/** Testanschluss: dieselbe Funktion, exportiert unter Testnamen. Verhält sich
+ *  exakt wie der interne Aufruf in validate. */
+export function berichtTextKompaktFuerTest(bericht, bilder) {
+  return berichtTextKompakt(bericht, bilder);
 }

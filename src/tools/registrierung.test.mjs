@@ -1,6 +1,6 @@
 // Abnahmetest AP7 — "Registrierung", docs/umsetzung.md.
 //
-// Positivfall: 16 Werkzeuge sind ueber getTools() sichtbar.
+// Positivfall: 18 Werkzeuge sind ueber getTools() sichtbar.
 // Negativfall: ein Werkzeug ohne Beschreibung wird abgelehnt.
 //
 // Der zweite Block prueft die Fehlerform (Auftrag "Zwei verschiedene
@@ -15,21 +15,26 @@ import assert from 'node:assert/strict';
 import { createToolLayer } from './index.js';
 import { createRegistry, BESCHREIBUNG_MIN } from './registry.js';
 import { createModelContextStub } from './model-context-stub.js';
-import { KATALOG, KATALOG_GROESSE } from './catalog.js';
+import { KATALOG, KATALOG_GROESSE, KATALOG_SICHTBAR, KISTE } from './catalog.js';
 import { WerkzeugFehler, WerkzeugMeldung } from './errors.js';
 
-test('Registrierung: 16 Werkzeuge sind über getTools() sichtbar', async () => {
+test('Registrierung: nur die Werkzeuge ausserhalb der Kiste sind sichtbar', async () => {
   const modelContext = createModelContextStub();
   const schicht = await createToolLayer({ modelContext });
 
-  // Ueber die eigene Schicht ...
-  assert.equal(schicht.getTools().length, KATALOG_GROESSE);
-  // ... und ueber die WebMCP-API, die der Agent tatsaechlich abfragt.
-  assert.equal(modelContext.getTools().length, KATALOG_GROESSE);
+  // Die Werkzeugkiste ist standardmaessig aus (KISTE in catalog.js): der Agent
+  // sieht sie nicht, sonst baut er keine eigene Haltung mehr.
+  assert.equal(schicht.getTools().length, KATALOG_SICHTBAR.length);
+  assert.equal(modelContext.getTools().length, KATALOG_SICHTBAR.length);
+  assert.equal(KATALOG_GROESSE - KISTE.length, KATALOG_SICHTBAR.length,
+    `${KISTE.length} Werkzeuge in der Kiste, ${KATALOG_GROESSE} im Katalog`);
 
   const namen = modelContext.getTools().map((t) => t.name);
-  assert.deepEqual(namen, KATALOG.map((t) => t.name),
-    'Namen und Reihenfolge wie im Katalog aus plan.md 5.4');
+  assert.deepEqual(namen, KATALOG_SICHTBAR.map((t) => t.name),
+    'Namen und Reihenfolge wie im sichtbaren Katalog');
+  for (const k of KISTE) {
+    assert.ok(!namen.includes(k), `${k} gehoert in die Kiste und darf nicht sichtbar sein`);
+  }
 });
 
 test('Registrierung: jede sichtbare Beschreibung nennt Zweck und ist nicht leer', async () => {
@@ -226,12 +231,19 @@ test('Fehlerform, Keine Ausnahme: was im Werkzeug fliegt, kommt als Antwort zur�
     if (f.name === 'nackt') {
       assert.match(text, /zeitsprung fehlgeschlagen/, 'auch ein nackter Wurf verliert seinen Text nicht');
     }
+    if (f.name === 'lehnt_ab') {
+      assert.doesNotMatch(text, /übergeben sind \d+ Parameter/,
+        'der widersprüchliche Parametervergleich aus dem alten Absturztext '
+          + '(Befund 1, „übergeben sind 0 Parameter, validate beschreibt 0") steht nicht mehr drin');
+     }
   }
 });
 
 test('Fehlerform, Zahl erhalten: jede Meldung der Stichprobe kommt über document.modelContext vollständig an', async () => {
   const modelContext = createModelContextStub();
-  const schicht = await createToolLayer({ modelContext });
+  // Mit Kiste: die Stichprobe prueft die FORM der Fehlermeldungen, auch die der
+  // Kistenwerkzeuge. Ihre Sichtbarkeit prueft der Test weiter oben.
+  const schicht = await createToolLayer({ modelContext, werkzeugkiste: true });
   await schicht.rufe('set_duration', { frameCount: 90 });
 
   const faelle = [
@@ -301,7 +313,7 @@ test('Fehlerform: eine Meldung ohne Zahl bleibt nicht ohne Zahl', async () => {
   assert.match(text, /die Eingabe ist ungültig, bitte erneut versuchen/,
     'der ursprüngliche Satz bleibt stehen');
   assert.match(text, /\d/, 'die fehlende Zahl wird nachgereicht');
-  assert.match(text, /1 von 3|3 Parameter|beschreibt 3/, 'genannt wird, was der Aufruf hatte');
+  assert.match(text, /1 Aufruf|1 Antwort/, 'genannt wird, was der Aufruf hatte und verlangt ist');
 });
 
 test('Fehlerform, Negativfall des Prüfers: maengel() fällt auf eine schlechte Antwort herein? Nein', () => {

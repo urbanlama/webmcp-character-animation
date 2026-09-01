@@ -47,21 +47,22 @@ import { validateValidationReport } from '../contracts/validation-report.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Ein Pixel gilt im Vergleich zweier Streifen als „sichtbar anders“, wenn der
- *  größte Kanalabstand über dieser Schwelle liegt. 16 von 255 ≈ 6 %:Knapp
- *  darüber liegt jede Kantenverschiebung, die man auf dem Bild tatsächlich als
- *  andere Linie erkennt; darunter liegt das Antialiasing einer um Bruchteile
- *  eines Pixels verschobenen Linie. */
+ *  größte Kanalabstand über dieser Schwelle liegt: 16 von 255 ≈ 6 %. Darüber
+ *  liegt jede Kantenverschiebung, die im Bild als andere Linie zu erkennen ist;
+ *  darunter das Antialiasing einer um Bruchteile eines Pixels verschobenen Linie. */
 const SICHTBAR_SCHWELLE = 16;
 
 /** Obergrenze für den sichtbar anderen Pixelanteil einer um 2 mm verschobenen
- *  Pose. Bezug: 2 mm sind bei dem an Xbot gemessenen Maßstab (168 px/m) ein
- *  Drittel eines Pixels — unsichtbar. 1 % der Bildpunkte ist das Zehnfache des
- *  Effekts, den eine subpixelige Verschiebung auf dünnen Strichen hinterlässt. */
-const GRENZ_KLEIN_ANTEIL = 0.01;
+ *  Pose. Bezug: 2 mm sind bei dem an Xbot gemessenen Maßstab (168 px/m) 0,34 px —
+ *  unter einem Pixel. Nachgemessen im Browser: 0,006 der Bildpunkte ändern sich
+ *  sichtbar (3 000 von 492 960), weil entlang der dünnen Striche Antialiasing
+ *  mitwandert. 0,02 lässt dafür den vierfachen Raum, ohne die andere Richtung zu
+ *  verwässern: eine echte Poseänderung liegt bei 0,167. */
+const GRENZ_KLEIN_ANTEIL = 0.02;
 
 /** Untergrenze für den sichtbar anderen Pixelanteil zweier deutlich
- *  verschiedener Posen. Bezug: die Gliedmaßen wandern hier um ≥ 20 cm = ≥ 34 px,
- *  ein Bruchteil der Figur reicht, um weit über 10 % der Bildpunkte zu ändern. */
+ *  verschiedener Posen. Nachgemessen: 0,167 (Kapseln) und 0,147 (Mesh) — die
+ *  Gliedmaßen wandern hier um ≥ 20 cm = ≥ 34 px. */
 const GRENZ_GROSS_ANTEIL = 0.10;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,6 +133,8 @@ const fremdePose = () => gerahmtePose([
 ], [0, 0, 0.18], 1);
 /** Dieselbe Pose, starr um 2 mm in x verschoben. */
 const millimeterPose = () => gerahmtePose([], [0.002, 0, 0], 2);
+/** Die Standpose, starr um [links, hoch, vorn] versetzt — der Sprungfall. */
+const versetztePose = (versatz, index) => gerahmtePose([], versatz, index);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reihe 1 — Ansichten (Planebene: läuft in Node)
@@ -271,14 +274,34 @@ test('Maßstab, Positivfall: 0,60- und 2,40-m-Figur füllen dieselbe Panelhöhe'
     profile, frames: [f], views: ['front'], frameCount: 1,
   }));
 
+  // Seit der Rahmung über die Bewegung (Aufgabe 1) misst die Kamera die
+  // Bounding-Box der Figur plus Puffer (RAHMEN_LUFT_ANTEIL je Seite) — die
+  // Knochenpunkte füllen die Panelhöhe nicht mehr vollständig, aber die
+  // PROPORTION bleibt: dieselbe gemessene Figur belegt dieselbe Pixelhöhe,
+  // gleich wie groß das Modell ist.
   const inPixel = plane.map((p) => p.massstab.koerperHoeheMeter * p.massstab.pxProMeter);
-  const erwartete = strip.PANEL_HOEHE_PX / strip.SICHT_HOEHE_FAKTOR;
   for (const [i, werte] of inPixel.entries()) {
-    assert.ok(Math.abs(werte - erwartete) / erwartete < 0.005,
-      `Figur ${i + 1} füllt ${werte.toFixed(2)} px von ${erwartete.toFixed(2)} px erwarteter Panelhöhe — die Körperhöhe wird nicht gemessen`);
+    assert.ok(werte > 0,
+      `Figur ${i + 1} belegt ${werte.toFixed(2)} px — die Körperhöhe muss in Pixeln messbar sein`);
   }
   assert.ok(Math.abs(inPixel[0] - inPixel[1]) / inPixel[0] < 0.01,
     `0,60 m und 2,40 m belegen ${inPixel[0].toFixed(2)} px gegen ${inPixel[1].toFixed(2)} px — dieselbe Proportion ist der Zweck des gemessenen Maßstabs`);
+
+  // Die Figur füllt die Panelhöhe nicht mehr vollständig (Puffer der Rahmung),
+  // aber sie bleibt gut sichtbar: über die Hälfte der Panelhöhe.
+  const fuellung = plane.map((p) => {
+    const pan = p.panels[0];
+    const ys = Object.values(p.pose[0].wo).map((w) => {
+      const h = (w[0] - pan.ziel[0]) * pan.Y[0] + (w[1] - pan.ziel[1]) * pan.Y[1]
+        + (w[2] - pan.ziel[2]) * pan.Y[2];
+      return -h * pan.pxProMeter;
+    });
+    return Math.abs(Math.max(...ys) - Math.min(...ys));
+  });
+  for (const [i, px] of fuellung.entries()) {
+    assert.ok(px > plane[i].panels[0].hoehe * 0.5,
+      `Figur ${i + 1} belegt nur ${px.toFixed(0)} px von ${plane[i].panels[0].hoehe} Panelhöhe — der Puffer frisst die Figur`);
+  }
 
   // Der Rasterabstand in METERN muss sich dagegen mit der Körperhöhe ändern —
   // sonst wäre er ein getippter Festwert und die Zahl am Maßstab beliebig.
@@ -291,10 +314,12 @@ test('Maßstab, Positivfall: 0,60- und 2,40-m-Figur füllen dieselbe Panelhöhe'
   }
 
   // Negativfall derselben Reihe: eine getippte Höhe, die am Modell nichts ändert.
-  // world.height steuert den Maßstab — wer sie rät, rahmt die Figur falsch, ohne
-  // dass eine Zahl im Bericht steht, die das verrät. Geprüft wird deshalb die
-  // Bildgeometrie selbst. Gewählt wird das Doppelte: halb so viele Pixel pro Meter,
-  // die Figur schrumpft im Bild, während Skelett und Sohlen unangetastet bleiben.
+  // Seit der Rahmung über die Bewegung bestimmt der GEMESSENE Bereich den Maßstab;
+  // world.height steuert noch Puffer (RAHMEN_LUFT_ANTEIL) und Gitterschritt —
+  // beide sind Anteile der getippten Höhe. Sie verdoppelt: der Luftanteil
+  // verdoppelt sich in Metern, der Rahmen zieht weiter, der Maßstab sinkt —
+  // die Figur schrumpft messbar im Bild, während Skelett und Sohlen unangetastet
+  // bleiben. Genau der Tippfehler, den das Bild verraten muss.
   const geippt = structuredClone(basis);
   geippt.world.height = hoehe * 2;                // Modell bleibt hoehe m hoch
   const versetzt = strip.planeStreifen({
@@ -307,11 +332,170 @@ test('Maßstab, Positivfall: 0,60- und 2,40-m-Figur füllen dieselbe Panelhöhe'
   const echt = strip.planeStreifen({
     profile: basis, frames: [frame], views: ['front'], frameCount: 1,
   });
-  assert.ok(Math.abs(versetzt.massstab.pxProMeter * 2 - echt.massstab.pxProMeter)
-    / echt.massstab.pxProMeter < 0.02,
-    `bei doppelt getippter Höhe ${versetzt.massstab.pxProMeter.toFixed(1)} px/m gegen gemessene ${echt.massstab.pxProMeter.toFixed(1)} px/m: world.height steuert den Maßstab nicht — der Wert wäre ein Festwert`);
-  assert.ok(figuerHoeheInPixel(versetzt) < 0.55 * figuerHoeheInPixel(echt),
-    `die Figur füllt bei getippter Höhe ${figuerHoeheInPixel(versetzt).toFixed(0)} px gegen ${figuerHoeheInPixel(echt).toFixed(0)} px — der Tippfehler wäre im Bild nicht zu sehen`);
+  const schrumpfung = figuerHoeheInPixel(versetzt) / figuerHoeheInPixel(echt);
+  assert.ok(schrumpfung < 0.98,
+    `bei doppelt getippter Höhe füllt die Figur ${figuerHoeheInPixel(versetzt).toFixed(1)} px `
+    + `gegen ${figuerHoeheInPixel(echt).toFixed(1)} px (Faktor ${schrumpfung.toFixed(3)}): `
+    + 'world.height steuert den Rahmen nicht — der Tippfehler wäre im Bild nicht zu sehen');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rahmung — die Kamera umspannt die BEWEGUNG, nicht die Bind-Pose (Auftrag 1–3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Verschiebt alle Weltpositionen eines Frames um [links, hoch, vorn] Meter.
+ * Anders als gerahmtePose(…, versatz) greift das auf einen BESTEHENDEN Frame —
+ * so wird derselbe Sprung über verschiedene Posen gelegt, ohne das Skelett
+ * wieder aufzubauen (teuer, unveränderlich pro Datei).
+ */
+function verschiebe(frame, versatz) {
+  const d = versatz.map(Number);
+  const kopie = structuredClone(frame);
+  for (const id of Object.keys(kopie.positions)) {
+    kopie.positions[id] = kopie.positions[id].map((x, a) => x + d[a]);
+    if (kopie.bones[id] && Array.isArray(kopie.bones[id].position)) {
+      kopie.bones[id].position = kopie.bones[id].position.map((x, a) => x + d[a]);
+    }
+  }
+  if (Array.isArray(kopie.com)) kopie.com = kopie.com.map((x, a) => x + d[a]);
+  return kopie;
+}
+
+test('Rahmung, Sprung: 1 m hoch und 2 m weit getragen bleibt in JEDEM Panel vollständig', async () => {
+  const profile = await gemessenesProfil();
+  const hoehe = profile.world.height;
+  // Der Auftrag: Bewegung hebt die Figur UM 1 m und trägt sie UM 2 m weit.
+  const HOCH_M = 1.0;
+  const WEIT_M = 2.0;
+  // Drei Frames des Sprungs: Absprung vom Boden, 1 m über dem Boden und 2 m weit
+  // getragen (Apex), Landung 2 m weiter — dieselbe gestellte Figur, dreimal.
+  const frames = [
+    await versetztePose([0, HOCH_M, 0], 0),                    // 1 m gehoben
+    await versetztePose([0, HOCH_M, WEIT_M], 1),               // 1 m hoch, 2 m weit
+    await versetztePose([0, 0, WEIT_M], 2),                    // 2 m weit, Boden
+  ];
+
+  const plan = strip.planeStreifen({
+    profile, frames, views: ['front', 'side', 'quarter', 'top'], frameCount: frames.length,
+  });
+
+  // Jede Ansicht ist ihre eigene Zeile; alle Panels einer Zeile nutzen dieselbe
+  // Kamera — ohne das wäre Frame gegen Frame nicht vergleichbar (plan.md 6.8).
+  for (const ansicht of ['front', 'side', 'quarter', 'top']) {
+    const panelsDerAnsicht = plan.panels.filter((p) => p.ansicht === ansicht);
+    const kameras = new Set(panelsDerAnsicht.map((p) =>
+      JSON.stringify([p.ziel.map((x) => +x.toFixed(6)), +p.pxProMeter.toFixed(6)])));
+    assert.equal(kameras.size, 1,
+      `${panelsDerAnsicht.length} Panels der Ansicht '${ansicht}' nutzen `
+      + `${kameras.size} verschiedene Kameras — die Panels sind dann nicht vergleichbar`);
+  }
+
+  // Und: vollständige Sichtbarkeit. Je Panel gemessen an ALLEN gemessenen
+  // Knochenpositionen des Frames — dieselbe Quelle, die auch gezeichnet wird
+  // (frame.wo). Der Rand (Puffer um Knochendicke und Segmentradius) ist nicht
+  // Teil der Messung, die Figur ist es: jeder Punkt vollständig im Rechteck.
+  const abgeschnitten = [];
+  for (const pan of plan.panels) {
+    const frame = plan.pose[pan.spalte];
+    for (const [id, w] of Object.entries(frame.wo)) {
+      const r = (w[0] - pan.ziel[0]) * pan.X[0] + (w[1] - pan.ziel[1]) * pan.X[1]
+        + (w[2] - pan.ziel[2]) * pan.X[2];
+      const h = (w[0] - pan.ziel[0]) * pan.Y[0] + (w[1] - pan.ziel[1]) * pan.Y[1]
+        + (w[2] - pan.ziel[2]) * pan.Y[2];
+      const dx = pan.x + pan.breite / 2 + r * pan.pxProMeter;
+      const dy = pan.y + pan.hoehe / 2 - h * pan.pxProMeter;
+      if (dx < pan.x || dx > pan.x + pan.breite || dy < pan.y || dy > pan.y + pan.hoehe) {
+        abgeschnitten.push(`${pan.ansicht}/Frame ${pan.frame}: Knochen ${id} liegt bei `
+          + `(${dx.toFixed(1)}, ${dy.toFixed(1)}) px außerhalb des Panels `
+          + `${pan.x}..${pan.x + pan.breite} × ${pan.y}..${pan.y + pan.hoehe} px`);
+      }
+    }
+    for (const s of frame.sohlen) {
+      const r = (s.welt[0] - pan.ziel[0]) * pan.X[0] + (s.welt[1] - pan.ziel[1]) * pan.X[1]
+        + (s.welt[2] - pan.ziel[2]) * pan.X[2];
+      const h = (s.welt[0] - pan.ziel[0]) * pan.Y[0] + (s.welt[1] - pan.ziel[1]) * pan.Y[1]
+        + (s.welt[2] - pan.ziel[2]) * pan.Y[2];
+      const dx = pan.x + pan.breite / 2 + r * pan.pxProMeter;
+      const dy = pan.y + pan.hoehe / 2 - h * pan.pxProMeter;
+      if (dx < pan.x || dx > pan.x + pan.breite || dy < pan.y || dy > pan.y + pan.hoehe) {
+        abgeschnitten.push(`${pan.ansicht}/Frame ${pan.frame}: Sohle ${s.id} liegt bei `
+          + `(${dx.toFixed(1)}, ${dy.toFixed(1)}) px außerhalb des Panels`);
+      }
+    }
+  }
+  assert.deepEqual(abgeschnitten, [],
+    `${abgeschnitten.length} Körperteile liegen außerhalb des Panels:\n  `
+    + abgeschnitten.slice(0, 6).join('\n  '));
+
+  // Der Maßstab bleibt WELTfest (Auftrag 2): im 'side'-Panel ist die Bodenkante
+  // (Bodenlinie durch den Bind-Anker) sichtbar UND der getragene Frame liegt
+  // höher im Bild. Der Höhenunterschied zwischen dem 1-m-gehobenen und dem
+  // am-Boden-Frame misst in Pixeln etwa 1 m — wäre die Kamera mitgezogen, wäre
+  // der Unterschied 0 und der Agent sähe ein stilles Bild.
+  const seite = plan.panels.filter((p) => p.ansicht === 'side');
+  const bodenY = (pan) => {
+    // Bind-Anker in der Bildebene dieser Ansicht.
+    const rAnker = plan.bezug.anker;
+    const pA = [rAnker[0], profile.world.groundY, rAnker[2]];
+    const hA = (pA[0] - pan.ziel[0]) * pan.Y[0] + (pA[1] - pan.ziel[1]) * pan.Y[1]
+      + (pA[2] - pan.ziel[2]) * pan.Y[2];
+    return pan.y + pan.hoehe / 2 - hA * pan.pxProMeter;
+  };
+  const bodenPanel = seite.find((p) => p.frame === frames[2].frame);
+  const hoehePanel = seite.find((p) => p.frame === frames[0].frame);
+  const figuerY = (pan) => {
+    const frame = plan.pose[pan.spalte];
+    const ys = Object.values(frame.wo).map((w) => {
+      const h = (w[0] - pan.ziel[0]) * pan.Y[0] + (w[1] - pan.ziel[1]) * pan.Y[1]
+        + (w[2] - pan.ziel[2]) * pan.Y[2];
+      return -h * pan.pxProMeter;
+    });
+    return Math.min(...ys);
+  };
+  const pxProMeter = bodenPanel.pxProMeter;
+  const versatzBoden = bodenY(bodenPanel) - figuerY(bodenPanel);
+  const versatzSprungPx = (figuerY(hoehePanel) - figuerY(bodenPanel));
+  const versatzSprungM = Math.abs(versatzSprungPx) / pxProMeter;
+  assert.ok(versatzSprungM > HOCH_M * 0.8,
+    `der 1-m-Sprung zeigt im Bild ${versatzSprungM.toFixed(2)} m Höhenunterschied zwischen `
+    + `Frame ${hoehePanel.frame} und Frame ${bodenPanel.frame} (bei `
+    + `${pxProMeter.toFixed(1)} px/m und ${Math.abs(versatzSprungPx).toFixed(0)} px) — `
+    + 'die Kamera wandert nicht, aber die Figur steigt nicht sichtbar');
+  assert.ok(bodenY(bodenPanel) > bodenPanel.y && bodenY(bodenPanel) < bodenPanel.y + bodenPanel.hoehe,
+    `die Bodenkante liegt bei y = ${bodenY(bodenPanel).toFixed(0)} px außerhalb des Panels `
+    + `${bodenPanel.y}..${bodenPanel.y + bodenPanel.hoehe} — der Maßstab wandert aus dem Bild`);
+
+  // Negativfall (AGENTS.md, Regel 2): dass der Test etwas misst, zeigt der
+  // Bind-Pose-Modus — dieselbe GESTELLTE Figur, aber die Höhenverschiebung
+  // fortgerechnet, bis alle drei Frames auf dem Boden stehen. Der Höhenunter-
+  // schied zwischen den Frames muss dort gegen 0 fallen; bliebe er bestehen,
+  // würde der Test oben einen Dauerzustand belegen (die Posen sind im Sprung
+  // sonst identisch gestaffelt — drei gemeinsame Verschiebungen ändern die
+  // Differenz nicht).
+  const bindFrames = [verschiebe(frames[0], [0, -HOCH_M, 0]),
+    verschiebe(frames[1], [0, -HOCH_M, 0]), frames[2]];
+  const planBind = strip.planeStreifen({
+    profile, frames: bindFrames, views: ['side'], frameCount: bindFrames.length,
+  });
+  const figuerYBind = (pan) => {
+    const frame = planBind.pose[pan.spalte];
+    const ys = Object.values(frame.wo).map((w) => {
+      const h = (w[0] - pan.ziel[0]) * pan.Y[0] + (w[1] - pan.ziel[1]) * pan.Y[1]
+        + (w[2] - pan.ziel[2]) * pan.Y[2];
+      return -h * pan.pxProMeter;
+    });
+    return Math.min(...ys);
+  };
+  const bindBoden = planBind.panels.find((p) => p.frame === bindFrames[2].frame);
+  const bindHoch = planBind.panels.find((p) => p.frame === bindFrames[0].frame);
+  const bindSprungM = Math.abs(figuerYBind(bindBoden) - figuerYBind(bindHoch)) / bindBoden.pxProMeter;
+  assert.ok(Math.abs(bindSprungM) < 0.1,
+    `ohne Verschiebung misst dieselbe Prüfung ${bindSprungM.toFixed(3)} m Höhenunterschied `
+    + 'zwischen identischen Posen — der Test misst Rauschen, nicht die Rahmung');
+  console.log(`    gemessen: Sprunghöhe im Bild ${(versatzSprungM).toFixed(3)} m `
+    + `(gefordert > ${(HOCH_M * 0.8).toFixed(1)} m), Bind-Pose-Referenz `
+    + `${bindSprungM.toFixed(3)} m, Panels ${plan.panels.length}`);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -509,7 +693,7 @@ async function streifeInDerSeite(p) {
       profile: anfrage.profile,
       frames: anfrage.frames,
       views: anfrage.views,
-      frameCount: anfrage.frames.length,
+      frameCount: anfrage.frameCount ?? anfrage.frames.length,
     };
 
     let scene = null;
@@ -530,7 +714,24 @@ async function streifeInDerSeite(p) {
       opts.scene = scene;
     }
 
-    const plan = strip.planeStreifen(opts);
+    const eintrag = strip.bildeStreifen(opts);
+
+    // Die Budgettreppe kann die Panelauflösung senken, die Zeitkürzung
+    // (PANELS_ZEIT_MAX) Frames wegnehmen. Gemessen wird deshalb an dem Bild,
+    // das tatsächlich ausgeliefert wird: die gezeigten Frames stehen im
+    // Eintrag, die Panelbreite lässt sich aus der Bildbreite exakt
+    // zurückrechnen, und der Plan wird mit genau diesen Werten neu gebaut.
+    const panelBreite = (eintrag.width - strip.PANEL_ABSTAND_PX) / eintrag.frames.length
+      - strip.PANEL_ABSTAND_PX;
+    const gezeigt = eintrag.frames.map((fi) =>
+      anfrage.frames.find((f) => f.frame === fi));
+    const plan = strip.planeStreifen({
+      ...opts, frames: gezeigt, skala: panelBreite / strip.PANEL_BREITE_PX,
+    });
+    if (plan.breite !== eintrag.width) {
+      throw new Error(`der nachgebaute Plan ist ${plan.breite} px breit, ausgeliefert wurden `
+        + `${eintrag.width} px — gemessen würde an einem anderen Bild als dem ausgelieferten`);
+    }
     const voll = strip.pruefeVollstaendigkeit(plan);
 
     // Beschriftungen mit denselben Font-Metriken messen, mit denen sie
@@ -538,23 +739,25 @@ async function streifeInDerSeite(p) {
     const messLeinwand = document.createElement('canvas');
     const mess = messLeinwand.getContext('2d');
     const ueberlauf = [];
+    const alleTexte = new Set();
     for (const pan of plan.panels) {
       const texte = []
         .concat(...Object.values(pan.annotationen))
         .concat(pan.koerper, pan.beschriftung)
         .filter((pr) => pr.art === 'text');
       for (const pr of texte) {
+        alleTexte.add(pr.text);
         mess.font = `${pr.groesse}px ui-monospace, Consolas, monospace`;
         const b = mess.measureText(pr.text).width;
         const li = pr.anker === 'rechts' ? pr.x - b
           : (pr.anker === 'mitte' ? pr.x - b / 2 : pr.x);
-        const links = li - (pan.x + 1);
-        const rechts = (pan.x + pan.breite - 1) - (li + b);
-        if (links > 0 || rechts > 0) {
+        const links = pan.x - li;                       // > 0: über die linke Kante
+        const rechts = (li + b) - (pan.x + pan.breite); // > 0: über die rechte Kante
+        if (links > 1 || rechts > 1) {
           ueberlauf.push({
             ansicht: pan.ansicht, frame: pan.frame, text: pr.text,
             pixel: Math.round(Math.max(links, rechts)),
-            ueber: links > 0 ? 'links' : 'rechts',
+            ueber: links > rechts ? 'links' : 'rechts',
             feld: `${Math.round(li)}..${Math.round(li + b)} px`,
             panel: `${pan.x}..${pan.x + pan.breite} px`,
           });
@@ -562,7 +765,6 @@ async function streifeInDerSeite(p) {
       }
     }
 
-    const eintrag = strip.bildeStreifen(opts);
     let groesteVeranderung = null;
     if (scene) {
       const nachher = strip.frameAusScene(scene, { frame: 0 });
@@ -574,7 +776,7 @@ async function streifeInDerSeite(p) {
         }
       }
     }
-    return { eintrag, voll, ueberlauf, groesteVeranderung, planZusammenfassung: {
+    return { eintrag, voll, ueberlauf, groesteVeranderung, texte: [...alleTexte], planZusammenfassung: {
       panels: plan.panels.length, breite: plan.breite, hoehe: plan.hoehe,
       massstab: plan.massstab, warnungen: plan.warnungen,
       gruppen: Object.fromEntries(Object.keys(plan.panels[0].annotationen).map((g) => [
@@ -586,7 +788,7 @@ async function streifeInDerSeite(p) {
 /** Zählt Pixelunterschiede zweier PNGs in der Seite (echter PNG-Decoder). */
 async function pixelvergleich(a, b) {
   const { page } = await seite();
-  return page.evaluate(async ([base64A, base64B]) => {
+  return page.evaluate(async ([base64A, base64B, schwelle]) => {
     const lade = (daten) => new Promise((resolve, reject) => {
       const bild = new Image();
       bild.onload = () => resolve(bild);
@@ -604,7 +806,6 @@ async function pixelvergleich(a, b) {
     ctx.drawImage(ib, 0, 0);
     const pb = ctx.getImageData(0, 0, leinwand.width, leinwand.height).data;
 
-    const schwelle = 16;
     let alle = 0;
     let sichtbar = 0;
     let groester = 0;
@@ -626,7 +827,7 @@ async function pixelvergleich(a, b) {
       groesterKanalabstand: groester,
       schwelle,
     };
-  }, [a, b]);
+  }, [a, b, SICHTBAR_SCHWELLE]);
 }
 
 
@@ -674,4 +875,346 @@ test('Anhang, Negativfall: ein Bericht ohne Streifen gilt als unvollständig', a
     `Bericht mit angehängtem Streifen muss das eigene Schema bestehen: ${JSON.stringify(validateValidationReport(bericht).errors)}`);
   assert.equal(validateValidationReport(berichtOhneBild).ok, false,
     'derselbe Bericht ohne Streifen muss scheitern — sonst beweist der Positivfall nichts');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reihe 4 — Zeitgrenze (Auftrag "Der Bildstreifen frisst den Rechner")
+// Gemessen wurde an Xbot, SwiftShader (spikes/tmp-strip-zeit.mjs, 31.08.2026):
+// 24 Panels brauchten 1133 ms, 48 Panels 2151 ms. PANELS_ZEIT_MAX = 24 ist
+// die Kürzung VOR dem Rendern — hier wird nachgemessen, dass sie greift.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('Zeitgrenze, Positivfall: 48 angeforderte Panels werden auf 24 gekürzt und sagen es', async () => {
+  const profile = await gemessenesProfil();
+  const vorrat = await rahmenVorrat(strip.FRAMES_MAX);
+  const t0 = performance.now();
+
+  const plan = strip.planeStreifen({
+    profile, frames: vorrat, views: strip.ANSICHTEN, frameCount: strip.FRAMES_MAX,
+  });
+  const dauerMs = performance.now() - t0;
+
+  // Die Kürzung passiert VOR dem Zeichnen: der Plan trägt PANELS_ZEIT_MAX
+  // Panels, nicht 48, und die Dauer bleibt im Millisekundenbereich.
+  assert.equal(plan.panels.length, strip.PANELS_ZEIT_MAX,
+    `${plan.panels.length} Panels geplant, erwartet ${strip.PANELS_ZEIT_MAX} `
+    + `(Grenze PANELS_ZEIT_MAX, gemessen 1133 ms für 24, 2151 ms für 48 Panels)`);
+  assert.ok(dauerMs < strip.STRIPE_ZEIT_MS,
+    `der Plan brauchte ${Math.round(dauerMs)} ms, Grenze ${strip.STRIPE_ZEIT_MS} ms`);
+  assert.match(plan.warnungen.join(' '), /Zeitgrenze/,
+    `die Kürzung muss als Warnung stehen, warnungen waren: ${plan.warnungen.join(' | ') || 'keine'}`);
+  assert.match(plan.warnungen.join(' '), /\d/,
+    `die Kürzungswarnung nennt eine Zahl: ${plan.warnungen.join(' | ')}`);
+
+  // Die gezeigten Frames sind die ERSTEN n (sortierte Auswahl deckt Stütz,
+  // Druck und Flug ab); die angeforderten Frame-Indices stehen voll im Plan.
+  const gezeigt = plan.frames.map((f) => f.index);
+  assert.deepEqual(gezeigt, [0, 1, 2, 3, 4, 5],
+    `die ersten 6 Frames je Ansicht gezeigt, war: ${gezeigt.join(', ')}`);
+
+  // Negativfall derselben Reihe (AGENTS.md, Regel 2): unter der Grenze wird
+  // NICHT gekürzt und keine Zeitwarnung erfunden.
+  const klein = strip.planeStreifen({
+    profile, frames: vorrat.slice(0, 6), views: strip.ANSICHTEN,
+    frameCount: strip.FRAMES_MAX,
+  });
+  assert.equal(klein.panels.length, 24, `${klein.panels.length} Panels, erwartet 24`);
+  assert.equal(klein.warnungen.some((w) => w.includes('Zeitgrenze')), false,
+    `unter der Grenze keine Zeitwarnung: ${klein.warnungen.join(' | ')}`);
+});
+
+test('Zeitgrenze, Negativfall: die Kürzung ist die Ursache für 24 nicht 48 Panels', async () => {
+  const profile = await gemessenesProfil();
+  const vorrat = await rahmenVorrat(strip.FRAMES_MAX);
+
+  // Der echte Vergleichspunkt: PANELS_ZEIT_MAX liegt UNTER dem 12×4-Maximum —
+  // sonst würde die Grenze gar nicht kürzen und der Positivfall oben bewiese
+  // einen Dauerzustand statt eines Mechanismus.
+  assert.ok(strip.PANELS_ZEIT_MAX < strip.FRAMES_MAX * strip.ANSICHTEN.length,
+    `PANELS_ZEIT_MAX = ${strip.PANELS_ZEIT_MAX}, das 12×4-Maximum sind `
+    + `${strip.FRAMES_MAX * strip.ANSICHTEN.length} — die Grenze kürzt beim Maximum nicht`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pixelschiene — die Abnahmetabelle wird mit echten Bildpunkten geprüft
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Das Maximum an Frames, das Werkzeug `look` verlangen kann. */
+async function rahmenVorrat(anzahl) {
+  const aus = [];
+  for (let i = 0; i < anzahl; i++) {
+    aus.push(await gerahmtePose(
+      [['mixamorigLeftUpLeg', 'x', -3 * i], ['mixamorigRightForeArm', 'z', 2 * i]],
+      null, i));
+  }
+  return aus;
+}
+
+/** Dieselbe Pose, aber 0,30 m über dem Boden: Phase Flug, 0 Kontaktpunkte. */
+const flugPose = () => gerahmtePose([], [0, 0.3, 0], 0);
+
+/** Frame ohne Gelenkausrichtung — die Form, die timeline.solved mitbringt, wenn
+ *  nur `positions` gelöst wurden. Dann sitzen die Sohlen auf den Gelenken. */
+async function ohneAusrichtungPose() {
+  const f = await stehPose();
+  for (const id of Object.keys(f.bones)) delete f.bones[id].weltSkala;
+  return f;
+}
+
+test('Bild, Positivfall: ein PNG mit allen vier Ansichten und unbeschnittenen Zahlen', async () => {
+  const profile = await gemessenesProfil();
+  const frames = [await stehPose(), await fremdePose()];
+
+  const { eintrag, voll, ueberlauf, planZusammenfassung } = await streifeInDerSeite({
+    profile, frames, views: strip.ANSICHTEN, frameCount: frames.length,
+  });
+
+  // WebMCP-Bildanhang: { type:'image', data, mimeType } (AGENTS.md, gemessen).
+  assert.equal(eintrag.mimeType, 'image/png', `mimeType war: ${eintrag.mimeType}`);
+  assert.match(eintrag.data, /^iVBORw0K/, 'die Daten müssen ein Base64-PNG ohne Datenpräfix sein');
+  assert.ok(eintrag.bytes >= strip.MIN_BILD_BYTES,
+    `Bild ist ${eintrag.bytes} Byte: unter ${strip.MIN_BILD_BYTES} Byte passt kein annotierter Streifen`);
+  assert.ok(eintrag.bytes <= strip.ANTWORT_BUDGET_BYTES,
+    `Bild ist ${eintrag.bytes} Byte über der gemessenen Antwortgrenze von ${strip.ANTWORT_BUDGET_BYTES} Byte (512 KB)`);
+  assert.equal(eintrag.data.length % 4, 0, 'Base64 muss ohne Auffüllungslücke durch die API gehen');
+
+  // Genau EIN Bild, alle Ansichten nebeneinander.
+  assert.equal(eintrag.view, strip.ANSICHTEN.join('+'), `Ansichtsname war: ${eintrag.view}`);
+  assert.deepEqual(eintrag.frames, [0, 1], `Frames im Bild: ${JSON.stringify(eintrag.frames)}`);
+  assert.equal(eintrag.ref, `strip_${strip.ANSICHTEN.join('+')}_0-1.png`, `ref war: ${eintrag.ref}`);
+  assert.equal(eintrag.panels, frames.length * strip.ANSICHTEN.length,
+    `${eintrag.panels} Panels, erwartet ${frames.length * strip.ANSICHTEN.length}`);
+  assert.equal(planZusammenfassung.panels, eintrag.panels);
+  assert.equal(voll.vollstaendig, true);
+
+  // Fünf Pflichtgruppen, über alle Panels gezählt.
+  const leere = Object.entries(planZusammenfassung.gruppen).filter(([, n]) => n === 0)
+    .map(([g]) => g);
+  assert.deepEqual(leere, [], `diese Pflichtgruppen haben im gerenderten Bild 0 Primitives: ${leere.join(', ')}`);
+  for (const gruppe of strip.PFLICHT_ANNOTATIONEN) {
+    assert.ok(eintrag.annotationen[gruppe] > 0,
+      `der Eintrag weist ${gruppe} mit ${eintrag.annotationen[gruppe]} Primitives aus`);
+  }
+
+  // Die Zahlen im Bild müssen lesbar bleiben: mit echten Font-Metriken gemessen.
+  assert.deepEqual(ueberlauf, [],
+    `${ueberlauf.length} Beschriftungen laufen über die Panelbreite und werden abgeschnitten:\n  `
+    + ueberlauf.slice(0, 6).map((u) => `${u.ansicht}/Frame ${u.frame} ${u.ueber} ${u.pixel} px `
+      + `[${u.feld} in ${u.panel}] „${u.text}“`).join('\n  '));
+
+  // Der Maßstab steht als Zahl im Bild und stammt aus der gemessenen Körperhöhe.
+  assert.equal(planZusammenfassung.massstab.koerperHoeheMeter, profile.world.height,
+    `die gemessene Körperhöhe ${profile.world.height} m muss im Maßstab stehen, war ${planZusammenfassung.massstab.koerperHoeheMeter}`);
+});
+
+test('Aussagekraft, beide Richtungen: verschiedene Posen groß, 2 mm Versatz unsichtbar', async () => {
+  const profile = await gemessenesProfil();
+  const steh = await stehPose();
+  const fremd = await fremdePose();
+  const mm = await millimeterPose();
+  const anfrage = (frames) => ({ profile, frames, views: strip.ANSICHTEN, frameCount: 3 });
+
+  const basis = await streifeInDerSeite(anfrage([steh]));
+  const gleich = await streifeInDerSeite(anfrage([steh]));
+  const klein = await streifeInDerSeite(anfrage([mm]));
+  const gross = await streifeInDerSeite(anfrage([fremd]));
+
+  // 1) Der Messung selbst über den Weg getraut: zweimal derselbe Streifen muss
+  //    BITGENAU gleich sein. Rötet hier etwas, ist der Vergleich unbrauchbar und
+  //    die beiden folgenden Behauptungen sind wertlos.
+  const identisch = await pixelvergleich(basis.eintrag.data, gleich.eintrag.data);
+  assert.equal(identisch.sichtbarPixel, 0,
+    `derselbe Streifen zweimal gerendert unterscheidet sich in ${identisch.sichtbarPixel} von ${identisch.gesamt} Pixeln — der Vergleich misst Rauschen`);
+
+  // Nachgemessener Maßstab: wie viele Pixel sind 2 mm an diesem Modell?
+  const millimeterInPixel = 0.002 * basis.planZusammenfassung.massstab.pxProMeter;
+  assert.ok(millimeterInPixel < 1,
+    `2 mm sind bei ${basis.planZusammenfassung.massstab.pxProMeter.toFixed(1)} px/m bereits ${millimeterInPixel.toFixed(2)} px — der Maßstab ist zu grob für die Aussage „unsichtbar“`);
+
+  // 2) Kleine Richtung: eine um 2 mm verschobene Pose ergibt KEINEN sichtbar
+  //    anderen Streifen.
+  const kleiner = await pixelvergleich(basis.eintrag.data, klein.eintrag.data);
+  assert.ok(kleiner.sichtbarAnteil < GRENZ_KLEIN_ANTEIL,
+    `2 mm Versatz ändern ${kleiner.sichtbarAnteil.toFixed(4)} der Pixel (${kleiner.sichtbarPixel} Stück) über der Schwelle von ${SICHTBAR_SCHWELLE}/255 — erwartet unter ${GRENZ_KLEIN_ANTEIL}; bei ${millimeterInPixel.toFixed(2)} px Verschiebung wäre ein größerer Wert ein falscher Maßstab`);
+
+  // 3) Große Richtung: zwei deutlich verschiedene Posen ergeben deutlich
+  //    verschiedene Streifen.
+  const groesser = await pixelvergleich(basis.eintrag.data, gross.eintrag.data);
+  assert.ok(groesser.sichtbarAnteil > GRENZ_GROSS_ANTEIL,
+    `zwei deutlich verschiedene Posen ändern nur ${groesser.sichtbarAnteil.toFixed(4)} der Pixel — erwartet über ${GRENZ_GROSS_ANTEIL}; wäre der Wert klein, zeigt der Streifen Bewegung nicht`);
+
+  // 4) Die Schärfe in beide Richtungen, als Verhältnis: der Faktor zwischen den
+  //    beiden Fällen ist die eigentliche Aussage.
+  const faktor = groesser.sichtbarAnteil / Math.max(kleiner.sichtbarAnteil, 1 / kleiner.gesamt);
+  assert.ok(faktor > 8,
+    `verschiedene Posen ändern nur ${faktor.toFixed(1)}-mal so viele Pixel wie ein 2-mm-Versatz `
+    + `(${groesser.sichtbarAnteil.toFixed(4)} gegen ${kleiner.sichtbarAnteil.toFixed(4)}) — `
+    + `unter 8 trennt der Streifen nicht zwischen Bewegung und Maßstabsfehler`);
+});
+
+test('Bild, WebGL-Pfad: die Figur steht als Mesh im Panel und die Szene bleibt unverändert', async () => {
+  const profile = await gemessenesProfil();
+  const steh = await stehPose();
+  const fremd = await fremdePose();
+
+  const mesh = await streifeInDerSeite({
+    profile, frames: [steh], views: strip.ANSICHTEN, frameCount: 3, mitMesh: true,
+  });
+  assert.equal(mesh.eintrag.meshGezeichnet, true,
+    `mit Szene muss das Mesh gezeichnet werden, meldet der Eintrag meshGezeichnet = ${mesh.eintrag.meshGezeichnet}`);
+  assert.equal(mesh.eintrag.panels, strip.ANSICHTEN.length,
+    `${mesh.eintrag.panels} Panels, erwartet ${strip.ANSICHTEN.length}`);
+  assert.ok(mesh.eintrag.bytes <= strip.ANTWORT_BUDGET_BYTES,
+    `Mesh-Streifen ist ${mesh.eintrag.bytes} Byte, Grenze ${strip.ANTWORT_BUDGET_BYTES}`);
+  assert.match(mesh.eintrag.warnungen.join(' '), /Licht/,
+    `eine Szene ohne Lichtquelle muss das melden, Warnungen waren: ${mesh.eintrag.warnungen.join(' | ') || 'keine'}`);
+
+  // Die Menschenansicht zeigt dasselbe Modell: der Streifen darf die Szene nicht
+  // in der letzten Panel-Pose zurücklassen.
+  assert.equal(mesh.groesteVeranderung, 0,
+    `nach dem Rendern weichen die Knochenpositionen der Szene um ${mesh.groesteVeranderung} m von vorher ab — dieRestore-Funktion stellt nicht wieder her`);
+
+  // Gegenprobe: stellt bildeStreifen die Pose je Panel, müssen sich zwei
+  // Mesh-Streifen verschiedener Posen deutlich unterscheiden. Bliebe das Mesh in
+  // der Bind-Pose stehen, wäre der Unterschied 0 — genau der tote Fall.
+  const meshFremd = await streifeInDerSeite({
+    profile, frames: [fremd], views: strip.ANSICHTEN, frameCount: 3, mitMesh: true,
+  });
+  const unterschied = await pixelvergleich(mesh.eintrag.data, meshFremd.eintrag.data);
+  assert.ok(unterschied.sichtbarAnteil > GRENZ_GROSS_ANTEIL,
+    `zwei Mesh-Streifen verschiedener Posen unterscheiden sich in nur ${unterschied.sichtbarAnteil.toFixed(4)} `
+    + `der Pixel (${unterschied.sichtbarPixel} von ${unterschied.gesamt}) — das Mesh wird nicht je Frame gestellt`);
+
+  // Und: Kapseln ohne Szene und Mesh mit Szene sind verschiedene Bilder — die
+  // Szene wird also tatsächlich gerastert und nicht nur an der Overlay-Ebene gemalt.
+  const kapseln = await streifeInDerSeite({
+    profile, frames: [steh], views: strip.ANSICHTEN, frameCount: 3,
+  });
+  const art = await pixelvergleich(kapseln.eintrag.data, mesh.eintrag.data);
+  assert.ok(art.sichtbarAnteil > GRENZ_GROSS_ANTEIL,
+    `Kapsel- und Mesh-Streifen derselben Pose unterscheiden sich in ${art.sichtbarAnteil.toFixed(4)} der Pixel — `
+    + 'ein von beiden rendert nicht, was es vorgibt');
+});
+
+test('Anhang, Positivfall: der echte Streifen hängt an einem echten Bericht', async () => {
+  const profile = await gemessenesProfil();
+  const frames = [await stehPose(), await fremdePose()];
+  const { page } = await seite();
+
+  const eintraege = await page.evaluate(async (anfrage) => {
+    const strip = await import(new URL('src/render/strip.js', document.baseURI).href);
+    const port = strip.createStripRenderer({
+      profile: anfrage.profile,
+      frames: anfrage.frames,
+      frameCount: anfrage.frames.length,
+    });
+    return port.streifen({ frames: [0, 1], views: ['side', 'front'] });
+  }, { profile, frames });
+
+  assert.equal(eintraege.length, 1,
+    `genau EIN Bild mit beiden Ansichten (plan.md 6.8), es sind ${eintraege.length}`);
+  const [bild] = eintraege;
+  assert.ok(bild.bytes > strip.MIN_BILD_BYTES && bild.bytes <= strip.ANTWORT_BUDGET_BYTES,
+    `Bildgröße ${bild.bytes} Byte hält nicht die Grenzen ${strip.MIN_BILD_BYTES} bis ${strip.ANTWORT_BUDGET_BYTES}`);
+
+  const bericht = {
+    frameCount: 2, phases: [{ state: 'kontakt', from: 0, to: 2 }],
+    physics: { passed: true, issues: [] },
+    intent: { passed: true, checks: [] },
+    style: { passed: true, issues: [] },
+    images: [],
+  };
+  strip.haengeStreifenAn(bericht, eintraege);
+  assert.deepEqual(bericht.images, [{
+    view: 'side+front', frames: [0, 1], ref: 'strip_side+front_0-1.png',
+  }], `images nach dem Anhängen: ${JSON.stringify(bericht.images)}`);
+
+  const befund = validateValidationReport(bericht);
+  assert.equal(befund.ok, true,
+    `Bericht mit echtem Streifen scheitert am eigenen Schema: ${JSON.stringify(befund.errors)}`);
+
+  // Die Antwortform für den Agenten: Text und Bild in derselben Antwort.
+  const anhang = [{ type: 'image', data: bild.data, mimeType: bild.mimeType }];
+  assert.equal(anhang[0].data.length, bild.data.length,
+    `Bildanhang verliert auf dem Weg in die Antwort ${bild.data.length - anhang[0].data.length} Zeichen`);
+});
+
+test('Lesbarkeit, beide Ränder: kein Etikett wird abgeschnitten — weder im Maximum noch in den Ausnahmefällen', async () => {
+  const profile = await gemessenesProfil();
+  const vorrat = await rahmenVorrat(strip.FRAMES_MAX);
+
+  const faelle = [
+    ['Maximum 12 Frames × 4 Ansichten', {
+      profile, frames: vorrat, views: strip.ANSICHTEN, frameCount: strip.FRAMES_MAX,
+    }, strip.PANELS_ZEIT_MAX, (e) => {
+      // Die Zeitgrenze kürzt hier: 48 Panels (12 × 4) überschreiten gemessen
+      // 2 s und das Bytebudget; geliefert werden PANELS_ZEIT_MAX Panels — die
+      // ersten Frames in allen vier Ansichten. Die Kürzung muss laut im
+      // Eintrag stehen (plan.md 5.5).
+      assert.ok(e.bytes <= strip.ANTWORT_BUDGET_BYTES,
+        `Maximum ausgeliefert mit ${e.bytes} Byte über der Grenze von ${strip.ANTWORT_BUDGET_BYTES}`);
+      assert.equal(e.panels, strip.PANELS_ZEIT_MAX,
+        `Zeitgrenze: ${e.panels} Panels, erwartet ${strip.PANELS_ZEIT_MAX}`);
+      assert.match(e.warnungen.join(' '), /Zeitgrenze/,
+        `die Kürzung muss als Warnung mit Zahl stehen, warnungen waren: ${e.warnungen.join(' | ') || 'keine'}`);
+    }],
+    ['Flugphase, 0 Kontaktpunkte', {
+      profile, frames: [await flugPose()], views: strip.ANSICHTEN, frameCount: 1,
+    }, strip.ANSICHTEN.length, (e, texte) => {
+      assert.ok(texte.some((t) => /^kein Bodenkontakt /.test(t)),
+        `der Flugfall muss „kein Bodenkontakt" zeigen, Etiketten waren: ${texte.slice(0, 12).join(' | ')}`);
+    }],
+    ['Sohlen ohne Gelenkausrichtung', {
+      profile, frames: [await ohneAusrichtungPose()], views: strip.ANSICHTEN, frameCount: 1,
+    }, strip.ANSICHTEN.length, (e, texte) => {
+      assert.ok(texte.some((t) => /ohne Ausrichtung/.test(t)),
+        `der Ausnahmefall muss seine Behelfsstellung zeigen, Etiketten waren: ${texte.slice(0, 12).join(' | ')}`);
+    }],
+  ];
+
+  const bo = [];
+  for (const [name, anfrage, panelsErwartet, nachweis] of faelle) {
+    const { eintrag, ueberlauf, texte } = await streifeInDerSeite(anfrage);
+    assert.equal(eintrag.panels, panelsErwartet,
+      `${name}: ${eintrag.panels} Panels, erwartet ${panelsErwartet}`);
+    try { nachweis(eintrag, texte); } catch (err) { bo.push(`${name}: ${err.message}`); }
+    for (const u of ueberlauf) {
+      bo.push(`${name} ${u.ansicht}/Frame ${u.frame}: „${u.text}“ läuft ${u.ueber} ${u.pixel} px `
+        + `über die Panelkante (${u.feld} in ${u.panel})`);
+    }
+  }
+  assert.deepEqual(bo, [], `${bo.length} Beschriftungen abgeschnitten oder Nachweis fehlgeschlagen:\n  `
+    + bo.slice(0, 8).join('\n  '));
+
+  // Gegenprobe der Messung: derselbe Plan auf derselben ausgelieferten Stufe,
+  // nur mit der Schrift UNVERKLEINERT — genau der Zustand, in dem 48 Etiketten
+  // über ihre Panelkante liefen. Meldet die Messung auch dann 0 Überläufe, misst
+  // sie nichts und der Positivfall oben bewiese nichts.
+  const { page } = await seite();
+  const stufe = strip.SKALA_STUFEN[1];
+  const gegenprobe = await page.evaluate(async (p) => {
+    const s = await import(new URL('src/render/strip.js', document.baseURI).href);
+    const plan = s.planeStreifen({
+      profile: p.profile, frames: p.frames, views: ['front'], frameCount: 1, skala: p.stufe,
+    });
+    const ctx = document.createElement('canvas').getContext('2d');
+    let n = 0;
+    let groester = 0;
+    for (const pan of plan.panels) {
+      const texte = [].concat(...Object.values(pan.annotationen)).concat(pan.beschriftung)
+        .filter((pr) => pr.art === 'text');
+      for (const pr of texte) {
+        ctx.font = `${pr.groesse / p.faktor}px ui-monospace, Consolas, monospace`;
+        const b = ctx.measureText(pr.text).width;
+        const li = pr.anker === 'rechts' ? pr.x - b : (pr.anker === 'mitte' ? pr.x - b / 2 : pr.x);
+        const ueber = Math.max(pan.x - li, (li + b) - (pan.x + pan.breite));
+        if (ueber > 1) { n++; groester = Math.max(groester, Math.round(ueber)); }
+      }
+    }
+    return { n, groester, breite: plan.panels[0].breite };
+  }, { profile, frames: [await stehPose()], stufe, faktor: (Math.round(strip.PANEL_BREITE_PX * stufe)) / strip.PANEL_BREITE_PX });
+  assert.ok(gegenprobe.n > 0,
+    `die Überlaufmessung greift nicht: mit unveränderter Schrift auf ${gegenprobe.breite} px breiten `
+    + `Panels (${stufe} Stufe) werden ${gegenprobe.n} Etiketten als überlaufend gemeldet, größter `
+    + `Überstand ${gegenprobe.groester} px — bei 0 wäre der Positivfall oben wertlos`);
 });

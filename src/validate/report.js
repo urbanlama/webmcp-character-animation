@@ -53,10 +53,15 @@ import { istInt } from '../contracts/validate.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Höchste Frame-Zahl, die in einen Bildstreifen geht. Begrenzt durch den
- *  Bildstreifen selbst: AP9 nimmt höchstens 12 Frames pro Antwort an
- *  (FRAMES_MAX in src/render/strip.js, Antwortbudget 512 KB). Wird der Wert
- *  angepasst, muss er mit FRAMES_MAX dort abgeglichen werden. */
-export const MAX_BILDFRAMES = 12;
+ *  Bildstreifen selbst: AP9 kürzt ab PANELS_ZEIT_MAX Panels (24 — gemessen
+ *  1133 ms für 24, 2151 ms für 48 Panels, src/render/strip.js
+ *  PANELS_ZEIT_MAX) und das Bytebudget 512 KB nimmt nur bis zu 12 Panels je
+ *  2 Ansichten; 12 Frames × 2 Ansichten ergeben gemessen 527 KB Antwort und
+ *  wurden NACH dem Rendern abgewiesen. 6 Frames × 2 Ansichten bleiben mit
+ *  Base64 zuzüglich Bericht messbar unter beiden Grenzen. Wird der Wert
+ *  angepasst, muss er mit PANELS_ZEIT_MAX und FRAMES_MAX in src/render/strip.js
+ *  abgeglichen werden (Messskript: spikes/tmp-strip-zeit.mjs). */
+export const MAX_BILDFRAMES = 6;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helfer

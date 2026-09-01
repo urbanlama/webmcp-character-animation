@@ -7,6 +7,16 @@
 //   2. Antizipation    — Gegenbewegung vor der Hauptbewegung vorhanden
 //   3. Ruckfreiheit    — keine Sprünge in der Beschleunigung
 //
+// Gelesen wird frame.positions — dasselbe Feld wie in src/validate/physics.js
+// (Auftrag "Drei Nahtstellen", Punkt 2: ein gelöster Frame trägt seine
+// Knochendaten unter einem Namen, nicht unter zwei).
+//
+// JEDER Befund nennt einen Ort, an dem der Mensch hinsehen kann: `frame` (die
+// Frame-Zahl, in der er gilt) und `part` (worüber er spricht; für Befunde über
+// den ganzen Körper das Wort KOERPER unten). Wo zusätzlich eine Strecke gemeint
+// ist, stehen `frames` bzw. `von`/`bis` daneben. Die Zahl im Meldungstext ist
+// Prosa, das Datenfeld ist die Wahrheit.
+//
 // Grundregel (AGENTS.md, Regel 1): kein Körpermaß im Code. Alle Schwellen sind
 // Verfahrensparameter als BENANNTE PARAMETER unten, an EINER Stelle, mit
 // Begründung und in Anteilen der Körperhöhe profile.world.height. Die
@@ -100,6 +110,14 @@ export const RUCK_FENSTER_FRAMES = 5;
  *  Liste steht in der Zählung der Meldung (Anzahl, längster Block). */
 export const BEANSTANDETE_FRAMES_MAX = 20;
 
+/** Der Geltungsbereich "ganzer Körper" für Befunde, die keinem einzelnen
+ *  Knochen gehören: Bewegungsdichte und Antizipation sagen etwas über die
+ *  Timeline als Ganzes. Der Bezeichner ist ein Wort, kein gemessener Punkt —
+ *  er beschreibt, worüber der Befund spricht, und steht überall gleich, damit
+ *  sich nicht jede Prüfschicht einen eigenen Sammelbegriff ausdenkt.
+ *  (Festlegung aus dem Auftrag "Drei Nahtstellen", Punkt 3.) */
+export const KOERPER = 'koerper';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Eingabevertrag
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,7 +126,7 @@ function fehler(text) { throw new Error('Stilprüfung abgelehnt: ' + text); }
 
 function punktVon(frame, part) {
   if (part === 'com') return frame.com ?? null;
-  return frame.bones?.[part] ?? null;
+  return frame.positions?.[part] ?? null;
 }
 
 function pruefeEingaben(profile, frames, fps) {
@@ -124,8 +142,8 @@ function pruefeEingaben(profile, frames, fps) {
   }
   frames.forEach((f, i) => {
     if (!f || typeof f !== 'object') fehler(`frames[${i}] = ${JSON.stringify(f)}: erwartet Objekt`);
-    if (!f.bones || typeof f.bones !== 'object') {
-      fehler(`frames[${i}].bones fehlt: erwartet { Knochen-id: [x,y,z] } in Metern`);
+    if (!f.positions || typeof f.positions !== 'object') {
+      fehler(`frames[${i}].positions fehlt: erwartet { Knochen-id: [x,y,z] } in Metern — dasselbe Feld wie in src/validate/physics.js (BRETT.md, Eintrag AP5)`);
     }
   });
 }
@@ -147,7 +165,7 @@ function messeBewegungsdichte(frames, schwelleM) {
   const toteFrames = [];
   for (let i = 1; i < frames.length; i++) {
     let maxVerschiebung = 0;
-    const prev = frames[i - 1].bones, curr = frames[i].bones;
+    const prev = frames[i - 1].positions, curr = frames[i].positions;
     for (const boneName in curr) {
       const a = prev[boneName], b = curr[boneName];
       if (!a) continue;
@@ -167,8 +185,9 @@ function messeBewegungsdichte(frames, schwelleM) {
  * Antizipation: hat sich das benannte Körperteil im Zeitfenster VOR der
  * Hauptbewegung ENTMEGEN der angegebenen Richtung bewegt?
  * hauptbewegung: { part, abFrame, richtung: [x,y,z] }.
- * Rückgabe: { gefunden, betragAnteil } — größte Gegenbewegung im Fenster,
- * in Anteilen der Körperhöhe.
+ * Rückgabe: { gefunden, betragAnteil, von, bis } — größte Gegenbewegung im
+ * Fenster in Anteilen der Körperhöhe, dazu der durchsuchte Frame-Bereich
+ * (Antizipation hat keinen einzelnen Frame, aber einen Bereich).
  */
 function messeAntizipation(frames, hauptbewegung, fps, hoehe, minAnteil, fensterSek) {
   const part = hauptbewegung.part;
@@ -192,6 +211,10 @@ function messeAntizipation(frames, hauptbewegung, fps, hoehe, minAnteil, fenster
 
   const fensterFrames = Math.max(1, Math.round(fensterSek * fps));
   const von = Math.max(1, ab - fensterFrames);
+  // Der Bereich, in dem die Gegenbewegung liegen musste: vom Fensteranfang bis
+  // zum Beginn der Hauptbewegung. Die Verschiebungen selbst werden von Frame
+  // (von-1) nach Frame (ab-1) gerechnet, von >= 1 hält den Anfang bei >= 0.
+  const bereich = { von: von - 1, bis: ab };
 
   let maxGegen = 0;   // größte Gegenbewegung im Fenster, in Metern
   for (let i = von; i < ab; i++) {
@@ -204,7 +227,11 @@ function messeAntizipation(frames, hauptbewegung, fps, hoehe, minAnteil, fenster
     const proj = (p1[0]-p0[0]) * rN[0] + (p1[1]-p0[1]) * rN[1] + (p1[2]-p0[2]) * rN[2];
     if (-proj > maxGegen) maxGegen = -proj;
   }
-  return { gefunden: maxGegen / hoehe >= minAnteil, betragAnteil: maxGegen / hoehe };
+  return {
+    gefunden: maxGegen / hoehe >= minAnteil,
+    betragAnteil: maxGegen / hoehe,
+    ...bereich,
+  };
 }
 
 // ── 3. Ruckfreiheit ──────────────────────────────────────────────────────────
@@ -225,8 +252,8 @@ function messeRuck(frames, hoehe, grenze, medianMin, fenster, ausnahmen) {
   const disp = [];
   for (let t = 1; t < frames.length; t++) {
     const m = new Map();
-    for (const boneName in frames[t].bones) {
-      const a = frames[t-1].bones[boneName], b = frames[t].bones[boneName];
+    for (const boneName in frames[t].positions) {
+      const a = frames[t-1].positions[boneName], b = frames[t].positions[boneName];
       if (!a || !b) continue;
       m.set(boneName, Math.hypot(b[0]-a[0], b[1]-a[1], b[2]-a[2]));
     }
@@ -265,7 +292,9 @@ function messeRuck(frames, hoehe, grenze, medianMin, fenster, ausnahmen) {
  *
  * profile: RigProfile gemäß plan.md 5.1 (world.height Referenz aller Schwellen)
  * frames:  gelöste Frames aus plan.md 5.2 —
- *          [{ bones: { Knochen-id: [x,y,z] in Metern, Weltkoordinaten } }]
+ *          [{ positions: { Knochen-id: [x,y,z] in Metern, Weltkoordinaten } }]
+ *          Dasselbe Feld wie in src/validate/physics.js: ein gelöster Frame
+ *          trägt seine Knochendaten in `positions` (BRETT.md, Eintrag AP5).
  * fps:     Framerate der Timeline in Hz (timeline.fps)
  * options: {
  *   hauptbewegung: { part, abFrame, richtung }  — für die Antizipationsprüfung;
@@ -313,25 +342,43 @@ export function pruefeStil(profile, frames, fps, options = {}) {
   const verglichene = frames.length - 1;
   const dichteBereinigt = verglichene ? (verglichene - toteOhneHalt.length) / verglichene : 0;
 
-  // Längster zusammengehöriger toter Block (ohne Halt-Ausnahmen):
+  // Längster zusammengehöriger toter Block (ohne Halt-Ausnahmen) — samt seinem
+  // Anfang. Der Anfang ist der Ort, an den ein Mensch scrollt: der erste Frame,
+  // in dem nichts mehr passiert.
   let laengsterBlock = 0, jetzigerBlock = 0;
+  let blockAnfang = 0, laengsterBlockAnfang = 0;
   for (let i = 1; i < frames.length; i++) {
     if (toteOhneHaltSet.has(i)) {
+      if (jetzigerBlock === 0) blockAnfang = i;
       jetzigerBlock++;
-      laengsterBlock = Math.max(laengsterBlock, jetzigerBlock);
+      if (jetzigerBlock > laengsterBlock) {
+        laengsterBlock = jetzigerBlock;
+        laengsterBlockAnfang = blockAnfang;
+      }
     } else {
       jetzigerBlock = 0;
     }
   }
+  // Befundort: der erste Frame des längsten bewegungslosen Blocks. Es gibt
+  // genau einen Fall ohne jeden toten Block: eine Timeline aus 1 Frame hat 0
+  // Vergleiche, die Dichte ist per Definition 0. Dann ist der längste
+  // bewegungslose Block die Timeline selbst — Frame 0, gemessen, nicht geraten.
+  const dichteFrame = laengsterBlock > 0 ? laengsterBlockAnfang : 0;
 
   if (dichteBereinigt < DICHTE_MIN || laengsterBlock > TOTE_FRAMES_BLOCK_MAX) {
     issues.push({
       kind: 'bewegungsdichte',
+      frame: dichteFrame,
+      part: KOERPER,
       value: +dichteBereinigt.toFixed(3),
       threshold: DICHTE_MIN,
       unit: 'anteil',
-      message: `nur ${deutsch(dichteBereinigt * 100, 0)} % der Frames enthalten Bewegung über der Schwelle von ${deutsch(BEWEGUNG_SCHWELLE_ANTEIL * 100, 1)} % der Körperhöhe, erwartet mindestens ${deutsch(DICHTE_MIN * 100, 0)} % und ein toter Block von höchstens ${TOTE_FRAMES_BLOCK_MAX} Frames (gemessen: ${toteOhneHalt.length} tote Frames, längster Block ${laengsterBlock}, ${haltFrames.size} davon als Halt ausgenommen)`,
+      message: `nur ${deutsch(dichteBereinigt * 100, 0)} % der Frames zwischen Frame 0 und ${frames.length - 1} enthalten Bewegung über der Schwelle von ${deutsch(BEWEGUNG_SCHWELLE_ANTEIL * 100, 1)} % der Körperhöhe, erwartet mindestens ${deutsch(DICHTE_MIN * 100, 0)} % und ein toter Block von höchstens ${TOTE_FRAMES_BLOCK_MAX} Frames (gemessen: ${toteOhneHalt.length} tote Frames, längster Block ${laengsterBlock} Frames ab Frame ${dichteFrame}, ${haltFrames.size} davon als Halt ausgenommen)`,
+      // Ort: der einzelne Frame zum Hinsehen (frame) plus die toten Frames
+      // selbst und der Bereich, in dem sie gemessen wurden.
       frames: toteOhneHalt.slice(0, BEANSTANDETE_FRAMES_MAX),
+      von: 0,
+      bis: frames.length - 1,
     });
   }
 
@@ -342,10 +389,20 @@ export function pruefeStil(profile, frames, fps, options = {}) {
     if (!ant.gefunden) {
       issues.push({
         kind: 'antizipation',
+        // Befundort: der Frame der HAUPTBEWEGUNG, vor dem die Gegenbewegung
+        // fehlt. Die Prüfung kennt ihn — ohne ihn könnte sie das Fenster davor
+        // nicht untersuchen. Der Geltungsbereich ist der ganze Körper, nicht
+        // der geprüfte Knochen; der steht im Meldungstext.
+        frame: options.hauptbewegung.abFrame,
+        part: KOERPER,
         value: +ant.betragAnteil.toFixed(3),
         threshold: ANTIZIPATION_MIN_ANTEIL,
         unit: 'koerperhoehen',
-        message: `keine Gegenbewegung von ${options.hauptbewegung.part} vor Frame ${options.hauptbewegung.abFrame}: die größte Gegenbewegung im ${ANTIZIPATION_FENSTER_SEK} Sekunden Fenster beträgt ${deutsch(ant.betragAnteil * 100, 1)} % der Körperhöhe, erwartet mindestens ${deutsch(ANTIZIPATION_MIN_ANTEIL * 100, 0)} %`,
+        message: `keine Gegenbewegung von ${options.hauptbewegung.part} vor Frame ${options.hauptbewegung.abFrame}: die größte Gegenbewegung im ${ANTIZIPATION_FENSTER_SEK} Sekunden Fenster (Frame ${ant.von} bis ${ant.bis}) beträgt ${deutsch(ant.betragAnteil * 100, 1)} % der Körperhöhe, erwartet mindestens ${deutsch(ANTIZIPATION_MIN_ANTEIL * 100, 0)} %`,
+        // Zusätzlich der gemessene Bereich: das Fenster, in dem die
+        // Gegenbewegung liegen musste, bis zum Frame der Hauptbewegung.
+        von: ant.von,
+        bis: ant.bis,
       });
     }
   } else {
@@ -364,6 +421,10 @@ export function pruefeStil(profile, frames, fps, options = {}) {
   for (const v of [...schlimmsteProFrame.values()].sort((x, y) => x.frame - y.frame)) {
     issues.push({
       kind: 'ruck',
+      // Punktbefund: Der Sprung geschieht in EINEM Frame an EINEM Knochen. Die
+      // Frame-Zahl stand früher nur im Meldungstext und gehört ins Datenfeld —
+      // der Vertrag aus src/contracts/validation-report.js verlangt sie dort.
+      frame: v.frame,
       value: +v.wert.toFixed(1),
       threshold: RUCK_VERHAELTNIS_MAX,
       unit: 'verhaeltnis',

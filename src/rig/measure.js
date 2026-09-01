@@ -16,6 +16,13 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
+// Rollen kommen aus der Erkennung (AP3), nicht aus Knochennamen. detect.js
+// vergibt sie namensunabhängig über Geometrie und Skeletttopologie; diese Datei
+// liest davon nur das Ergebnis und misst. Ein Namensschema wäre keine Messung
+// (AGENTS.md, Regel 1) — vor dieser Kopplung lief die Vermessung ausschließlich
+// auf Rigs mit Mixamo-Benennung.
+import { detectRig, PARAMS as ERKENNUNG } from './detect.js';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // BENANNTE PARAMETER (Verfahrensparameter, keine Körpermaße)
 // plan.md Kapitel 4: alle Verfahrensparameter stehen an EINER Stelle, mit
@@ -66,53 +73,46 @@ export const SOLE_LENGTH_MIN = 0.05;
 // Semantische Segmente und Segmentzuordnung
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Segmentliste mit Knochen-Suffixen (hinter „mixamorig“), von → bis.
+/** Segmentliste in ROLLEN, von → bis. Die Rollen vergibt die Erkennung
+ *  (detect.js ROLLEN); die Kettenenden („ende_…“) sind keine Rollen, sondern
+ *  werden topologisch aus der Rolle abgeleitet — siehe kettenEnde().
  *  Reihenfolge = Reihenfolge im Profil. */
 export const SEGMENTS = [
-  { id: 'torso',      from: 'Hips',            to: 'Neck'             },
-  { id: 'head',       from: 'Neck',            to: 'HeadTop_End'      },
-  { id: 'upperarm_l', from: 'LeftArm',         to: 'LeftForeArm'      },
-  { id: 'forearm_l',  from: 'LeftForeArm',     to: 'LeftHand'         },
-  { id: 'hand_l',     from: 'LeftHand',        to: 'LeftHandMiddle3'  },
-  { id: 'upperarm_r', from: 'RightArm',        to: 'RightForeArm'     },
-  { id: 'forearm_r',  from: 'RightForeArm',    to: 'RightHand'        },
-  { id: 'hand_r',     from: 'RightHand',       to: 'RightHandMiddle3' },
-  { id: 'thigh_l',    from: 'LeftUpLeg',       to: 'LeftLeg'          },
-  { id: 'shin_l',     from: 'LeftLeg',         to: 'LeftFoot'         },
-  { id: 'foot_l',     from: 'LeftFoot',        to: 'LeftToe_End'      },
-  { id: 'thigh_r',    from: 'RightUpLeg',      to: 'RightLeg'         },
-  { id: 'shin_r',     from: 'RightLeg',        to: 'RightFoot'        },
-  { id: 'foot_r',     from: 'RightFoot',       to: 'RightToe_End'     },
+  { id: 'torso',      from: 'pelvis',    to: 'neck'         },
+  { id: 'head',       from: 'neck',      to: 'ende_kopf'    },
+  { id: 'upperarm_l', from: 'arm_l',     to: 'forearm_l'    },
+  { id: 'forearm_l',  from: 'forearm_l', to: 'hand_l'       },
+  { id: 'hand_l',     from: 'hand_l',    to: 'ende_hand_l'  },
+  { id: 'upperarm_r', from: 'arm_r',     to: 'forearm_r'    },
+  { id: 'forearm_r',  from: 'forearm_r', to: 'hand_r'       },
+  { id: 'hand_r',     from: 'hand_r',    to: 'ende_hand_r'  },
+  { id: 'thigh_l',    from: 'thigh_l',   to: 'shin_l'       },
+  { id: 'shin_l',     from: 'shin_l',    to: 'foot_l'       },
+  { id: 'foot_l',     from: 'foot_l',    to: 'ende_fuss_l'  },
+  { id: 'thigh_r',    from: 'thigh_r',   to: 'shin_r'       },
+  { id: 'shin_r',     from: 'shin_r',    to: 'foot_r'       },
+  { id: 'foot_r',     from: 'foot_r',    to: 'ende_fuss_r'  },
 ];
 
-/** Knochenpräfix (hinter „mixamorig“) → Segment. Längster Treffer gewinnt,
- *  damit „LeftForeArm…“ über „LeftArm…“ siegt. */
-const SEGMENT_BY_BONE_PREFIX = [
-  ['HeadTop_End', 'head'], ['LeftEye', 'head'], ['RightEye', 'head'], ['Head', 'head'], ['Neck', 'head'],
-  ['Hips', 'torso'], ['Spine', 'torso'], ['LeftShoulder', 'torso'], ['RightShoulder', 'torso'],
-  ['LeftArm', 'upperarm_l'], ['LeftForeArm', 'forearm_l'], ['LeftHand', 'hand_l'],
-  ['RightArm', 'upperarm_r'], ['RightForeArm', 'forearm_r'], ['RightHand', 'hand_r'],
-  ['LeftUpLeg', 'thigh_l'], ['LeftLeg', 'shin_l'], ['LeftFoot', 'foot_l'], ['LeftToe', 'foot_l'],
-  ['RightUpLeg', 'thigh_r'], ['RightLeg', 'shin_r'], ['RightFoot', 'foot_r'], ['RightToe', 'foot_r'],
+/** Kettenenden, die kein semantisches Gelenk sind (Scheitel, Fingerspitze,
+ *  Zehenspitze). Sie dienen als Messpunkt am Ende einer Kette und werden vom
+ *  ersten verfügbaren Startpunkt der Liste aus abgestiegen. */
+const KETTENENDEN = [
+  { id: 'ende_kopf',   ab: ['head', 'neck', 'chest', 'spine'] },
+  { id: 'ende_hand_l', ab: ['hand_l', 'forearm_l', 'arm_l'] },
+  { id: 'ende_hand_r', ab: ['hand_r', 'forearm_r', 'arm_r'] },
+  { id: 'ende_fuss_l', ab: ['toe_l', 'foot_l'] },
+  { id: 'ende_fuss_r', ab: ['toe_r', 'foot_r'] },
 ];
-
-const MIXAMO = 'mixamorig';
-
-function segOfBone(boneName) {
-  let best = null, bestLen = -1;
-  for (const [prefix, seg] of SEGMENT_BY_BONE_PREFIX) {
-    const full = MIXAMO + prefix;
-    if (boneName.startsWith(full) && prefix.length > bestLen) { best = seg; bestLen = prefix.length; }
-  }
-  return best;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Gelenk-Katalog: benannte Freiheitsgrade mit semantischer Richtung.
+//   bone  : ROLLE des Gelenkknochens, end: Rolle oder Kettenende. Welcher
+//           Knochen das ist, sagt die Erkennung — hier steht kein Name.
 //   axis  : Achse der Gelenkrotation im Knochen-lokalen Bezugssystem der
 //           Bind-Pose (x nach Charakter-links, y hoch, z vorn — am Modell
-//           gemessen; alle Mixamo-Knochen dieser Datei stehen in der Bind-Pose
-//           ungedreht, ihre lokale Achse ist also die Weltachse).
+//           gemessen; die Abtastung dreht die lokale Achse in die anliegende
+//           Bind-Pose-Orientierung des Knochens, siehe worldAxis unten).
 //   moves : Weltachse, auf der die Wirkung am Kettenende auftritt. Sie ist
 //           IMMER eine andere als axis: eine Drehung um eine Achse bewegt
 //           Punkte parallel zu dieser Achse nicht. Der Name des
@@ -124,6 +124,19 @@ function segOfBone(boneName) {
 //           keine Messung.
 //   mirror: Erwartung bezieht sich auf eine nach links/rechts zeigende
 //           Richtung; die rechte Seite dreht die Erwartung um (Spiegelung).
+//   limit : anatomische Standardgrenzen in Grad [min, max], gültig für den
+//           NORMALISIERTEN Wert des Freiheitsgrads — denselben, den der Agent
+//           setzt. Sie gelten auf BEIDEN Seiten identisch (arm_l.lift und
+//           arm_r.lift haben dasselbe [min, max]); die links/rechts-Spiegelung
+//           sitzt allein im gemessenen Vorzeichen. Vor der Normierung waren die
+//           Grenzen ins Rohtags-Vorzeichen gespiegelt (arm_r [-170, 40]): ein
+//           Agent, der beide Arme mit +80 hebt, wurde rechts auf 40 geklemmt,
+//           weil der Klemmvergleich (handlers.js set_joint/set_pose, ik.js
+//           an_grenze) den Agenten-Wert gegen diese Rohtags-Grenzen rechnet.
+//   richtung : ein Satz Alltagssprache, was ein POSITIVER Wert tut. Fester
+//           Bestandteil jedes dof-Datensatzes; kommt über describe_rig beim
+//           Agenten an. Zusammen mit den ungespiegelten Grenzen beseitigt er
+//           die Raterei, in welche Richtung ein Winkel wirkt.
 //   twist : Rotation um die eigene Kettenachse. Erzeugt am Kettenende keine
 //           messbare Bewegung (plan.md 3.5) → signSource 'nicht_messbar'.
 //   limit : anatomische Standardgrenzen in Grad [min, max]; limitSource bleibt
@@ -142,64 +155,114 @@ function segOfBone(boneName) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const JOINT_CATALOG = [
-  { joint: 'pelvis',     bone: 'Hips',            end: 'HeadTop_End', dofs: {
-      tilt:  { axis: 'x', moves: 'z', want: +1, mirror: true,  limit: [-40, 40] },
-      roll:  { axis: 'z', moves: 'x', want: +1, mirror: false, limit: [-30, 30] },
-      turn:  { axis: 'y', want: +1, mirror: false, limit: [-90, 90], twist: true } } },
-  { joint: 'spine',      bone: 'Spine',           end: 'HeadTop_End', dofs: {
-      bend:  { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-25, 35] },
-      side:  { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-25, 25] },
-      turn:  { axis: 'y', want: +1, mirror: false, limit: [-25, 25], twist: true } } },
-  { joint: 'neck',       bone: 'Neck',            end: 'HeadTop_End', dofs: {
-      bend:  { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-40, 40] },
-      side:  { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-30, 30] },
-      turn:  { axis: 'y', want: +1, mirror: false, limit: [-45, 45], twist: true } } },
-  { joint: 'head',       bone: 'Head',            end: 'HeadTop_End', dofs: {
-      bend:  { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-35, 30] },
-      side:  { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-30, 30] },
-      turn:  { axis: 'y', want: +1, mirror: false, limit: [-45, 45], twist: true } } },
-  { joint: 'shoulder_l', bone: 'LeftShoulder',    end: 'LeftHandMiddle3', dofs: {
-      shrug: { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-20, 25] },
-      fwd:   { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-25, 25] } } },
-  { joint: 'shoulder_r', bone: 'RightShoulder',   end: 'RightHandMiddle3', dofs: {
-      shrug: { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-25, 20] },
-      fwd:   { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-25, 25] } } },
-  { joint: 'arm_l',      bone: 'LeftArm',         end: 'LeftHandMiddle3', dofs: {
-      lift:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-40, 170] },
-      swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-130, 90] },
-      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true } } },
-  { joint: 'arm_r',      bone: 'RightArm',        end: 'RightHandMiddle3', dofs: {
-      lift:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-170, 40] },
-      swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-90, 130] },
-      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true } } },
-  { joint: 'elbow_l',    bone: 'LeftForeArm',     end: 'LeftHandMiddle3', dofs: {
-      bend:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-2, 150] },
-      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true } } },
-  { joint: 'elbow_r',    bone: 'RightForeArm',    end: 'RightHandMiddle3', dofs: {
-      bend:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-150, 2] },
-      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true } } },
-  { joint: 'hip_l',      bone: 'LeftUpLeg',       end: 'LeftToe_End', dofs: {
-      flex:   { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-30, 130] },
-      spread: { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-45, 30] },
-      twist:  { axis: 'y', want: +1, mirror: false, limit: [-45, 45], twist: true } } },
-  { joint: 'hip_r',      bone: 'RightUpLeg',      end: 'RightToe_End', dofs: {
-      flex:   { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-30, 130] },
-      spread: { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-30, 45] },
-      twist:  { axis: 'y', want: +1, mirror: false, limit: [-45, 45], twist: true } } },
-  { joint: 'knee_l',     bone: 'LeftLeg',         end: 'LeftToe_End', dofs: {
-      bend: { axis: 'x', moves: 'z', want: -1, mirror: false, limit: [0, 150] } } },
-  { joint: 'knee_r',     bone: 'RightLeg',        end: 'RightToe_End', dofs: {
-      bend: { axis: 'x', moves: 'z', want: -1, mirror: false, limit: [0, 150] } } },
-  { joint: 'ankle_l',    bone: 'LeftFoot',        end: 'LeftToe_End', dofs: {
-      point: { axis: 'x', moves: 'y', want: -1, mirror: false, limit: [-45, 55] },
-      tilt:  { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-25, 25] } } },
-  { joint: 'ankle_r',    bone: 'RightFoot',       end: 'RightToe_End', dofs: {
-      point: { axis: 'x', moves: 'y', want: -1, mirror: false, limit: [-45, 55] },
-      tilt:  { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-25, 25] } } },
-  { joint: 'toes_l',     bone: 'LeftToeBase',     end: 'LeftToe_End', dofs: {
-      bend: { axis: 'x', moves: 'y', want: -1, mirror: false, limit: [-40, 60] } } },
-  { joint: 'toes_r',     bone: 'RightToeBase',    end: 'RightToe_End', dofs: {
-      bend: { axis: 'x', moves: 'y', want: -1, mirror: false, limit: [-40, 60] } } },
+  { joint: 'pelvis',     bone: 'pelvis',    end: 'ende_kopf', dofs: {
+      tilt:  { axis: 'x', moves: 'z', want: +1, mirror: true,  limit: [-40, 40],
+               richtung: 'tilt: + neigt das Becken nach vorn, - nach hinten' },
+      roll:  { axis: 'z', moves: 'x', want: +1, mirror: false, limit: [-30, 30],
+               richtung: 'roll: + kippt das Becken nach links, - nach rechts' },
+      turn:  { axis: 'y', want: +1, mirror: false, limit: [-90, 90], twist: true,
+               richtung: 'turn: + dreht das Becken nach links, - nach rechts' } } },
+  { joint: 'spine',      bone: 'spine',     end: 'ende_kopf', dofs: {
+      bend:  { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-25, 35],
+               richtung: 'bend: + krümmt die Wirbelsäule nach vorn, - streckt sie nach hinten' },
+      side:  { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-25, 25],
+               richtung: 'side: + beugt die Wirbelsäule nach links, - nach rechts' },
+      turn:  { axis: 'y', want: +1, mirror: false, limit: [-25, 25], twist: true,
+               richtung: 'turn: + dreht Oberkörper und Kopf nach links, - nach rechts' } } },
+  { joint: 'neck',       bone: 'neck',      end: 'ende_kopf', dofs: {
+      bend:  { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-40, 40],
+               richtung: 'bend: + neigt den Kopf nach vorn, - nach hinten' },
+      side:  { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-30, 30],
+               richtung: 'side: + neigt den Kopf zur linken Schulter, - zur rechten' },
+      turn:  { axis: 'y', want: +1, mirror: false, limit: [-45, 45], twist: true,
+               richtung: 'turn: + dreht den Kopf nach links, - nach rechts' } } },
+  { joint: 'head',       bone: 'head',      end: 'ende_kopf', dofs: {
+      bend:  { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-35, 30],
+               richtung: 'bend: + neigt den Kopf nach vorn, - nach hinten' },
+      side:  { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-30, 30],
+               richtung: 'side: + neigt den Kopf nach links, - nach rechts' },
+      turn:  { axis: 'y', want: +1, mirror: false, limit: [-45, 45], twist: true,
+               richtung: 'turn: + dreht den Kopf nach links, - nach rechts' } } },
+  { joint: 'shoulder_l', bone: 'shoulder_l', end: 'ende_hand_l', dofs: {
+      shrug: { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-20, 25],
+               richtung: 'shrug: + hebt die linke Schulter nach oben, - senkt sie' },
+      fwd:   { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-25, 25],
+               richtung: 'fwd: + schiebt die linke Schulter nach vorn, - nach hinten' } } },
+  { joint: 'shoulder_r', bone: 'shoulder_r', end: 'ende_hand_r', dofs: {
+      shrug: { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-20, 25],
+               richtung: 'shrug: + hebt die rechte Schulter nach oben, - senkt sie' },
+      fwd:   { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-25, 25],
+               richtung: 'fwd: + schiebt die rechte Schulter nach vorn, - nach hinten' } } },
+  // Bezugspunkt ist die Bind-Pose, und die ist eine T-Pose: lift 0 heisst Arm
+  // WAAGERECHT. Arme am Koerper sind -90, senkrecht nach oben +90.
+  //
+  // Die Grenzen standen auf [-40, 170] und waren an beiden Enden falsch. Unten:
+  // bei -40 stehen die Arme noch 50 Grad abgespreizt — die Figur konnte sie in
+  // KEINER Pose herunternehmen. Oben: 170 sind 80 Grad hinter die Senkrechte,
+  // dort klappt der Arm nach hinten weg. Im Agentenlauf gemessen: der Agent
+  // fuhr auf lift 142 und bekam genau das.
+  { joint: 'arm_l',      bone: 'arm_l',     end: 'ende_hand_l', dofs: {
+      lift:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-95, 100],
+               richtung: 'lift: + hebt den linken Arm nach oben, - senkt ihn. '
+                 + '0 = waagerecht (wie in der T-Pose), -90 = am Körper, +90 = senkrecht nach oben' },
+      swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-130, 90],
+               richtung: 'swing: + schwingt den linken Arm nach vorn, - nach hinten' },
+      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
+               richtung: 'twist: + dreht den linken Arm um seine eigene Achse (vorwärts rollend), - rückwärts' } } },
+  { joint: 'arm_r',      bone: 'arm_r',     end: 'ende_hand_r', dofs: {
+      lift:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-95, 100],
+               richtung: 'lift: + hebt den rechten Arm nach oben, - senkt ihn. '
+                 + '0 = waagerecht (wie in der T-Pose), -90 = am Körper, +90 = senkrecht nach oben' },
+      swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-130, 90],
+               richtung: 'swing: + schwingt den rechten Arm nach vorn, - nach hinten' },
+      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
+               richtung: 'twist: + dreht den rechten Arm um seine eigene Achse (vorwärts rollend), - rückwärts' } } },
+  { joint: 'elbow_l',    bone: 'forearm_l', end: 'ende_hand_l', dofs: {
+      bend:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-2, 150],
+               richtung: 'bend: + beugt den linken Ellbogen (Hand zum Oberarm), - streckt ihn' },
+      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
+               richtung: 'twist: + dreht den linken Unterraum (Handfläche nach oben), - nach unten' } } },
+  { joint: 'elbow_r',    bone: 'forearm_r', end: 'ende_hand_r', dofs: {
+      bend:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-2, 150],
+               richtung: 'bend: + beugt den rechten Ellbogen (Hand zum Oberarm), - streckt ihn' },
+      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
+               richtung: 'twist: + dreht den rechten Unterarm (Handfläche nach oben), - nach unten' } } },
+  { joint: 'hip_l',      bone: 'thigh_l',   end: 'ende_fuss_l', dofs: {
+      flex:   { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-30, 130],
+                richtung: 'flex: + zieht das linke Bein nach vorn, - führt es nach hinten' },
+      spread: { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-30, 45],
+                richtung: 'spread: + spreizt das linke Bein nach außen, - zieht es zur Körpermitte' },
+      twist:  { axis: 'y', want: +1, mirror: false, limit: [-45, 45], twist: true,
+                richtung: 'twist: + dreht den linken Oberschenkel nach außen, - nach innen' } } },
+  { joint: 'hip_r',      bone: 'thigh_r',   end: 'ende_fuss_r', dofs: {
+      flex:   { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-30, 130],
+                richtung: 'flex: + zieht das rechte Bein nach vorn, - führt es nach hinten' },
+      spread: { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-30, 45],
+                richtung: 'spread: + spreizt das rechte Bein nach außen, - zieht es zur Körpermitte' },
+      twist:  { axis: 'y', want: +1, mirror: false, limit: [-45, 45], twist: true,
+                richtung: 'twist: + dreht den rechten Oberschenkel nach außen, - nach innen' } } },
+  { joint: 'knee_l',     bone: 'shin_l',    end: 'ende_fuss_l', dofs: {
+      bend: { axis: 'x', moves: 'z', want: -1, mirror: false, limit: [0, 150],
+              richtung: 'bend: + beugt das linke Knie nach hinten, - streckt es' } } },
+  { joint: 'knee_r',     bone: 'shin_r',    end: 'ende_fuss_r', dofs: {
+      bend: { axis: 'x', moves: 'z', want: -1, mirror: false, limit: [0, 150],
+              richtung: 'bend: + beugt das rechte Knie nach hinten, - streckt es' } } },
+  { joint: 'ankle_l',    bone: 'foot_l',    end: 'ende_fuss_l', dofs: {
+      point: { axis: 'x', moves: 'y', want: -1, mirror: false, limit: [-45, 55],
+               richtung: 'point: + streckt den linken Fuß nach unten (Spitzfuß), - zieht ihn hoch (Fersenstand)' },
+      tilt:  { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-25, 25],
+               richtung: 'tilt: + kippt den linken Fuß nach außen, - nach innen' } } },
+  { joint: 'ankle_r',    bone: 'foot_r',    end: 'ende_fuss_r', dofs: {
+      point: { axis: 'x', moves: 'y', want: -1, mirror: false, limit: [-45, 55],
+               richtung: 'point: + streckt den rechten Fuß nach unten (Spitzfuß), - zieht ihn hoch (Fersenstand)' },
+      tilt:  { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-25, 25],
+               richtung: 'tilt: + kippt den rechten Fuß nach außen, - nach innen' } } },
+  { joint: 'toes_l',     bone: 'toe_l',     end: 'ende_fuss_l', dofs: {
+      bend: { axis: 'x', moves: 'y', want: -1, mirror: false, limit: [-40, 60],
+              richtung: 'bend: + beugt die linken Zehen nach unten, - hebt sie' } } },
+  { joint: 'toes_r',     bone: 'toe_r',     end: 'ende_fuss_r', dofs: {
+      bend: { axis: 'x', moves: 'y', want: -1, mirror: false, limit: [-40, 60],
+              richtung: 'bend: + beugt die rechten Zehen nach unten, - hebt sie' } } },
 ];
 
 /** Einheitsvektoren der Weltachsen für die Wirkungsrichtung. */
@@ -208,6 +271,205 @@ const ACHSENVEKTOR = {
   y: new THREE.Vector3(0, 1, 0),
   z: new THREE.Vector3(0, 0, 1),
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rollen: was welcher Knochen ist, kommt aus der Erkennung
+//
+// Vorher stand hier ein Namensschema: „mixamorig“ + „LeftFoot“. Damit war jede
+// Messung an ein Benennungsschema gebunden, und ein Modell, dessen Knochen
+// anders heißen, wurde abgelehnt, obwohl seine Geometrie vollständig messbar
+// ist. Gemessen wird jetzt an dem, was detect.js aus Geometrie und Topologie
+// erkennt; Namen tauchen nur noch als Bezeichnung in der Ausgabe auf.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Konfidenzschwellen aus plan.md 5.1, übernommen aus der Erkennung, damit
+ *  beide Module dieselbe Grenze meinen: ab 0,9 sicher, zwischen 0,5 und 0,9
+ *  wird der Mensch gefragt, darunter gibt es keine Rolle. */
+export const ROLLE_SICHER = ERKENNUNG.sicherAb;
+export const ROLLE_MINDESTENS = ERKENNUNG.fragenAb;
+
+/** Anteil des längsten Kettenglieds, unter dem ein blattständiger Knochen am
+ *  Kettenende ein reiner Markerknochen ist und nicht als Messpunkt zählt.
+ *  Derselbe Wert wie ERKENNUNG.fingerKuerze — dieselbe Frage („ist dieses
+ *  Endglied noch Körper oder nur eine Markierung?“), also dieselbe Grenze.
+ *  An Xbot gemessen: der Fingerendpunkt liegt 0,0283 m hinter dem letzten
+ *  Fingerglied, das längste Glied der Handkette misst 0,0953 m — 30 %, also
+ *  Marker. Zehenspitze 0,0928 von 0,1382 m = 67 % und Scheitel 0,1800 von
+ *  0,1800 m = 100 % bleiben Messpunkt. */
+export const MARKER_KUERZE = ERKENNUNG.fingerKuerze;
+
+/** Erkennungsbericht je geladenem Modell, einmal gerechnet. Vier Messwege
+ *  (Segmente, Sohlen, Gelenke, Ruheabstände) brauchen dieselben Rollen; ohne
+ *  Ablage liefe die Erkennung viermal über dieselbe Punktwolke. */
+const berichtCache = new WeakMap();
+
+function erkennungsBericht(gltf, opts = {}) {
+  if (berichtCache.has(gltf)) return berichtCache.get(gltf);
+  const bericht = detectRig(gltf, { file: opts.fileName });
+  berichtCache.set(gltf, bericht);
+  return bericht;
+}
+
+/**
+ * Die Rollen-Korrekturen, die nach der Erkennung durch den Menschen gekommen
+ * sind: opts.roles (direkt) und opts.bestaetigteRollen (Tool-Store) zusammen,
+ * nur die Einträge, die eine ERKANNTE Zuordnung wirklich ändern oder ergänzen.
+ *
+ * Liefert null, wenn nichts abweicht — dann ist das einmal gemessene Profil
+ * bereits das der bestätigten Zuordnung, und ein zweiter Messlauf wäre
+ * Wiederholung, keine Korrektur.
+ *
+ * @returns {object|null} { rolle: knochenName } oder null
+ */
+function rollenDifferenz(bericht, opts = {}) {
+  const vorgaben = Object.assign({}, opts.bestaetigteRollen ?? {}, opts.roles ?? {});
+  const abweichend = {};
+  for (const [rolle, name] of Object.entries(vorgaben)) {
+    const erkannt = bericht.roles[rolle];
+    if (!erkannt || erkannt.bone !== name) abweichend[rolle] = name;
+  }
+  return Object.keys(abweichend).length ? abweichend : null;
+}
+
+/**
+ * Knochen-Objekte unter den ids, die der Erkennungsbericht benutzt.
+ *
+ * Die Erkennung gibt Rollen als id-Strings zurück, nicht als Objekte, und
+ * vergibt bei doppelten oder leeren Namen einen Indexzusatz („bone#7“). Die
+ * Auflösung hier bildet dieselbe Reihenfolge nach — Szenendurchlauf über alle
+ * Bones, Skelettknochen als Rückfall. Sauberer wäre, wenn der Bericht die
+ * Objekte selbst mitgäbe; das ist eine Frage an detect.js, nicht an diese Datei.
+ */
+function knochenNachErkennungsId(gltf, skelettKnochen) {
+  const objs = [];
+  gltf.scene.traverse((o) => { if (o.isBone) objs.push(o); });
+  if (objs.length === 0) objs.push(...skelettKnochen);
+  const zaehlung = new Map();
+  for (const b of objs) zaehlung.set(b.name, (zaehlung.get(b.name) || 0) + 1);
+  const karte = new Map();
+  objs.forEach((o, i) => {
+    const roh = typeof o.name === 'string' ? o.name : '';
+    karte.set(zaehlung.get(roh) > 1 || roh === '' ? `${roh || 'bone'}#${i}` : roh, o);
+  });
+  return karte;
+}
+
+/** Weltposition eines Knochens in der anliegenden (Bind-)Pose. */
+function weltPos(bone) { return bone.getWorldPosition(new THREE.Vector3()); }
+
+/**
+ * Ende der Kette unter einem Knochen, rein topologisch: an jeder Verzweigung
+ * gewinnt der Zweig mit der größten Reichweite (weitester Nachfahre), am Ende
+ * fällt ein reiner Markerknochen weg.
+ *
+ * Warum die größte Reichweite und nicht die größte Tiefe: eine Hand hat fünf
+ * Finger mit gleich vielen Gliedern; entscheiden soll, welcher am weitesten
+ * vom Handgelenk wegreicht — das ist eine Messung, kein Zählwerk. Warum der
+ * Marker am Ende wegfällt: siehe MARKER_KUERZE.
+ *
+ * @returns {{bone: THREE.Bone, glieder: number}} Endknochen und Kettenlänge in
+ *   Gliedern; glieder 0, wenn der Startknochen selbst schon das Ende ist.
+ */
+function kettenEnde(start) {
+  const kette = [];
+  let cur = start;
+  while (true) {
+    const kinder = cur.children.filter((c) => c.isBone);
+    if (kinder.length === 0) break;
+    const pc = weltPos(cur);
+    let best = null, bestReich = -1;
+    for (const k of kinder) {
+      let reich = 0;
+      k.traverse((x) => { if (x.isBone) reich = Math.max(reich, weltPos(x).distanceTo(pc)); });
+      if (reich > bestReich) { bestReich = reich; best = k; }
+    }
+    if (kette.some((g) => g.bone === best)) break;      // Schutz gegen Zyklen
+    kette.push({ bone: best, glied: weltPos(best).distanceTo(pc) });
+    cur = best;
+  }
+  if (kette.length === 0) return { bone: start, glieder: 0 };
+  const laengstes = kette.reduce((m, g) => Math.max(m, g.glied), 0);
+  const letztes = kette[kette.length - 1];
+  const istBlatt = letztes.bone.children.filter((c) => c.isBone).length === 0;
+  if (kette.length > 1 && istBlatt && letztes.glied < MARKER_KUERZE * laengstes) kette.pop();
+  return { bone: kette[kette.length - 1].bone, glieder: kette.length };
+}
+
+/**
+ * Rolle → Knochen für dieses Modell. Quelle ist der Erkennungsbericht; die
+ * Kettenenden kommen topologisch dazu.
+ *
+ * opts.roles: { rolle: 'knochenname' } — die Antwort eines Menschen auf eine
+ * Rückfrage der Erkennung (plan.md 5.1: zwischen 0,5 und 0,9 wird gefragt).
+ * Eine so gesetzte Rolle gilt als bestätigt, Konfidenz 1.
+ *
+ * opts.bestaetigteRollen: dieselbe Form, aber als NACHTRAG — die Zuordnungen,
+ * die der Mensch über confirm_role (src/ui/rollen-bestaetigung.js) festgelegt
+ * hat, NACHDEM die Seite das Modell einmal vermessen hatte. Sie überschreiben
+ * die erkannten Rollen auf dieselbe Weise wie opts.roles; ohne sie bliebe eine
+ * Korrektur kosmetisch (Beleg: spikes/rollen/BEFUND.md, Pfad B).
+ */
+function rollenAufloesen(gltf, skelettKnochen, opts = {}) {
+  const bericht = erkennungsBericht(gltf, opts);
+  const karte = knochenNachErkennungsId(gltf, skelettKnochen);
+  const nachName = new Map(skelettKnochen.map((b) => [b.name, b]));
+  const rollen = new Map();
+
+  for (const [rolle, v] of Object.entries(bericht.roles)) {
+    if (v.confidence < ROLLE_MINDESTENS) continue;
+    const bone = karte.get(v.bone);
+    if (!bone) continue;
+    rollen.set(rolle, { bone, id: v.bone, confidence: v.confidence, quelle: 'erkannt' });
+  }
+
+  // Bestätigungen, die vor der Messung eingegangen sind (Tool-Store), und die
+  // des direkten Aufrufs (opts.roles) gelten beide: Rolle → Konfidenz 1.
+  const vorgaben = Object.assign({}, opts.bestaetigteRollen ?? {}, opts.roles ?? {});
+  for (const [rolle, name] of Object.entries(vorgaben)) {
+    const bone = nachName.get(name) ?? karte.get(name);
+    if (!bone) {
+      throw new Error(`Rollenvorgabe ${rolle}: Knochen „${name}“ gibt es in diesem Skelett mit ${skelettKnochen.length} Knochen nicht`);
+    }
+    rollen.set(rolle, { bone, id: bone.name, confidence: 1.0, quelle: 'bestaetigt' });
+  }
+
+  for (const ende of KETTENENDEN) {
+    for (const ab of ende.ab) {
+      const start = rollen.get(ab);
+      if (!start) continue;
+      const e = kettenEnde(start.bone);
+      rollen.set(ende.id, { bone: e.bone, id: e.bone.name, confidence: start.confidence, quelle: `kettenende(${ab})` });
+      break;
+    }
+  }
+
+  return { rollen, bericht };
+}
+
+/**
+ * Segment je Knochen, topologisch statt über Namen: ein Knochen gehört zu dem
+ * Segment, dessen Startknochen sein nächster Vorfahr (oder er selbst) ist.
+ * Ein Fingerknochen landet damit bei der Hand, ein Wirbel beim Rumpf, ein
+ * Zehenknochen beim Fuß — ohne dass irgendwo „Spine“ oder „Toe“ steht.
+ * Knochen oberhalb des Beckens gehören zu keinem Segment (null), wie zuvor.
+ */
+function segmentDerKnochen(rollen, bones) {
+  const startSegment = new Map();
+  for (const s of SEGMENTS) {
+    const r = rollen.get(s.from);
+    if (r && !startSegment.has(r.bone)) startSegment.set(r.bone, s.id);
+  }
+  const segOf = new Map();
+  for (const b of bones) {
+    let cur = b, seg = null;
+    while (cur) {
+      if (startSegment.has(cur)) { seg = startSegment.get(cur); break; }
+      cur = cur.parent && cur.parent.isBone ? cur.parent : null;
+    }
+    segOf.set(b, seg);
+  }
+  return segOf;
+}
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -339,16 +601,29 @@ function meshHuelle(verts, a, b, stationen = 10, p = RADIUS_PERCENTILE) {
 }
 
 
+/** Der schwächste Beleg einer Rollenzuordnung, als Satz mit Zahl. Die
+ *  Erkennung legt jeder Rolle ihre Faktoren bei ({name, wert, messung}); für
+ *  eine Ablehnung ist der schwächste davon die Begründung. */
+function schwaechsterBeleg(faktoren, achsenWert) {
+  if (!Array.isArray(faktoren) || faktoren.length === 0) return 'kein Beleg beigelegt';
+  const f = faktoren.reduce((m, x) => (x.wert < m.wert ? x : m));
+  if (f.wert >= 0.99) {
+    // Alle Einzelbelege voll: dann kommt der Konfidenzverlust nicht aus dieser
+    // Rolle, sondern aus der Güte der Aufwärtsachse, mit der die Erkennung jede
+    // Konfidenz skaliert. Das gehört in die Meldung, sonst steht dort ein
+    // Beleg mit Wert 1,00 als angeblicher Grund einer Ablehnung.
+    return `alle ${faktoren.length} Rollenbelege voll (${faktoren.map((x) => x.name).join(', ')}),`
+      + ` die Konfidenz sinkt über die Güte der Aufwärtsachse (Achsenwert ${achsenWert})`;
+  }
+  return `${f.name} ${Number(f.wert).toFixed(2)} (${f.messung})`;
+}
+
 function r4(x) { return Number(x.toFixed(4)); }
 function r5(x) { return Number(x.toFixed(5)); }
 
-/** Pflichtrollen (plan.md 5.1): pelvis, foot_l, foot_r. Fehlt eine, wird das
- *  Modell abgelehnt statt geraten. */
-const ROLE_BY_SUFFIX = {
-  pelvis: 'Hips',
-  foot_l: 'LeftFoot',
-  foot_r: 'RightFoot',
-};
+/** Pflichtrollen (plan.md 5.1): fehlt eine, wird das Modell abgelehnt statt
+ *  geraten. Dieselbe Liste wie in der Erkennung. */
+const PFLICHTROLLEN = ['pelvis', 'foot_l', 'foot_r'];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Laden
@@ -378,12 +653,32 @@ export async function loadGLB(buffer) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * collectContext mit nachträglichen Rollenkorrekturen.
+ *
+ * Die Bestätigungen des Menschen (opts.roles und opts.bestaetigteRollen aus
+ * dem Tool-Store) werden gegen die erkannten Rollen des einmal gerechneten
+ * Erkennungsberichts gestellt. Weicht mindestens eine Zuordnung ab, wird der
+ * Kontext mit der korrigierten Rollentabelle NEU gebaut — Vertexbesitze,
+ * Segmentzuordnung, Sohlenseiten und Rollen dann aus der neuen Zuordnung
+ * gemessen (dasselbe Verfahren wie beim ersten Lauf, kein Schätzweg).
+ *
+ * Läuft nur ab, wenn wirklich geändert wurde — ein reines Bestätigen derselben
+ * Zuordnung kostet keinen zweiten Lauf.
+ */
+function contextMitKorrekturen(gltf, opts = {}) {
+  const ctx = collectContext(gltf, opts);
+  const korrektur = rollenDifferenz(ctx.bericht, opts);
+  if (!korrektur) return ctx;
+  return collectContext(gltf, { ...opts, roles: Object.assign({}, opts.roles ?? {}, korrektur) });
+}
+
+/**
  * Sammelt Skeleton, Bind-Pose-Kopie, Vertexpositionen in Weltkoordinaten
  * (Bind-Pose), dominante Segment-Zuordnung je Vertex über die Skin-Gewichte
  * und die bodennahen (Sohlen-)Vertices. Wirft mit Zahl und Grund, wenn das
  * Modell nicht vermessen werden kann.
  */
-function collectContext(gltf) {
+function collectContext(gltf, opts = {}) {
   const scene = gltf && gltf.scene;
   if (!(scene instanceof THREE.Object3D)) {
     throw new Error(`Vermessung abgelehnt: kein Szenen-Objekt im Loader-Ergebnis (Typ ${gltf === null || gltf === undefined ? String(gltf) : typeof gltf})`);
@@ -403,6 +698,12 @@ function collectContext(gltf) {
   skeleton.update();
 
   const byName = new Map(bones.map((b) => [b.name, b]));
+
+  // Rollen zuerst: ohne sie ist kein Vertex einem Segment zuzuordnen. Die
+  // Erkennung lehnt hier ab, wenn das Modell kein aufrechtes zweibeiniges
+  // Skelett ist — mit geometrischer Begründung, nicht mit fehlenden Namen.
+  const { rollen, bericht } = rollenAufloesen(gltf, bones, opts);
+  const segOfBoneObj = segmentDerKnochen(rollen, bones);
 
   const v = new THREE.Vector3();
   const worldVerts = [];
@@ -442,7 +743,7 @@ function collectContext(gltf) {
         const bi = si.getComponent(i, k);
         if (w > bestW) { bestW = w; bestB = bi; }
       }
-      segOfVertex.push(bestW >= MIN_DOMINANT_WEIGHT ? segOfBone(bones[bestB].name) : null);
+      segOfVertex.push(bestW >= MIN_DOMINANT_WEIGHT ? (segOfBoneObj.get(bones[bestB]) ?? null) : null);
     }
   }
 
@@ -454,8 +755,8 @@ function collectContext(gltf) {
 
   // Bodennahe Vertices, aufgeteilt auf linke und rechte Körperseite.
   const soleTolMeters = height * SOLE_TOLERANCE;
-  const footL = byName.get(MIXAMO + 'LeftFoot') || null;
-  const footR = byName.get(MIXAMO + 'RightFoot') || null;
+  const footL = rollen.has('foot_l') ? rollen.get('foot_l').bone : null;
+  const footR = rollen.has('foot_r') ? rollen.get('foot_r').bone : null;
   const soleVertsL = [], soleVertsR = [];
   if (footL && footR) {
     const fl = footL.getWorldPosition(new THREE.Vector3());
@@ -469,6 +770,7 @@ function collectContext(gltf) {
 
   return {
     scene, mesh, skeleton, bones, byName,
+    rollen, bericht,
     vertexCount, worldVerts, segOfVertex,
     minY, maxY, height,
     soleTolMeters,
@@ -496,17 +798,31 @@ function measureSegments(ctx, opts = {}) {
   const segments = [];
   const massBySeg = new Map();
   const comBySeg = new Map();
+  const achsen = new Map();
+  const uebersprungen = [];
 
   for (const s of SEGMENTS) {
-    const bone = (suffix) => ctx.byName.get(MIXAMO + suffix) || null;
-    const ba = bone(s.from);
-    const bb = bone(s.to);
-    if (!ba || !bb) {
-      throw new Error(`Segment ${s.id}: Knochen „${MIXAMO + s.from}“ oder „${MIXAMO + s.to}“ fehlt im Skelett mit ${ctx.bones.length} Knochen`);
+    // Ein Segment, dessen Rollen dieses Modell nicht hat (ein Rig ohne Zehen,
+    // ohne Finger, ohne Schulterblatt), wird ÜBERSPRUNGEN und gemeldet — nicht
+    // geraten und nicht als Fehler ausgegeben. Vorher fiel an dieser Stelle
+    // jedes Modell durch, dessen Knochen anders heißen.
+    const ra = ctx.rollen.get(s.from);
+    const rb = ctx.rollen.get(s.to);
+    if (!ra || !rb) {
+      const fehlt = [!ra ? s.from : null, !rb ? s.to : null].filter(Boolean);
+      uebersprungen.push(`Segment ${s.id} übersprungen: Rolle ${fehlt.join(' und ')} in diesem Skelett mit ${ctx.bones.length} Knochen nicht erkannt`);
+      continue;
+    }
+    const ba = ra.bone;
+    const bb = rb.bone;
+    if (ba === bb) {
+      uebersprungen.push(`Segment ${s.id} übersprungen: Rollen ${s.from} und ${s.to} zeigen beide auf „${ba.name}“ — keine Segmentachse messbar`);
+      continue;
     }
     const verts = worldVertsOfSegment(ctx, s.id);
     if (verts.length === 0) {
-      throw new Error(`Segment ${s.id}: 0 von ${ctx.vertexCount} Vertices tragen ein Gewicht ≥ ${MIN_DOMINANT_WEIGHT} auf einem Segment-Knochen — Radius nicht messbar`);
+      uebersprungen.push(`Segment ${s.id} übersprungen: 0 von ${ctx.vertexCount} Vertices tragen ein Gewicht ≥ ${MIN_DOMINANT_WEIGHT} auf einem Knochen dieses Segments — Radius nicht messbar`);
+      continue;
     }
     const a = ba.getWorldPosition(new THREE.Vector3());
     const b = bb.getWorldPosition(new THREE.Vector3());
@@ -515,7 +831,8 @@ function measureSegments(ctx, opts = {}) {
       .sort((x, y) => x - y);
     let radius = percentile(dists, radiusPercentile);
     if (!(radius > 0) || !Number.isFinite(radius)) {
-      throw new Error(`Segment ${s.id}: Radius ${radius} m aus ${dists.length} Vertex-Abständen (Perzentil ${radiusPercentile}) — keine Haut am Segment messbar`);
+      uebersprungen.push(`Segment ${s.id} übersprungen: Radius ${radius} m aus ${dists.length} Vertex-Abständen (Perzentil ${radiusPercentile}) — keine Haut am Segment messbar`);
+      continue;
     }
     if (radiusOverrides[s.id] !== undefined) {
       radius = radius * radiusOverrides[s.id];   // Testhaken: künstlich veränderter Radius
@@ -531,13 +848,17 @@ function measureSegments(ctx, opts = {}) {
       mass = mass * massOverrides[s.id];      // Testhaken: künstliche Massenverlagerung
     }
     segments.push({
-      id: s.id, from: MIXAMO + s.from, to: MIXAMO + s.to,
+      id: s.id, from: ba.name, to: bb.name,
       radius: r4(radius), mass: r5(mass), volume: r5(volume),
     });
     massBySeg.set(s.id, mass);
     comBySeg.set(s.id, a.clone().add(b).multiplyScalar(0.5));    // Kapselmitte
+    achsen.set(s.id, [ba, bb]);
   }
-  return { segments, massBySeg, comBySeg };
+  if (segments.length === 0) {
+    throw new Error(`Vermessung abgelehnt: 0 von ${SEGMENTS.length} Segmenten messbar bei ${ctx.bones.length} Knochen und ${ctx.rollen.size} erkannten Rollen`);
+  }
+  return { segments, massBySeg, comBySeg, achsen, uebersprungen };
 }
 
 /**
@@ -550,7 +871,7 @@ function measureSegments(ctx, opts = {}) {
  * liegt innerhalb der Standfläche (konvexe Hülle der bodennahen Vertices).
  */
 export function measureMasses(gltf, opts = {}) {
-  const ctx = collectContext(gltf);
+  const ctx = contextMitKorrekturen(gltf, opts);
   const { segments, massBySeg, comBySeg } = measureSegments(ctx, opts);
 
   let total = 0;
@@ -593,8 +914,8 @@ export function measureMasses(gltf, opts = {}) {
  * falsch vermessen: zu jeder Sohle gehört eine Statistik mit der gemessenen
  * Höhendifferenz Ferse gegen Ballen — der Aufrufer entscheidet anhand der Zahl.
  */
-export function measureSoles(gltf) {
-  const ctx = collectContext(gltf);
+export function measureSoles(gltf, opts = {}) {
+  const ctx = contextMitKorrekturen(gltf, opts);
   return measureSolesCore(ctx);
 }
 
@@ -724,7 +1045,7 @@ function restoreBind(ctx) {
  * „Vorzeichen“ (absichtlich invertiertes Vorzeichen muss gemeldet werden).
  */
 export function measureJoints(gltf, opts = {}) {
-  const ctx = collectContext(gltf);
+  const ctx = contextMitKorrekturen(gltf, opts);
   const probeDeg = opts.probeDeg ?? PROBE_DEG;
   const invert = opts.invert ?? {};
   const probeRad = probeDeg * Math.PI / 180;
@@ -744,14 +1065,34 @@ export function measureJoints(gltf, opts = {}) {
   const warnings = [];
 
   for (const def of JOINT_CATALOG) {
-    const bone = ctx.byName.get(MIXAMO + def.bone);
-    const end = ctx.byName.get(MIXAMO + def.end);
-    if (!bone) {
-      warnings.push(`Gelenk ${def.joint}: Knochen „${MIXAMO + def.bone}“ fehlt (Skelett mit ${ctx.bones.length} Knochen) — Gelenk bleibt ungemessen`);
+    // Katalogintegrität: jeder Freiheitsgrad braucht eine Richtung in
+    // Alltagssprache. Fehlt sie, ist der Katalog kaputt — das fällt hier auf,
+    // nicht als fehlendes Feld im Agentenbericht.
+    for (const [name, spec] of Object.entries(def.dofs)) {
+      if (typeof spec.richtung !== 'string' || spec.richtung.length < 10) {
+        throw new Error(
+          `Gelenkkatalog unvollständig: ${def.joint}.${name} hat keine richtung-` +
+          `Beschreibung (erwartet ein Satz darüber, was ein positiver Wert tut) — ` +
+          `${Object.keys(def.dofs).length} Freiheitsgrade im Gelenk geprüft`
+        );
+      }
+    }
+    // Gelenk und Kettenende kommen als ROLLE aus der Erkennung. Hat dieses
+    // Modell die Rolle nicht, bleibt das Gelenk ungemessen und wird gemeldet.
+    const rBone = ctx.rollen.get(def.bone);
+    const rEnd = ctx.rollen.get(def.end);
+    if (!rBone) {
+      warnings.push(`Gelenk ${def.joint}: Rolle ${def.bone} in diesem Skelett mit ${ctx.bones.length} Knochen nicht erkannt — Gelenk bleibt ungemessen`);
       continue;
     }
-    if (!end) {
-      warnings.push(`Gelenk ${def.joint}: Kettenende „${MIXAMO + def.end}“ fehlt (Skelett mit ${ctx.bones.length} Knochen) — Vorzeichen nicht messbar`);
+    if (!rEnd) {
+      warnings.push(`Gelenk ${def.joint}: Kettenende ${def.end} in diesem Skelett mit ${ctx.bones.length} Knochen nicht bestimmbar — Vorzeichen nicht messbar`);
+      continue;
+    }
+    const bone = rBone.bone;
+    const end = rEnd.bone;
+    if (bone === end) {
+      warnings.push(`Gelenk ${def.joint}: Rolle ${def.bone} und Kettenende ${def.end} zeigen beide auf „${bone.name}“ — Wirkung am Kettenende nicht messbar`);
       continue;
     }
 
@@ -769,6 +1110,7 @@ export function measureJoints(gltf, opts = {}) {
         // stille Setzen auf 1 mit falscher Quelle.
         dofOut[name] = {
           axis: spec.axis, sign: 1, limit: spec.limit,
+          richtung: spec.richtung,
           signSource: 'nicht_messbar',
         };
         continue;
@@ -809,6 +1151,7 @@ export function measureJoints(gltf, opts = {}) {
         // ausdrücklich gekennzeichnet — nicht stillschweigend 1.
         dofOut[name] = {
           axis: spec.axis, sign: 1, limit: spec.limit,
+          richtung: spec.richtung,
           signSource: 'nicht_messbar',
         };
         notMeasurableCount++;
@@ -823,6 +1166,7 @@ export function measureJoints(gltf, opts = {}) {
       }
       dofOut[name] = {
         axis: spec.axis, sign, limit: spec.limit,
+        richtung: spec.richtung,
         signSource: 'gemessen',
         measured: r4(measured),      // Welt-verschiebung am Kettenende in Metern
       };
@@ -831,7 +1175,7 @@ export function measureJoints(gltf, opts = {}) {
     }
 
     joints[def.joint] = {
-      bone: MIXAMO + def.bone,
+      bone: bone.name,
       dof: dofOut,
       signSource: anyMeasurable ? 'gemessen' : 'nicht_messbar',
       limitSource: 'anatomisch',   // Bind-Pose kann Grenzen nicht liefern (plan.md 6.1)
@@ -871,16 +1215,16 @@ export function applyBindPose(ctx) {
  * Benachbart = Segmente teilen einen Knochen — die sollen sich immer
  * berühren dürfen und werden nicht eingesammelt.
  */
-export function measureRestDistances(gltf) {
-  const ctx = collectContext(gltf);
-  const { segments } = measureSegments(ctx);
+export function measureRestDistances(gltf, opts = {}) {
+  const ctx = contextMitKorrekturen(gltf, opts);
+  const { segments, achsen } = measureSegments(ctx);
   const radiusById = new Map(segments.map((s) => [s.id, s.radius]));
   const caps = new Map();
   for (const s of SEGMENTS) {
     if (!radiusById.has(s.id)) continue;
-    const ba = ctx.byName.get(MIXAMO + s.from);
-    const bb = ctx.byName.get(MIXAMO + s.to);
-    if (ba && bb) {
+    const paar = achsen.get(s.id);
+    if (paar) {
+      const [ba, bb] = paar;
       caps.set(s.id, [ba.getWorldPosition(new THREE.Vector3()), bb.getWorldPosition(new THREE.Vector3())]);
     }
   }
@@ -932,7 +1276,14 @@ export function measureRestDistances(gltf) {
  *   enthält eine Zahl (AGENTS.md, Handwerkliches).
  */
 export function measureRigProfile(gltf, opts = {}) {
-  const ctx = collectContext(gltf);
+  // Kontext über die ERKANNTE Rollentabelle; tragen die Bestätigungen des
+  // Menschen (opts.roles, opts.bestaetigteRollen aus dem Tool-Store) eine
+  // andere Zuordnung ein, baut contextMitKorrekturen den Kontext neu und die
+  // gesamte Vermessung darunter läuft über die korrigierten Rollen —
+  // Segmente, Massen, Sohlen, Gelenke, Ruheabstände, alle aus derselben
+  // Messung wie beim ersten Mal (BEFUND: spikes/rollen/BEFUND.md). Ein
+  // Bestätigen derselben Zuordnung kostet keinen zweiten Lauf.
+  const ctx = contextMitKorrekturen(gltf, opts);
   const warnings = [];
   const radiusPercentile = opts.radiusPercentile ?? RADIUS_PERCENTILE;
 
@@ -943,32 +1294,59 @@ export function measureRigProfile(gltf, opts = {}) {
   }
   applyBindPose(ctx);
 
-  // Rollen: exakte Namens-Treffer im Mixamo-Schema, Konfidenz sonst 0.
-  // Pflichtrollen (plan.md 5.1): fehlt eine, wird das Modell abgelehnt statt
-  // geraten — das Modell wird hier zu Ende vermessen und dann verworfen.
+  // Rollen: aus der geometrischen Erkennung, nicht aus Namen.
+  //
+  // Drei Zonen nach plan.md 5.1, alle drei:
+  //   ab 0,90        sicher — wird gemessen, fertig.
+  //   0,50 bis 0,90  der Mensch wird gefragt. Gemessen wird trotzdem: die
+  //                  Erkennung HAT einen Kandidaten, sie ist sich seiner nur
+  //                  nicht sicher. Die Rolle trägt ihre gemessene Konfidenz
+  //                  und die Marke `confirm`, die Warnung nennt die Zahl. Die
+  //                  Rückfrage samt Optionen liegt im Erkennungsbericht
+  //                  (detect.js `questions`), die Antwort des Menschen kommt
+  //                  über confirm_role als opts.roles zurück und ersetzt die
+  //                  Zuordnung.
+  //   unter 0,50     kein Kandidat. Ablehnung, mit geometrischer Begründung.
+  //
+  // Vorher gab es nur „sicher“ oder „abgelehnt“. Das kostete 7 von 10 fremden
+  // Modellen die Vermessung — darunter Michelle, ein Mixamo-Rig mit 65 Knochen,
+  // das an seiner eigenen Unsicherheit (foot_l 0,58) starb, nicht an Namen.
   const roles = {};
-  for (const [role, suffix] of Object.entries(ROLE_BY_SUFFIX)) {
-    const id = MIXAMO + suffix;
-    const found = ctx.byName.has(id);
-    roles[role] = { bone: id, confidence: found ? 1.0 : 0.0 };
-    if (!found) {
-      warnings.push(`Rolle ${role}: Knochen „${id}“ fehlt (${ctx.bones.length} Knochen durchsucht)`);
-    }
-  }
-  for (const role of Object.keys(roles)) {
-    if (roles[role].confidence < 1.0) {
+  for (const role of PFLICHTROLLEN) {
+    const r = ctx.rollen.get(role);
+    if (!r) {
       throw new Error(
-        `Vermessung abgelehnt: Pflichtrolle ${role} nicht gefunden (Konfidenz ${roles[role].confidence.toFixed(2)}) — Modell wird abgelehnt statt geraten`
+        `Vermessung abgelehnt: Pflichtrolle ${role} ohne Kandidaten über der Frageschwelle ${ROLLE_MINDESTENS.toFixed(2)}`
+        + ` (${ctx.bones.length} Knochen, ${ctx.rollen.size} vergebene Rollen,`
+        + ` Achsenwert ${ctx.bericht.world.achsenWert}, ${ctx.bericht.questions.length} offene Rückfragen)`
+        + ' — Modell wird abgelehnt statt geraten'
+      );
+    }
+    roles[role] = { bone: r.bone.name, confidence: r.confidence };
+    if (r.confidence < ROLLE_SICHER && r.quelle !== 'bestaetigt') {
+      roles[role].confirm = true;
+      const belege = ctx.bericht.evidence.rollen?.[role];
+      warnings.push(
+        `Pflichtrolle ${role} auf „${r.id}“ nur mit Konfidenz ${r.confidence.toFixed(2)} erkannt`
+        + ` (sicher ab ${ROLLE_SICHER.toFixed(2)}, gefragt ab ${ROLLE_MINDESTENS.toFixed(2)},`
+        + ` ${ctx.bones.length} Knochen geprüft, Achsenwert ${ctx.bericht.world.achsenWert})`
+        + (belege ? ` — schwächster Beleg: ${schwaechsterBeleg(belege, ctx.bericht.world.achsenWert)}` : '')
+        + ' — gemessen, aber bestätigungsbedürftig: der Mensch wird gefragt'
       );
     }
   }
+  // Rollen unterhalb 0,9, die kein Pflichtfeld sind, stehen als Rückfrage im
+  // Erkennungsbericht (detect.js `questions`) — dort gehören sie hin, dorthin
+  // antwortet der Mensch. Sie werden hier nicht zusätzlich als Warnung
+  // ausgegeben: eine Warnung meint einen Befund an der MESSUNG.
 
   // Segmente, Massen, Schwerpunkt, Standfläche.
   // Die Verfahrensparameter des Aufrufers müssen hier durchgerechnet werden —
   // sonst meldet das Profil params.radiusPercentile 0,5, hat aber mit 0,9
   // gemessen (Beleg: measure.test.mjs „Verfahrensparameter“: alle 14 Radien
   // blieben identisch, thigh_l 0,0977 m, obwohl params auf 0,5 stand).
-  const { segments, massBySeg, comBySeg } = measureSegments(ctx, opts);
+  const { segments, massBySeg, comBySeg, achsen, uebersprungen } = measureSegments(ctx, opts);
+  warnings.push(...uebersprungen);
   let totalMass = 0;
   const com = new THREE.Vector3();
   for (const s of segments) {
@@ -1004,9 +1382,9 @@ export function measureRigProfile(gltf, opts = {}) {
   const radiusCheck = [];
   for (const s of segments) {
     const verts = worldVertsOfSegment(ctx, s.id);
-    const ba = ctx.byName.get(s.from);
-    const bb = ctx.byName.get(s.to);
-    if (!ba || !bb || verts.length === 0) continue;
+    const paar = achsen.get(s.id);
+    if (!paar || verts.length === 0) continue;
+    const [ba, bb] = paar;
     const a = ba.getWorldPosition(new THREE.Vector3());
     const b = bb.getWorldPosition(new THREE.Vector3());
     const hue = meshHuelle(verts, a, b, 10, radiusPercentile);
@@ -1039,11 +1417,11 @@ export function measureRigProfile(gltf, opts = {}) {
 
   // Gelenke: Vorzeichen messen.
   const probeDeg = opts.probeDeg ?? PROBE_DEG;
-  const measured = measureJoints(gltf, { probeDeg });
+  const measured = measureJoints(gltf, { ...opts, probeDeg });
   warnings.push(...measured.warnings);
 
   // Ruheabstände.
-  const restDistances = measureRestDistances(gltf);
+  const restDistances = measureRestDistances(gltf, opts);
 
   // Knochenliste: id, Elternteil, Bind-Pose-Weltposition.
   const bonesOut = ctx.bones.map((b) => ({

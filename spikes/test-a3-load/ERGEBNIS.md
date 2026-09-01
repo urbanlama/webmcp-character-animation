@@ -132,9 +132,20 @@ Weiter fehlen und warum (Instrument misst Stämme, keine Synonyme):
   „Hüft- oder Kniegelenk“ als Bezeichnung mit Bindestrich, der Stamm „hueft“
   teilt sich mit „hueftgelenk“ nicht (Stammbildungsgrenze des Instruments).
 
-`node --test "src/**/*.test.mjs"`: 59 von 59 grün. Prüfstand
-`spikes/test-a3-load/pruefstand.test.mjs`: 8 von 8 grün. Alle 16 Werkzeuge
-weiterhin über `getTools()` sichtbar.
+`node --test "src/**/*.test.mjs"`: zum Zeitpunkt der Messung 59 von 59 grün, im
+endgültigen Abnahmelauf am ruhenden Baum 251 von 251 grün (andere Arbeitspakete
+liefen parallel und haben die Testzahl erhöht; alle grün). `npm test`: 263 + 13
+grün, 0 Fehlschläge. Prüfstand `spikes/test-a3-load/pruefstand.test.mjs`:
+8 von 8 grün. Alle 16 Werkzeuge weiterhin über `getTools()` sichtbar.
+
+Hinweis zur Messsituation: Während der Nachschärfung liefen weitere
+Arbeitspakete parallel im selben Repository (schreibend in `src/rig/`,
+`src/validate/`, `src/tools/`). Der Abnahmeläufe wurden deshalb erst nach
+Ende dieser Schreibzugriffe am ruhenden Baum wiederholt; die obigen Zahlen
+stammen aus diesen Läufen. Drei npm-test-Zwischenläufe, die in die
+Parallelarbeit hinein fielen, zeigten 1 bis 7 Fehlschläge — alle ausschließlich
+in fremden Dateien (`rig/detect`, `rig/measure`, `validate/intent`,
+`tools/ports`), keiner im geänderten Katalog.
 
 ## Dateien dieses Pakets
 

@@ -11,13 +11,74 @@
 // und Schema bleiben, wie die Schicht sie registriert hat — der Agent sieht
 // keinen Unterschied.
 
-/** Verfahrensparameter: sichtbare Zeilen. Mehr wird ein Log, weniger verliert
- * den Zusammenhang zwischen Aufruf und Ergebnis. */
-export const ZEILEN_STANDARD = 8;
+/**
+ * Verfahrensparameter: wie viele Aufrufe die Spur vorhaelt.
+ *
+ * Frueher waren es 8 sichtbare Zeilen, und die Liste wuchs mit jedem Eintrag
+ * in die Hoehe: ein look-Ergebnis brachte fuenf Textzeilen mit, ein
+ * describe_pose-Ergebnis dreissig. Das Panel sprang bei jedem Aufruf und war
+ * nach zwanzig Aufrufen unlesbar. Jetzt haben alle Zeilen dieselbe Hoehe und
+ * das Feld scrollt in sich — damit koennen mehr Aufrufe stehenbleiben, ohne
+ * dass etwas huepft.
+ */
+export const ZEILEN_STANDARD = 60;
 
-/** Laenge der Ergebniszeile in Zeichen. Der Mensch soll sehen, dass gearbeitet
- * wird, nicht die Werkzeugantwort lesen — die geht an den Agenten. */
-const ERGEBNIS_LAENGE = 90;
+/**
+ * Verfahrensparameter: Zeichen der Ergebniszeile.
+ *
+ * Zwei Zeilen passen in die Panelbreite. Was laenger ist, wird gekuerzt und
+ * steht vollstaendig im Tooltip — die Spur ist eine Uebersicht fuer den
+ * Menschen, kein Protokoll zum Mitlesen.
+ */
+export const ERGEBNIS_MAX_ZEICHEN = 120;
+
+/**
+ * Was die Ergebniszeile zeigt. Befund 3 aus der Browser-Sichtprüfung: die
+ * Zeile „10 von 10 unsicheren Zuordn…“ lief aus ihrem Feld — die Meldung aus
+ * rollen-bestaetigung.js ist länger als 90 Zeichen, wurde zuvor auf 90
+ * Zeichen gekürzt und drückte damit zugleich die Panelbreite auf. Kürzen auf
+ * weniger Zeichen wirft nur Information weg; die Zeile darf umbrechen.
+ * Deshalb steht hier keine Kürzung mehr: die Funktion vereinigt nur noch die
+ * erste Zeile der Werkzeugantwort — den Umbruch übernimmt das CSS.
+ *
+ * @param {object} antwort Werkzeugantwort { content: [{ type, text }] }
+ * @returns {string} die erste Textzeile, ungekürzt
+ */
+export function ergebnisZeile(antwort) {
+  const teile = antwort?.content ?? [];
+  const roh = teile.find?.((t) => t.type === 'text')?.text ?? '';
+  const bilder = Array.isArray(teile) ? teile.filter((t) => t.type === 'image').length : 0;
+  const text = String(roh).trim();
+
+  // JSON-Antworten (describe_pose, measure, describe_world) beginnen mit einer
+  // Klammer. Die erste Zeile davon war woertlich "{" — im Panel stand dann
+  // dreimal untereinander "describe_pose  {". Statt dessen werden die Felder
+  // benannt, die drinstehen: das ist die Auskunft, die der Mensch braucht.
+  let zeile;
+  if (text.startsWith('{')) {
+    try {
+      const o = JSON.parse(text);
+      zeile = Object.entries(o)
+        .filter(([, v]) => v !== null && v !== undefined && v !== '')
+        .map(([k, v]) => {
+          if (Array.isArray(v)) return k + ': ' + v.length;
+          if (typeof v === 'object') return k + ': ' + Object.keys(v).length + ' Felder';
+          return k + ': ' + v;
+        })
+        .join(' \u00b7 ');
+    } catch {
+      zeile = text.replace(/\s+/g, ' ');
+    }
+  } else {
+    zeile = text.split('\n')[0].trim();
+  }
+
+  const bildText = bilder > 0 ? '[' + bilder + ' Bild' + (bilder === 1 ? '' : 'er') + '] ' : '';
+  const ganz = bildText + zeile;
+  return ganz.length > ERGEBNIS_MAX_ZEICHEN
+    ? ganz.slice(0, ERGEBNIS_MAX_ZEICHEN - 1) + '\u2026'
+    : ganz;
+}
 
 /**
  * Legt eine Huelle um document.modelContext, die jeden Werkzeugaufruf meldet.
@@ -43,6 +104,10 @@ export function spurKontext(echt, senke) {
           try {
             const antwort = await werkzeug.execute(args);
             senke.notiere({
+              // Die Argumente reisen mit: die Oberflaeche stellt die Ansicht
+              // auf den Frame, um den es ging. Ohne sie weiss sie nur, DASS
+              // etwas passiert ist, nicht WO.
+              args,
               name: werkzeug.name,
               dauerMs: Date.now() - start,
               // Die Schicht liefert Fehler als Antwort mit isError, nicht als Ausnahme.
@@ -52,6 +117,7 @@ export function spurKontext(echt, senke) {
             return antwort;
           } catch (err) {
             senke.notiere({
+              args,
               name: werkzeug.name, dauerMs: Date.now() - start,
               fehler: true, text: err.message
             });
@@ -71,11 +137,10 @@ export function spurKontext(echt, senke) {
   return huelle;
 }
 
-/** Erste Textzeile einer Werkzeugantwort, gekuerzt. */
+/** Erste Textzeile einer Werkzeugantwort. Siehe ergebnisZeile() oben: der
+ * Text wird nicht mehr gekürzt, die Zeile bricht stattdessen um. */
 function ersteZeile(antwort) {
-  const roh = antwort?.content?.find?.((t) => t.type === 'text')?.text ?? '';
-  const zeile = String(roh).split('\n')[0].trim();
-  return zeile.length > ERGEBNIS_LAENGE ? `${zeile.slice(0, ERGEBNIS_LAENGE - 1)}…` : zeile;
+  return ergebnisZeile(antwort);
 }
 
 /**
@@ -94,10 +159,20 @@ export function mounteSpur({ wurzel, zeilen = ZEILEN_STANDARD, uhr = () => new D
 
   const titel = dok.createElement('h2');
   titel.id = 'spur-titel';
-  titel.textContent = 'Der Agent arbeitet';
+  titel.textContent = 'Agent activity';
 
   const liste = dok.createElement('ol');
   liste.id = 'spur-liste';
+
+  // Befund 3: „10 von 10 unsicheren Zuordn…“ lief aus der Zeile, weil die
+  // CSS-Regel `.spur-zeile .ergebnis` in index.html mit
+  // `white-space: nowrap; text-overflow: ellipsis; overflow: hidden` arbeitet
+  // und die Zeile damit über die Panelbreite schiebt. index.html gehört einem
+  // anderen Paket — der Ersatz kommt als Inline-Stil an jedem erzeugten
+  // Element an, mit genau denselben drei Eigenschaften neu gesetzt.
+  // Kein eingebetteter Stil mehr: Zeilenhoehe und Scrollen legt index.html
+  // fest, damit alle Zeilen gleich hoch sind und das Feld in sich scrollt
+  // statt zu wachsen.
 
   wurzel.setAttribute('aria-live', 'polite');
   wurzel.hidden = true;
@@ -107,8 +182,8 @@ export function mounteSpur({ wurzel, zeilen = ZEILEN_STANDARD, uhr = () => new D
 
   function zeichne() {
     titel.textContent = eintraege.length === 1
-      ? 'Der Agent arbeitet — 1 Aufruf'
-      : `Der Agent arbeitet — ${eintraege.length} Aufrufe`;
+      ? 'Agent activity — 1 call'
+      : `Agent activity — ${eintraege.length} calls`;
 
     liste.replaceChildren(...eintraege.slice(0, zeilen).map((e) => {
       const zeile = dok.createElement('li');
@@ -125,7 +200,13 @@ export function mounteSpur({ wurzel, zeilen = ZEILEN_STANDARD, uhr = () => new D
 
       const ergebnis = dok.createElement('span');
       ergebnis.className = 'ergebnis';
-      ergebnis.textContent = e.fehler ? `abgelehnt — ${e.text}` : e.text;
+      // Inline-Stil statt nur der eingebetteten Regel: eine Regel im <style>
+      // verliert gegen die spezifischere Regel aus index.html nie, der
+      // Inline-Stil gewinnt immer. Beide zusammen schaden nicht.
+      ergebnis.textContent = e.fehler ? ('rejected \u2014 ' + e.text) : e.text;
+      // Der ganze Text im Tooltip: gekuerzt wird fuer die Uebersicht, nicht um
+      // Auskunft wegzuwerfen.
+      ergebnis.title = e.voll || e.text;
 
       zeile.append(zeit, name, ergebnis);
       return zeile;
@@ -134,10 +215,13 @@ export function mounteSpur({ wurzel, zeilen = ZEILEN_STANDARD, uhr = () => new D
   }
 
   return {
-    notiere({ name, dauerMs = 0, fehler = false, text = '' }) {
+    notiere({ name, dauerMs = 0, fehler = false, text = '', voll = '' }) {
       const t = uhr();
+      // Aelteste Eintraege fallen hinten raus: die Spur ist ein Fenster auf die
+      // letzte Arbeit, kein wachsendes Protokoll.
+      if (eintraege.length >= zeilen) eintraege.length = zeilen - 1;
       eintraege.unshift({
-        name, dauerMs, fehler, text,
+        name, dauerMs, fehler, text, voll: voll || text,
         zeit: `${String(t.getHours()).padStart(2, '0')}:`
           + `${String(t.getMinutes()).padStart(2, '0')}:`
           + `${String(t.getSeconds()).padStart(2, '0')}`

@@ -123,7 +123,7 @@ function baueTimeline() {
  *  steigt um 0,073 m = 0,046 Körperhöhen; der Sollbereich 0,03..0,5 erfasst
  *  das mit Abstand. */
 const ABSICHT = [
-  { kind: 'ortsveraenderung', part: 'com', richtung: [0, 1, 0], minHoehe: 0.03, maxHoehe: 0.5 },
+  { kind: 'travel', part: 'com', richtung: [0, 1, 0], minHoehe: 0.03, maxHoehe: 0.5 },
 ];
 
 /** Stil-Options: der Halt in Phase 1 ist ein erklärter Stand (plan.md 6.6). */
@@ -313,7 +313,7 @@ test('Eine saubere Bewegung ergibt passed in allen drei Schichten', () => {
 });
 
 test('Eine bewegungslose Timeline besteht die Physik und fällt durch die Absicht', () => {
-  // Stehende Figur, der Schwerpunkt steigt nicht → ortsveraenderung min 0,05
+  // Stehende Figur, der Schwerpunkt steigt nicht → travel min 0,03
   // Körperhöhen ist verletzt, aber alle Physikprüfungen sind grün.
   const bewegungslos = BASIS();
   // Frames 8..15 ohne Flug: überall Kontakt und konstante Höhe — nichts passiert.
@@ -321,7 +321,7 @@ test('Eine bewegungslose Timeline besteht die Physik und fällt durch die Absich
     bewegungslos.timeline.solved.frames[i] = stehFrame('kontakt');
   }
   bewegungslos.intent = [
-    { kind: 'ortsveraenderung', part: 'com', richtung: [0, 1, 0], minHoehe: 0.03 },
+    { kind: 'travel', part: 'com', richtung: [0, 1, 0], minHoehe: 0.03 },
   ];
   // Kein Hauptbewegungs-Verweis: nichts bewegt sich, Antizipation entfällt.
   bewegungslos.stil = {

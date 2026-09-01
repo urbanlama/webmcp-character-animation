@@ -21,6 +21,7 @@ Wer hier eine Datei ablegt, legt sie unter dem Pfad ab, den der Import erwartet.
 | `three.core.min.js` | three.js, derselbe Build wie oben — MIT-Lizenz | r180 | Kern von three (Mathematik, Geometrie, Objekthierarchie), ohne Renderer-Teile |
 | `loaders/GLTFLoader.js` | three.js, `examples/jsm/loaders/GLTFLoader.js` — MIT-Lizenz | r180 | Lädt glTF/GLB. Importiert `'three'` (Browser: Import Map) und `../utils/BufferGeometryUtils.js` |
 | `exporters/GLTFExporter.js` | three.js, `examples/jsm/exporters/GLTFExporter.js` — MIT-Lizenz, Copyright © 2010-2025 Three.js Authors | r180 | Schreibt glTF/GLB mit Animationen (AP-Export). Importiert nur `'three'`; serialisiert über Blob/FileReader, deshalb läuft er in Node nur mit der FileReader-Decke aus `src/export/gltf.js` |
+| `controls/OrbitControls.js` | three.js, `examples/jsm/controls/OrbitControls.js` — MIT-Lizenz, Copyright © 2010-2025 Three.js Authors | r180 | Kamerasteuerung mit der Maus: Ziehen dreht, Rad faehrt heran, rechte Taste verschiebt. Importiert nur `'three'`; `src/ui/kamerasteuerung.js` haengt sie an die Leinwand |
 | `utils/BufferGeometryUtils.js` | three.js, `examples/jsm/utils/BufferGeometryUtils.js` — MIT-Lizenz | r180 | Liefert `toTrianglesDrawMode`, den `loaders/GLTFLoader.js` über den relativen Pfad `../utils/BufferGeometryUtils.js` importiert |
 
 Identität der Kopien mit `node_modules/three` 0.180.0, gemessen an der
@@ -33,6 +34,11 @@ SHA-256 (Stand 2026-08-30):
 - `exporters/GLTFExporter.js` = `examples/jsm/exporters/GLTFExporter.js`
   = `e7c29444454eb321b39e4c8b3062944f4fd5299a0e7483e9cb8c0594cdec829f`
   (Stand 2026-08-31, ergänzt für AP-Export)
+- `controls/OrbitControls.js` = `examples/jsm/controls/OrbitControls.js`
+  = `b97879c748170baadeb3fb84cea1ffdf4674e283dc06042f34e2acb95a76042c`
+  (Stand 2026-08-31, ergänzt für die Kamerasteuerung. Node-Tests importieren
+  `three/addons/controls/OrbitControls.js` aus `node_modules`, der Browser
+  dieselbe Datei aus `vendor/controls/` — beide Seiten prüfen denselben Code.)
 
 Damit ist die Node-Seite jedes Tests (Loader aus `node_modules`) und die
 Browser-Seite (Loader aus `vendor/`) derselbe Code — Knochenzahlen und

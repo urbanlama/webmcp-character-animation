@@ -1,4 +1,5 @@
-// AP5 — Phasenlöser: die vier Verben crouch, takeoff, airborne, land.
+// AP5 — Phasenlöser: crouch, takeoff, airborne, land (abgenommen) plus
+// stand, swing_arms (AP5.2, gleiche Bauweise).
 //
 // Kernidee (plan.md 6.3): Eine Phase ist keine Pose, sondern ein Parametersatz:
 // Sollbahn des Schwerpunkts, verankerte Kontaktpunkte, Streckungsgrad,
@@ -32,7 +33,7 @@
 // Abschaltbar (Testhaken) — dann bleibt ω auf dem Freisetzungswert und der
 // Endwinkel weicht messbar ab.
 
-import { schwerpunkt, sohlenWelt, traegheit, vAdd, vSub, vScale, vLen, qFromAxisAngle } from './kinematik.js';
+import { schwerpunkt, sohlenWelt, traegheit, vAdd, vSub, vScale, vLen, qFromAxisAngle, knochenPfad } from './kinematik.js';
 import { kopierePose, optimiere, poseZuFk, gelenkKette, vermessen, bindPose } from './ik.js';
 import { G } from '../validate/physics.js';   // AP4-Modul nutzen, nicht nachbauen
 
@@ -344,6 +345,16 @@ function haltungCrouch(skel, t) {
   if (skel.dofs['elbow_r.bend']) h['elbow_r.bend'] = randGrad(skel, 'elbow_r.bend', a);
   if (skel.dofs['spine.bend']) h['spine.bend'] = randGrad(skel, 'spine.bend', a * 0.5);
   return h;
+}
+
+/** Armkettengelenke eines Fußes (Bein) oder einer Hand — alle Freiheitsgrade
+ *  der Knochen auf dem Weg Endeffektor → Becken, ohne den Beckenknochen
+ *  selbst. Das Sprunggelenk bleibt drin: verankert werden die Sohlenpunkte,
+ *  nicht der Fußursprung (BRETT.md, Sackgasse 2). */
+export function gelenkKetteBis(skel, endknochenId) {
+  const pfad = knochenPfad(skel, endknochenId, skel.rollenKnochen.pelvis);
+  const inKette = new Set(pfad.slice(0, -1));   // Beckenknochen selbst: außen
+  return Object.keys(skel.dofs).filter((k) => inKette.has(skel.dofs[k].bone));
 }
 
 /** Wert als Anteil der größeren gemessenen Grenzseite — Spiegelung sitzt in
@@ -941,3 +952,882 @@ function soleIdsFuer(skel, anker) {
   }
   return out;
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// AP5.2 — stand: ruhiges Stehen mit verlagerter Gewichtsverteilung
+// params: { verteilung: Anteil des Gewichts auf dem linken Fuß 0..1
+//                       (0,5 = beide Füße gleich), atmen: Haltungsanteil 0..1 }
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Anker für `stand`: beide Füße bleiben komplett auf den gemessenen
+ * Sohlenpunkten verankert (`vorgang.anker`) — nichts wird aufgezogen. Die
+ * Gewichtsverteilung ist eine VERLAGERUNG des Schwerpunkt-Sollorts in der
+ * Stützfläche: `verteilung` 1 heißt schwerpunktmäßig vollständig auf das
+ * linke Sohlenzentrum, 0 auf das rechte.
+ */
+/** Haltungsamplitude des Atmens, Anteil der gemessenen Grenzspanne: eine
+ *  dezente Armbewegung, die den ruhigen Stand sichtbar atmen lässt. */
+export const ATMEN_ANT = 0.10;
+
+/** Arm-Welle für `stand` (`atmen`): 1 = Neutrallage, darunter schwingen die
+ *  Arme auf der größeren gemessenen Grenzseite aus. */
+function haltungAtmen(skel, welle) {
+  const h = {};
+  const a = ATMEN_ANT * (1 - welle);   // 0 in der Neutrallage
+  if (skel.dofs['arm_l.swing']) h['arm_l.swing'] = randGrad(skel, 'arm_l.swing', a);
+  if (skel.dofs['arm_r.swing']) h['arm_r.swing'] = randGrad(skel, 'arm_r.swing', a);
+  return h;
+}
+
+const cmText = (m) => (m * 100).toFixed(1).replace('.', ',');
+
+export function phaseStand(ctx, phase, z, frames, bericht) {
+  const { skel, vorgang } = ctx;
+  const verteilung = phase.params?.verteilung ?? phase.params?.weight ?? 0.5;
+  if (typeof verteilung !== 'number' || !Number.isFinite(verteilung)
+    || verteilung < 0 || verteilung > 1) {
+    throw new Error(`stand-Phase ${phase.id}: Parameter verteilung ist ${JSON.stringify(verteilung)}: erwartet Zahl 0..1 (Anteil des Gewichts auf dem linken Fuß; 0,5 = gleichmäßig)`);
+  }
+  const atem = phase.params?.atmen ?? phase.params?.breath;
+  if (atem !== undefined && (typeof atem !== 'number' || !Number.isFinite(atem) || atem < 0 || atem > 1)) {
+    throw new Error(`stand-Phase ${phase.id}: Parameter atmen ist ${JSON.stringify(atem)}: erwartet Zahl 0..1 als Anteil der Haltungsspanne`);
+  }
+
+  // Gemessene Sohlenzentren (Mittel der Sohlenpunkte je Fuß) — Stützfläche
+  // aus dem Modell, keine getippte Standbreite.
+  const kn0 = poseZuFk(skel, vorgang.start);
+  const sohlen = sohlenWelt(skel, kn0);
+  const zentrum = (bone) => {
+    const p = sohlen.filter((s) => s.bone === bone);
+    if (p.length === 0) throw new Error(`stand-Phase ${phase.id}: 0 Sohlenpunkte am Knochen „${bone}“ (Profil hält ${skel.soles.length})`);
+    return [0, 1, 2].map((i) => p.reduce((a, s) => a + s.pos[i], 0) / p.length);
+  };
+  const l = zentrum(skel.rollenKnochen.foot_l);
+  const r = zentrum(skel.rollenKnochen.foot_r);
+  const stuetz = [
+    verteilung * l[0] + (1 - verteilung) * r[0],
+    verteilung * l[1] + (1 - verteilung) * r[1],
+    verteilung * l[2] + (1 - verteilung) * r[2],
+  ];
+
+  const comStart = [...z.com];
+
+  // Gemessene Verlagerungsgrenze (Regel 1): wie weit trägt die Nachsteuerung
+  // den Schwerpunkt je Seite, bevor der Fußanker (Rang 3) bricht? Ausgemessen
+  // per Steuerlauf auf das jeweilige Sohlenzentrum — nicht getippt.
+  const versuch = (footBone) => {
+    const ziel = [...zentrum(footBone)];
+    ziel[1] = comStart[1];                       // Höhe bleibt, nur xz verlagert
+    return steuereKontakt(skel, vorgang.start, vorgang.gelenke, vorgang.anker, ziel, {});
+  };
+  const nachL = versuch(skel.rollenKnochen.foot_l);
+  const nachR = versuch(skel.rollenKnochen.foot_r);
+
+  // Erreichbare Ziellage: volle Vorgabe wäre das Sohlenzentrum (stuetz);
+  // machbar ist nur der gemessene Anteil davon. Unerreichbare Reste werden
+  // gemeldet (unten), gefahren wird der Deckel — kein stilles Abschneiden.
+  const verlagerSoll = Math.abs(verteilung - 0.5) * 2;       // 0..1 je Seite
+  const seite = verteilung >= 0.5 ? 1 : -1;
+  const grenzCom = seite > 0 ? nachL.com : nachR.com;
+  const ziel = [0, 1, 2].map((i) => comStart[i] + verlagerSoll * (grenzCom[i] - comStart[i]));
+
+  // Meldung mit Betrag: verlangte Verlagerung (Weg zum Sohlenzentrum) gegen
+  // die machbare. Rangfolge plan.md 6.4: der Fußanker (Rang 3) hält, die
+  // Verlagerung (Bahn, Rang 4) wird geopfert.
+  const weg = (p) => Math.hypot(p[0] - comStart[0], p[2] - comStart[2]);
+  const sollWeg = verlagerSoll > 0 ? weg(stuetz) / verlagerSoll : 0;  // voller Weg zum Zentrum
+  // Gemeldet wird spaeter — NACH dem Fahren, mit dem Weg, der tatsaechlich
+  // herauskam. Vorher stand hier der geplante Zielweg als "erreicht": am Xbot
+  // 1,50 cm gemeldet gegen 0,47 cm gefahren. Ein Bericht, der eine andere Zahl
+  // nennt als die Bewegung zeigt, ist schlimmer als keiner — die ganze
+  // Zusicherung dieses Projekts haengt daran, dass gemeldete Betraege stimmen.
+  const zuMelden = (sollWeg - weg(ziel) > skel.height * COM_ZIEL_ANTEIL)
+    ? {
+      grund: nachL.text ?? nachR.text
+        ?? 'die Fußanker (Rang 3) brechen, bevor der Schwerpunkt die Sollage erreicht',
+    }
+    : null;
+
+  const N = phase.to - phase.from;
+  for (let i = 0; i < N; i++) {
+    const f = phase.from + i;
+    const t = N > 1 ? (i + 1) / N : 1;
+    // Sollbahn: Sanftranpe 0→1 auf die erreichbare Ziellage (ease), Höhe
+    // unverändert; Atmewelle nur als Haltung, nie als Bahn-Buckel.
+    const welle = N > 1 ? ease(Math.min(1, t * 2)) : 1;
+    const comSoll = [0, 1, 2].map((k) =>
+      k === 1 ? ziel[1] : comStart[k] + (ziel[k] - comStart[k]) * welle);
+    const r = steuereKontakt(skel, z.pose, vorgang.gelenke, z.anker, comSoll,
+      haltungAtmen(skel, N > 1 ? (1 - Math.cos(2 * Math.PI * (atem ?? 0) * t)) / 2 : 0));
+    z.pose = r.pose;
+    z.com = r.com;
+    frames.push(basisFrame(skel, z, phase, f, poseZuFk(skel, z.pose), r.com,
+      'kontakt', soleIdsFuer(skel, z.anker),
+      r.verankertFest ? {} : { ankerGebrochen: true }));
+    if (!r.verankertFest) {
+      throw new Error(`stand-Phase ${phase.id} Frame ${f}: Fußanker gebrochen (${r.text}) — der Stand darf niemals die Sohlenanker opfern`);
+    }
+  }
+
+  // Jetzt messen, was gefahren wurde: waagerechter Weg des Schwerpunkts vom
+  // ersten zum letzten Frame dieser Phase.
+  if (zuMelden && frames.length > 0) {
+    const erster = frames[frames.length - N] ?? frames[0];
+    const letzter = frames[frames.length - 1];
+    const gefahren = Math.hypot(
+      letzter.com[0] - erster.com[0],
+      letzter.com[2] - erster.com[2],
+    );
+    const cm = (m) => (m * 100).toFixed(1).replace('.', ',');
+    bericht.konflikt.push({
+      phase: phase.id, verb: 'stand', frame: phase.to - 1,
+      bedingung: 'gewichtsverlagerung', einheit: 'm',
+      soll: sollWeg, erreicht: gefahren, betrag: sollWeg - gefahren,
+      grund: zuMelden.grund,
+      meldung: `Gewichtsverlagerung auf ${seite > 0 ? 'links' : 'rechts'} um `
+        + `${cm(sollWeg)} cm verlangt, gefahren wurden ${cm(gefahren)} cm — `
+        + `${cm(sollWeg - gefahren)} cm fehlen, weil sonst `
+        + `${zuMelden.grund.toLowerCase()}`,
+    });
+  }
+
+  z.comVel = [0, 0, 0];
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// AP5.2 — swing_arms: Armschwung, während die Füße verankert bleiben
+// params: { richtung: 'vor'|'rueck'|'auf'|'ab'|'links'|'rechts',
+//           ausschlag: Anteil der gemessenen Grenzspanne 0..1,
+//           wiederholungen: ganze Zahl >= 0 }
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Gradwert einer Grenzspanne: anteil 0..1 auf die größere (betragsmäßig)
+ *  Grenzseite gemappt, mit Vorzeichen — Spiegelung sitzt in den Grenzen. */
+function randGradWert(grenze, anteilMitVorzeichen) {
+  const [lo, hi] = grenze;
+  return clamp(anteilMitVorzeichen, lo, hi);
+}
+
+/**
+ * Anker für `swing_arms`: wie bei `stand` bleiben beide Füße komplett auf den
+ * gemessenen Sohlenpunkten verankert; der Schwung läuft allein über die
+ * Armgelenke, deren Amplitude als Anteil der GEMESSENEN Grenzspanne eingesetzt
+ * wird — keine Gradzahl wird getippt.
+ */
+export function phaseSwingArms(ctx, phase, z, frames, bericht) {
+  const { skel, vorgang } = ctx;
+  const richtung = phase.params?.richtung ?? phase.params?.direction ?? 'vor';
+  if (!['vor', 'rueck', 'auf', 'ab', 'links', 'rechts'].includes(richtung)) {
+    throw new Error(`swing_arms-Phase ${phase.id}: Parameter richtung ist ${JSON.stringify(richtung)}: erwartet 'vor', 'rueck', 'auf', 'ab', 'links' oder 'rechts'`);
+  }
+  const ausschlag = phase.params?.ausschlag ?? phase.params?.amplitude ?? 1;
+  if (typeof ausschlag !== 'number' || !Number.isFinite(ausschlag) || ausschlag < 0 || ausschlag > 1) {
+    throw new Error(`swing_arms-Phase ${phase.id}: Parameter ausschlag ist ${JSON.stringify(ausschlag)}: erwartet Zahl 0..1 als Anteil der gemessenen Grenzspanne des Armgelenks`);
+  }
+  const wiederholungen = phase.params?.wiederholungen ?? 1;
+  if (!Number.isInteger(wiederholungen) || wiederholungen < 0) {
+    throw new Error(`swing_arms-Phase ${phase.id}: Parameter wiederholungen ist ${JSON.stringify(wiederholungen)}: erwartet ganze Zahl >= 0`);
+  }
+
+  // Schwunggelenke und Ziel aus dem GEMESSENEN DOF-Katalog: die Gelenknamen
+  // sind Phasenvertrag (plan.md 6.3), die Grenzen kommen aus dem Profil. Das
+  // Vorzeichen der Bewegung liegt in den Grenzen selbst (arm_l.swing [-130, 90]:
+  // der Arm schwingt auf die größere Grenzseite, nach hinten — siehe randGrad).
+  const dofKey = { vor: 'swing', rueck: 'swing', auf: 'lift', ab: 'lift', links: 'twist', rechts: 'twist' }[richtung];
+  const vorZeichen = (richtung === 'rueck' || richtung === 'ab') ? -1 : 1;
+  const schwung = [];
+  for (const seite of ['l', 'r']) {
+    const key = `arm_${seite}.${dofKey}`;
+    const d = skel.dofs[key];
+    if (!d) continue;
+    const [lo, hi] = d.grenze;
+    const zielSeite = Math.abs(hi) >= Math.abs(lo) ? hi : lo;
+    schwung.push({ key, ziel: zielSeite * vorZeichen, grenze: [lo, hi] });
+  }
+  if (schwung.length === 0) {
+    throw new Error(`swing_arms-Phase ${phase.id}: kein Armgelenk „arm_l/r.${dofKey}“ im Profil (${Object.keys(skel.dofs).length} Freiheitsgrade durchsucht)`);
+  }
+
+  const N = phase.to - phase.from;
+  if (N < 2) {
+    throw new Error(`swing_arms-Phase ${phase.id} dauert ${N} Frame: mindestens 2 für einen Schwung mit Rückkehr`);
+  }
+
+  let ankerBruch = null;
+  for (let i = 0; i < N; i++) {
+    const f = phase.from + i;
+    const t = N > 1 ? (i + 1) / N : 1;
+    const haltung = {};
+    // Wellenform des Ausschlags: 0 = einmal hin und halten (ease-Rampe auf
+    // den vollen Ausschlag), sonst wiederholte Schwünge als Sinuswelle
+    // zwischen 0 und dem Ausschlag. Anteile, nicht Grad.
+    const welle = wiederholungen === 0
+      ? ease(t)
+      : wiederholungen === 1
+        ? (1 - Math.cos(2 * Math.PI * t)) / 2
+        : (1 - Math.cos(2 * Math.PI * wiederholungen * t)) / 2;
+    for (const s of schwung) {
+      haltung[s.key] = randGradWert(s.grenze, s.ziel * ausschlag * welle);
+    }
+    // Der Schwung verlagert den Schwerpunkt; die Nachsteuerung hält ihn auf
+    // der Bahn, während die Füße verankert bleiben (Bauweise wie stand/crouch).
+    const comSoll = [...z.com];
+    const r = steuereKontakt(skel, z.pose, vorgang.gelenke, z.anker, comSoll, haltung);
+    z.pose = r.pose;
+    z.com = r.com;
+    frames.push(basisFrame(skel, z, phase, f, poseZuFk(skel, z.pose), r.com,
+      'kontakt', soleIdsFuer(skel, z.anker), {}));
+    if (!r.verankertFest && !ankerBruch) {
+      ankerBruch = { f, text: r.text };
+    }
+  }
+
+  if (ankerBruch) {
+    bericht.konflikt.push({
+      phase: phase.id, verb: 'swing_arms', frame: ankerBruch.f,
+      bedingung: 'fußanker', einheit: 'm',
+      soll: skel.height * ANKER_GRENZE_ANTEIL,
+      erreicht: skel.height * ANKER_GRENZE_ANTEIL,
+      betrag: skel.height * ANKER_GRENZE_ANTEIL,
+      grund: ankerBruch.text ?? 'der Fußanker bricht unter dem Armschwung',
+      meldung: `Fußanker bei Frame ${ankerBruch.f} gebrochen: ${ankerBruch.text} — der Schwunkausschlag ${ausschlag} wurde gedämpft, damit der Anker hält (plan.md 6.4 Rang 3)`,
+    });
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// AP5.3 — vier weitere Verben: step, turn, settle, reach. Dieselbe Bauweise
+// wie die abgenommenen: Sollbahn + verankerte Kontaktpunkte + Nachsteuerung
+// über steuereKontakt, alle Grenzen gemessen, unerreichbare Vorgaben mit
+// Betrag gemeldet (plan.md 6.4 — kein stilles Abschneiden).
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── Gemeinsame Hilfen ────────────────────────────────────────────────────────
+
+/** Alle Anker, die NICHT am genannten Fußknochen sitzen — die Anker des
+ *  anderen Fußes bleiben komplett erhalten (Sohlenpunkte, nicht Ursprung). */
+function ankerOhne(anker, fussKnochen) {
+  return anker.filter((a) => a.knochen !== fussKnochen);
+}
+
+/** Neue Anker für EINEN Fuß: die gemessenen Sohlenpunkte des Profils
+ *  (knochenfest, mit `lokal`), in der AKTUELLEN Pose ausgemessen und um
+ *  `versatz` (Weltmeter) verschoben. Denselbe Bauweise wie land: der Sollort
+ *  eines Sohlenpunkts ist seine Ist-Weltlage plus Versatz — nur waagerechte
+ *  Versätze halten die Sohle sonst über dem Boden in der Luft. */
+function ankerFussVersetzt(skel, pose, fussKnochen, versatz, kontext) {
+  const sohlen = sohlenWelt(skel, poseZuFk(skel, pose)).filter((s) => s.bone === fussKnochen);
+  if (sohlen.length === 0) {
+    throw new Error(`${kontext}: 0 Sohlenpunkte am Knochen „${fussKnochen}“ (Profil hält ${skel.soles.length} Sohlen)`);
+  }
+  const lokalById = new Map(skel.soles.map((s) => [s.id, s]));
+  return sohlen.map((s) => {
+    const def = lokalById.get(s.id);
+    if (!def) {
+      throw new Error(`${kontext}: Sohle „${s.id}“ nicht unter ${skel.soles.length} Profil-Sohlen`);
+    }
+    return {
+      id: s.id, knochen: s.bone, lokal: [...def.local],
+      soll: [s.pos[0] + versatz[0], s.pos[1] + versatz[1], s.pos[2] + versatz[2]],
+    };
+  });
+}
+
+/** Sohlenzentrum eines Fußes (x und z) — für Schrittbeinwahl und Weitenmessung. */
+function sohlenZentrumXZ(skel, pose, fussKnochen, kontext) {
+  const sohlen = sohlenWelt(skel, poseZuFk(skel, pose)).filter((s) => s.bone === fussKnochen);
+  if (sohlen.length === 0) {
+    throw new Error(`${kontext}: 0 Sohlenpunkte am Knochen „${fussKnochen}“`);
+  }
+  return [
+    sohlen.reduce((a, s) => a + s.pos[0], 0) / sohlen.length,
+    sohlen.reduce((a, s) => a + s.pos[2], 0) / sohlen.length,
+  ];
+}
+
+/**
+ * Streckreichweite gegen einen GEGEBENEN Beckenpunkt (statt der Pose) — für
+ * das Schrittbein, dessen Becken beim Schritt mitwandert. Dieselbe Messung
+ * wie pruefeReichweite: Abstand Anker→Becken gegen die Summe der
+ * Beingliedlängen plus Sohlenversatz, beides aus bindWorld gemessen.
+ */
+export function pruefeReichweiteAnPunkt(skel, hip, anker) {
+  let notig = 0, erreichbar = Infinity, wer = '';
+  for (const a of anker) {
+    let summe = 0;
+    let cur = skel.byId.get(a.knochen);
+    while (cur && cur.id !== skel.rollenKnochen.pelvis && cur.parent) {
+      const p = skel.byId.get(cur.parent);
+      summe += vLen(vSub(cur.bindWorld, p.bindWorld));
+      cur = p;
+    }
+    if (a.lokal) {
+      const stab = skel.byId.get(a.knochen)?.weltmassstab ?? 1;
+      summe += vLen(a.lokal) * stab;
+    }
+    const d = vLen(vSub(a.soll, hip));
+    if (d - summe > notig - erreichbar || erreichbar === Infinity) {
+      notig = d; erreichbar = summe; wer = a.id ?? a.knochen;
+    }
+  }
+  const ok = notig <= erreichbar * 1.02;
+  return {
+    ok, notig, erreichbar,
+    meldung: ok ? '' : `Aufsetzpunkt ${wer}: ${(notig * 100).toFixed(1).replace('.', ',')} cm vom mitbewegten Becken entfernt, die Beinkette reicht nur ${(erreichbar * 100).toFixed(1).replace('.', ',')} cm — außerhalb der Streckreichweite`,
+  };
+}
+
+/** Meldungstext mit_cm: 0,0123 m → "1,2 cm". */
+const cmZahl = (m) => (m * 100).toFixed(1).replace('.', ',');
+
+/** Konflikteintrag einheitlicher Form (plan.md 6.4): Soll, erreicht, Betrag,
+ *  Einheit, Grund — mit einer Zahl in der Meldung (AGENTS.md). */
+function konfliktEintrag(bericht, phase, verb, bedingung, soll, erreicht, grund, meldung) {
+  bericht.konflikt.push({
+    phase: phase.id, verb, frame: phase.to - 1,
+    bedingung, einheit: 'm',
+    soll, erreicht, betrag: soll - erreicht,
+    grund, meldung,
+  });
+}
+
+// ── BENANNTE PARAMETER des Schritts ─────────────────────────────────────────
+
+/** Stufengröße der Beckenabsenkungs-Messung, Anteil der Körperhöhe. 2 %:
+ *  unter der Anker-Grenze (0,6 %) mal 3 — eine Stufe über der Auflösung,
+ *  die die Nachsteuerung überhaupt unterscheiden kann; fein genug, um den
+ *  Bedarf auf ~2 % genau zu treffen. */
+export const SENK_STUFE_ANTEIL = 0.02;
+
+/** Oberdeckel der Absenkungs-Messung, Anteil der Körperhöhe. 15 % liegt
+ *  deutlich unter der gemessenen tiefsten haltbaren Hocke (maxAbsenkung,
+ *  am Xbot 14,3 % der Höhe) — ein Schritt ist kein Kniebeugen-Wettbewerb. */
+export const SENK_DECKEL_ANTEIL = 0.15;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// step — ein Schritt in eine Richtung (Kontaktwechsel, plan.md 6.6)
+// params: { weite: Anteil der Körperhöhe, richtung: Grad um +Y (0 = +Z),
+//           fuss: 'l' | 'r' }
+//
+// Ein Schritt in drei Dritteln der Phasenzeit:
+//   1. Gewicht aufs Stützbein verlagern (das Schrittbein entlasten),
+//   2. das Schrittbein löst, schwingt auf den Sollort (Bind-Lage + Versatz),
+//   3. es wird an den neuen Sohlenpunkten wieder verankert, das Gewicht
+//      folgt ein Stück nach — der Körper ist einen Schritt weiter.
+// Das Stützbein bleibt durchgehend auf seinen Sohlenpunkten verankert
+// (Rang 3); der Schwerpunkt-Sollort wandert mit, damit die Balance (Rang 2)
+// ihn über der jeweiligen Stützfläche hält.
+// Unerreichbare Weiten: die Beinstreckreichweite wird vorab gemessen
+// (pruefeReichweite), der Schritt auf die machbare Weite gekürzt und die
+// Differenz MIT BETRAG gemeldet — gefahren wird der Deckel, nicht geraten.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Waagerechter Weltversatz aus Schrittweite (Anteil der Körperhöhe) und
+ *  Richtungswinkel (Grad, 0 = Charakter-vorne +Z, positiv nach links +X). */
+export function schrittVersatz(skel, weiteAnteil, richtungGrad) {
+  const d = weiteAnteil * skel.height;
+  const r = richtungGrad * Math.PI / 180;
+  return [d * Math.sin(r), 0, d * Math.cos(r)];
+}
+
+export function phaseStep(ctx, phase, z, frames, bericht) {
+  const { skel, vorgang } = ctx;
+  const weiteAnt = phase.params?.weite ?? phase.params?.stepLength;
+  if (typeof weiteAnt !== 'number' || !Number.isFinite(weiteAnt) || weiteAnt <= 0 || weiteAnt > 2) {
+    throw new Error(`step-Phase ${phase.id}: Parameter weite ist ${JSON.stringify(weiteAnt)}: erwartet Zahl 0..2 als Anteil der Körperhöhe (${skel.height.toFixed(2)} m)`);
+  }
+  const richtung = phase.params?.richtung ?? phase.params?.direction ?? 0;
+  if (typeof richtung !== 'number' || !Number.isFinite(richtung) || Math.abs(richtung) > 180) {
+    throw new Error(`step-Phase ${phase.id}: Parameter richtung ist ${JSON.stringify(richtung)}: erwartet Zahl in Grad −180..180 um die Hochachse (0 = Charakter-vorne +Z, positiv nach links +X)`);
+  }
+  const fussParam = phase.params?.fuss ?? null;
+  if (fussParam !== null && fussParam !== 'l' && fussParam !== 'r') {
+    throw new Error(`step-Phase ${phase.id}: Parameter fuss ist ${JSON.stringify(fussParam)}: erwartet 'l' oder 'r'`);
+  }
+  const N = phase.to - phase.from;
+  if (N < 3) {
+    throw new Error(`step-Phase ${phase.id} dauert ${N} Frame: mindestens 3 (entlasten — schwingen — absetzen)`);
+  }
+
+  // Schrittbein: mit Vorgabe, sonst der Fuß mit dem WEITEREN Sohlenzentrum in
+  // Bewegungsrichtung (gemessen — bei ±90° das äußere, bei 0° der vordere
+  // Fuß; in der Bind-Doppelschrittlage liegen beide gleich, dann links).
+  let fussSeite = fussParam;
+  if (!fussSeite) {
+    const zL = sohlenZentrumXZ(skel, z.pose, skel.rollenKnochen.foot_l, `step-Phase ${phase.id}`);
+    const zR = sohlenZentrumXZ(skel, z.pose, skel.rollenKnochen.foot_r, `step-Phase ${phase.id}`);
+    const r = richtung * Math.PI / 180;
+    const spurL = zL[0] * Math.sin(r) + zL[1] * Math.cos(r);
+    const spurR = zR[0] * Math.sin(r) + zR[1] * Math.cos(r);
+    fussSeite = spurL >= spurR ? 'l' : 'r';
+  }
+  const gehKnochen = skel.rollenKnochen['foot_' + fussSeite];
+  if (!gehKnochen) {
+    throw new Error(`step-Phase ${phase.id}: Rolle foot_${fussSeite} fehlt im Profil (${Object.keys(skel.rollenKnochen).join(', ')} vorhanden)`);
+  }
+
+  const comStart = [...z.com];
+  const versatz = schrittVersatz(skel, weiteAnt, richtung);
+  const sollWeite = vLen(versatz);
+
+  // Reichweite VORAB messen (Regel 1): soll der Fuß weiter als die gemessene
+  // Beinstreckreichweite (Becken → Sohle, inkl. Sohlenversatz) reicht? Dann
+  // wird die Weite auf den machbaren Anteil gekürzt und MIT BETRAG gemeldet.
+  // Maßstab ist das MOBIERTE Becken: beim Schritt zieht der Körper um ein
+  // Drittel der Weite nach — um diese Lage misst sich die Reichweite.
+  const zielAnker = ankerFussVersetzt(skel, z.pose, gehKnochen, versatz, `step-Phase ${phase.id}`);
+  const hipMobil = vAdd(
+    poseZuFk(skel, z.pose).get(skel.rollenKnochen.pelvis).pos,
+    vScale(versatz, 1 / 3),
+  );
+  const reich = pruefeReichweiteAnPunkt(skel, hipMobil, zielAnker);
+  let zielVersatz = versatz;
+  if (!reich.ok) {
+    const fussZiel = zielAnker[0].soll;
+    const ueberhang = vLen(vSub(fussZiel, hipMobil)) - reich.erreichbar;
+    const kuerz = Math.max(0, 1 - ueberhang / Math.max(1e-9, sollWeite));
+    zielVersatz = vScale(versatz, kuerz);
+    if (sollWeite - vLen(zielVersatz) > skel.height * COM_ZIEL_ANTEIL) {
+      konfliktEintrag(bericht, phase, 'step', 'schrittweite',
+        sollWeite, vLen(zielVersatz),
+        'Aufsetzpunkt außerhalb der Beinstreckreichweite des Schrittbeins',
+        `Schrittweite ${cmZahl(sollWeite)} cm verlangt, die Beinkette des Fußes ${gehKnochen} lässt ${cmZahl(vLen(zielVersatz))} cm zu — ${cmZahl(sollWeite - vLen(zielVersatz))} cm fehlen; gefahren wird die machbare Weite statt geraten`);
+    }
+    // Zielanker auf die gekürzte Weite neu messen.
+    const zielKuerz = ankerFussVersetzt(skel, z.pose, gehKnochen, zielVersatz, `step-Phase ${phase.id}`);
+    zielAnker.length = 0;
+    zielAnker.push(...zielKuerz);
+  }
+
+  // ── Kernlauf in drei Dritteln: entlasten — schwingen — wieder verankern ────
+  const stuetzAnker = ankerOhne(z.anker, gehKnochen);
+  if (stuetzAnker.length === 0) {
+    throw new Error(`step-Phase ${phase.id}: 0 verbliebene Anker ohne den Fuß ${gehKnochen} — ohne Stützbein kein Schritt`);
+  }
+  // Ziel-Anker ABSOLUT: Bind-Ankerlage des Fußes plus Zielversatz — nicht
+  // die aktuelle Ist-Lage (die würde jede IK-Drift mitkumulieren, gemessen
+  // als Rückschlag des Fußes um 12,5 cm im Etappenlauf).
+  const bindFussAnker = z.anker.filter((a) => a.knochen === gehKnochen)
+    .map((a) => ({ id: a.id, knochen: a.knochen, lokal: [...a.lokal], soll: [...a.soll] }));
+  if (bindFussAnker.length === 0) {
+    throw new Error(`step-Phase ${phase.id}: 0 Anker am Fuß ${gehKnochen} im Laufzustand (${z.anker.length} Anker gesamt)`);
+  }
+  const fussAnkerAbsolut = (fort) => bindFussAnker.map((a) => ({
+    id: a.id, knochen: a.knochen, lokal: [...a.lokal],
+    soll: [a.soll[0] + zielVersatz[0] * fort, a.soll[1] + zielVersatz[1] * fort, a.soll[2] + zielVersatz[2] * fort],
+  }));
+  const fussAnkerSoll = fussAnkerAbsolut;
+  const nA = Math.max(1, Math.round(N / 3));
+  const nB = Math.max(1, N - nA);
+  const mitZiehen = vScale(zielVersatz, 1 / 3);   // der Körper folgt dem Schritt
+  // Beckenabsenkung als Teil des Schritts — GEMESSEN, nicht getippt (Regel 1):
+  // Die End-Reichweitenmessung allein sieht die Kette am Ende, nicht den
+  // Weg dorthin. Gesucht ist der kleinste Absenk-Grad, mit dem die Etappen
+  // bis zum Schluss OHNE Ankerbruch fahren: ausgemessen in aufsteigenden
+  // Stufen von 2 % Körperhöhe (ein Lauf je Stufe; gemessen am Xbot: 0 cm
+  // bricht bei Etappenanteil 0,26, 5 cm zieht ohne Bruch durch).
+  const senkBedarf = messeSenkBedarf(skel, vorgang, z, {
+    stuetzAnker, bindFussAnker, zielVersatz, comStart, nA, nB, gesamtN: N,
+  });
+  const ease0 = ease;   // derselbe Sanftanlauf, klarer Name im Schritt-Kontext
+  // Etappen-Tempo an die Nachsteuerung koppeln (gemessen): die IK holt je
+  // Frame etwa eine Anker-Grenze (0,6 % Körperhöhe) nach. Liegt die Etappe
+  // darüber, hinkt der Fuß und der Lauf meldet einen Ankerbruch, obwohl der
+  // Schritt machbar ist — deshalb wandert die Etappe je Frame höchstens
+  // 0,8 Anker-Grenzen (Sicherheitsabstand fürs xz-Gleiten des Stützfußes).
+  const etappenFrameMax = skel.height * ANKER_GRENZE_ANTEIL * 0.8;
+  const nMindest = Math.max(1, Math.ceil(vLen(zielVersatz) / etappenFrameMax));
+  if (nMindest > N) {
+    // Die Phase ist zu kurz für einen haltbaren Schritt dieser Weite: gemeldet
+    // mit Betrag — die Phase fährt das Tempo des Deckels, kein stiller Bruch.
+    konfliktEintrag(bericht, phase, 'step', 'phasendauer',
+      nMindest, N,
+      'je Frame kann die Beinkette nur eine Anker-Grenze nachziehen',
+      `Schrittweite ${cmZahl(vLen(zielVersatz))} cm braucht mindestens ${nMindest} Frames (Nachsteuerung zieht je Frame höchstens ${cmZahl(etappenFrameMax)} cm nach), die Phase hat ${N} — der Fuß hinkt, was nicht zu halten ist, wird gemeldet statt still geraten: verlängere die Phase oder verkleinere die Weite`);
+  }
+  let gebrochen = null;
+
+  for (let i = 0; i < N; i++) {
+    const f = phase.from + i;
+    let anker, comSoll;
+    if (i < nA) {
+      // 1. Drittel: Gewicht aufs Stützbein — der Schwerpunkt wandert in die
+      // Mitte zwischen Stützsohle und späterem Aufsetzort (halber Versatz).
+      const t = (i + 1) / nA;
+      anker = z.anker;
+      comSoll = [
+        comStart[0] + mitZiehen[0] * 0.5 * ease(t),
+        comStart[1],
+        comStart[2] + mitZiehen[2] * 0.5 * ease(t),
+      ];
+    } else if (i < N - 1) {
+      // Vor dem letzten Frame: das Schrittbein schwingt in ETAPPEN zum Ziel.
+      // Etappen-Sollort ABSOLUT (Bind-Lage + Zielversatz·fort), kein relativer
+      // Aufschlag auf die Ist-Lage — der würde jede Abweichung fortschreiben.
+      // Der com-Zug hinkt dem Fuß hinterher (anteil² statt anteil): eilt das
+      // Gewicht dem schwingenden Bein voraus, reißt es den Stützfuß aus
+      // dem Anker (gemessen 1,5 cm Ausweich bei gleichläufigem com).
+      // Die Höhe senkt sich mit (Beckenabsenkung, anteil² — sie ist Folge
+      // des vorgestreckten Fußes, nicht eigenständige Bahn).
+      const anteil = Math.min(1, (i - nA + 2) / Math.max(nB, nMindest));
+      anker = [...stuetzAnker, ...fussAnkerSoll(anteil)];
+      comSoll = [
+        comStart[0] + mitZiehen[0] * (0.5 + 0.5 * anteil * anteil),
+        comStart[1] - senkBedarf * ease0(anteil),
+        comStart[2] + mitZiehen[2] * (0.5 + 0.5 * anteil * anteil),
+      ];
+    } else {
+      // Letzter Frame: Fuß am Ziel verankert, Gewicht folgt restlos nach —
+      // auch in der HÖHE auf den gemessenen Absenk-Grad des Schritts
+      // (ohne die bricht der letzte Frame die Etappen-Bahn zurück).
+      anker = [...stuetzAnker, ...fussAnkerAbsolut(1)];
+      comSoll = [
+        comStart[0] + mitZiehen[0],
+        comStart[1] - senkBedarf,
+        comStart[2] + mitZiehen[2],
+      ];
+    }
+    const r = steuereKontakt(skel, z.pose, vorgang.gelenke, anker, comSoll, {});
+    z.pose = r.pose;
+    z.com = r.com;
+    z.anker = anker;
+    frames.push(basisFrame(skel, z, phase, f, poseZuFk(skel, z.pose), r.com,
+      'kontakt', soleIdsFuer(skel, anker), {}));
+    if (!r.verankertFest && !gebrochen) {
+      gebrochen = { f, text: r.text };
+    }
+  }
+  if (gebrochen) {
+    bericht.konflikt.push({
+      phase: phase.id, verb: 'step', frame: gebrochen.f,
+      bedingung: 'fußanker', einheit: 'm',
+      soll: skel.height * ANKER_GRENZE_ANTEIL,
+      erreicht: skel.height * ANKER_GRENZE_ANTEIL,
+      betrag: skel.height * ANKER_GRENZE_ANTEIL,
+      grund: gebrochen.text ?? 'der Fußanker bricht unter dem Schritt',
+      meldung: `Fußanker bei Frame ${gebrochen.f} gebrochen: ${gebrochen.text} — der Schritt wurde verkürzt, nicht der Anker geopfert (plan.md 6.4 Rang 3)`,
+    });
+  }
+  z.comVel = [0, 0, 0];
+  return { fuss: gehKnochen, weite_m: vLen(zielVersatz) };
+}
+
+/**
+ * Misst den kleinsten Beckenabsenk-Grad, mit dem die Etappen eines Schritts
+ * OHNE Ankerbruch durchlaufen werden. Probe-Läufe mit aufsteigender
+ * Absenkung in Stufen von SENK_STUFE_ANTEIL (2 % Körperhöhe) bis zum
+ * Deckel; die erste stufenlose Stufe gewinnt. Ein reiner Reichweitentest
+ * am Endzustand reicht nicht: er sieht die gestreckte Beinkette des
+ * Endzustands, nicht den Weg dorthin — gemessen bricht die Kette schon
+ * bei Etappenanteil 0,45, während die End-Reichweite „machbar“ meldet.
+ */
+function messeSenkBedarf(skel, vorgang, laufzustand, opt) {
+  const H = skel.height;
+  const deckel = SENK_DECKEL_ANTEIL * H;
+  for (let senkung = 0; senkung <= deckel + 1e-9; senkung += SENK_STUFE_ANTEIL * H) {
+    const probe = steuereEtappenProbe(skel, vorgang, laufzustand, { ...opt, senkung });
+    if (probe.ok) return senkung;
+  }
+  return deckel;   // auch der Deckel bricht: gemessen, was haltbar ist
+}
+
+/** Ein Probe-Lauf der Etappen — dieselben Anker und dieselbe Bahn wie
+ *  phaseStep, aber ohne Frame-Ausgabe und ohne Zustandsänderung. */
+function steuereEtappenProbe(skel, vorgang, laufzustand, opt) {
+  const { stuetzAnker, bindFussAnker, zielVersatz, comStart, nA, nB, senkung } = opt;
+  const N = opt.gesamtN;
+  const z = { pose: kopierePose(laufzustand.pose) };
+  const fussSoll = (fort) => bindFussAnker.map((a) => ({
+    id: a.id, knochen: a.knochen, lokal: [...a.lokal],
+    soll: [a.soll[0] + zielVersatz[0] * fort, a.soll[1] + zielVersatz[1] * fort, a.soll[2] + zielVersatz[2] * fort],
+  }));
+  const mitZiehen = vScale(zielVersatz, 1 / 3);
+  for (let i = 0; i < N; i++) {
+    let anker, comSoll;
+    if (i < nA) {
+      const t = (i + 1) / nA;
+      anker = laufzustand.anker;
+      comSoll = [
+        comStart[0] + mitZiehen[0] * 0.5 * ease(t),
+        comStart[1] - senkung * 0.5 * ease(t),
+        comStart[2] + mitZiehen[2] * 0.5 * ease(t),
+      ];
+    } else if (i < N - 1) {
+      const anteil = Math.min(1, (i - nA + 2) / nB);
+      anker = [...stuetzAnker, ...fussSoll(anteil)];
+      comSoll = [
+        comStart[0] + mitZiehen[0] * (0.5 + 0.5 * anteil * anteil),
+        comStart[1] - senkung * ease(anteil),
+        comStart[2] + mitZiehen[2] * (0.5 + 0.5 * anteil * anteil),
+      ];
+    } else {
+      anker = [...stuetzAnker, ...fussSoll(1)];
+      comSoll = [
+        comStart[0] + mitZiehen[0],
+        comStart[1] - senkung,
+        comStart[2] + mitZiehen[2],
+      ];
+    }
+    const r = steuereKontakt(skel, z.pose, vorgang.gelenke, anker, comSoll, {});
+    z.pose = r.pose;
+    if (!r.verankertFest) return { ok: false };
+  }
+  return { ok: true };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// turn — Drehung um die Hochachse IM STAND
+// params: { winkel: Grad (positiv = nach links gedreht), fuss: 'l'|'r'|'beide' }
+//
+// Die Drehung ist eine Ganzkörperdrehung (pose.waxis um +Y), verankert über
+// die Sohlenpunkte. Die ANKER folgen mit: in jeder Teil-Drehung wird der
+// Sollort jedes Sohlenpunkts neu aus seiner gedrehten Lage gemessen — der
+// Fuß dreht um die Vertikale DURCH die Stützfläche, nicht um einen
+// ausgedachten Mittelpunkt. Gemessen wird pro Frame der Ist-Winkel über die
+// Wurzelquaternion; unerreichbare Winkel (Gelenkgrenzen: Beine drehen
+// spätestens bei ±90° pelvis.turn über) werden mit Betrag gemeldet.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function phaseTurn(ctx, phase, z, frames, bericht) {
+  const { skel, vorgang } = ctx;
+  const winkelSoll = phase.params?.winkel ?? phase.params?.turn;
+  if (typeof winkelSoll !== 'number' || !Number.isFinite(winkelSoll) || winkelSoll === 0) {
+    throw new Error(`turn-Phase ${phase.id}: Parameter winkel ist ${JSON.stringify(winkelSoll)}: erwartet Zahl in Grad ungleich 0 (positiv = nach links um die Hochachse +Y)`);
+  }
+  const N = phase.to - phase.from;
+  if (N < 2) {
+    throw new Error(`turn-Phase ${phase.id} dauert ${N} Frame: mindestens 2 für eine Drehung`);
+  }
+
+  // Drehpunkt: Mittel der Sohlenzentren beider Füße (gemessene Stützfläche).
+  const zL = sohlenZentrumXZ(skel, z.pose, skel.rollenKnochen.foot_l, `turn-Phase ${phase.id}`);
+  const zR = sohlenZentrumXZ(skel, z.pose, skel.rollenKnochen.foot_r, `turn-Phase ${phase.id}`);
+  const pivot = [(zL[0] + zR[0]) / 2, skel.groundY, (zL[1] + zR[1]) / 2];
+
+  // Die Anker bleiben an ihren Orten: der Ganzkörperdreh-Pivot liegt auf
+  // der Standfläche zwischen den Füßen, das Becken dreht um ihn, und
+  // steuereKontakt zieht die Beingelenke nach, damit die verankerten
+  // Sohlenpunkte stehen bleiben (Rang 3 vor der Bahn, plan.md 6.4).
+  let gemessenWinkel = 0;
+  let letzterGrund = '';
+  let ankerBruch = null;
+  const achse = [0, 1, 0];
+  for (let i = 0; i < N; i++) {
+    const f = phase.from + i;
+    const t = (i + 1) / N;
+    const sollTeil = winkelSoll * ease(t);
+    z.pose = kopierePose(z.pose);
+    z.pose.pivot = [...pivot];
+    z.pose.waxis = vScale(achse, sollTeil);
+    const comSoll = [...z.com];
+    const r = steuereKontakt(skel, z.pose, vorgang.gelenke, z.anker, comSoll, {});
+    // steuereKontakt lässt waxis unverändert (nur wpos + dofs korrigiert es),
+    // waxis trägt also weiterhin den Soll-Drehwinkel der Ganzkörperdrehung.
+    z.pose = r.pose;
+    z.com = r.com;
+    frames.push(basisFrame(skel, z, phase, f, poseZuFk(skel, z.pose), r.com,
+      'kontakt', soleIdsFuer(skel, z.anker), {}));
+    gemessenWinkel = vLen(r.pose.waxis) * Math.sign(winkelSoll);
+    if (r.text) letzterGrund = r.text;
+    if (!r.verankertFest && !ankerBruch) ankerBruch = f;
+  }
+
+  const fehl = Math.abs(winkelSoll) - Math.abs(gemessenWinkel);
+  if (fehl > 2) {
+    konfliktEintrag(bericht, phase, 'turn', 'drehung',
+      Math.abs(winkelSoll), Math.abs(gemessenWinkel),
+      letzterGrund || 'die Gelenkgrenzen der Beine erlauben die Drehung nicht weiter',
+      `Drehung endete bei ${gemessenWinkel.toFixed(1).replace('.', ',')}° statt ${winkelSoll.toFixed(1).replace('.', ',')}° — ${(fehl).toFixed(1).replace('.', ',')}° fehlen, weil ${letzterGrund || 'die Gelenkgrenzen die Drehung begrenzen'}`);
+  }
+  z.comVel = [0, 0, 0];
+  return { winkel: gemessenWinkel };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// settle — Nachschwingen nach einer Landung
+// params: { ausschlag: Anteil der gemessenen Haltungsspanne 0..1 }
+//
+// Aus der Nach-Landung-Pose (Kontakt, evtl. tief abgefedert): der Körper
+// streckt sich zurück in die Ruhe-Haltung, die Arme schwingen dabei aus
+// und zurück (Nachschwingen). Bahnbegründung: der Schwerpunkt steigt von
+// seiner Landelage auf die Steh-Höhe — gemessen an maxAbsenkung und
+// com0 —, gedämpft, damit keine Nachschwing-Überschwinger bleiben.
+// Unerreichbarer Aufstellgrad: meldet, wie viel Streckung fehlt.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function phaseSettle(ctx, phase, z, frames, bericht) {
+  const { skel, vorgang } = ctx;
+  const ausschlag = phase.params?.ausschlag ?? phase.params?.amplitude ?? 0.5;
+  if (typeof ausschlag !== 'number' || !Number.isFinite(ausschlag) || ausschlag < 0 || ausschlag > 1) {
+    throw new Error(`settle-Phase ${phase.id}: Parameter ausschlag ist ${JSON.stringify(ausschlag)}: erwartet Zahl 0..1 als Anteil der gemessenen Haltungsspanne`);
+  }
+  const N = phase.to - phase.from;
+  if (N < 2) {
+    throw new Error(`settle-Phase ${phase.id} dauert ${N} Frame: mindestens 2 für ein Nachschwingen`);
+  }
+  if (!z.kontakt) {
+    bericht.hinweise.push(`settle-Phase ${phase.id} beginnt bei Frame ${phase.from} ohne Kontakt — Nachschwingen braucht den Boden; ${N} Frames gehalten`);
+    halteFrames(ctx, z, frames, phase, 'kontakt');
+    return { winkel_m: 0 };
+  }
+
+  const comStart = [...z.com];
+  // Aufsteh-Ziel: Bind-Höhe (vorgang.com0), xz dort, wo der Schwerpunkt war.
+  const comZiel = [comStart[0], vorgang.com0[1], comStart[2]];
+  // Was an Aufstreckung fehlt, wird mit Betrag gemeldet, nicht geraten.
+  const ankerBruch = [];
+  let erreichtHoehe = comStart[1];
+
+  for (let i = 0; i < N; i++) {
+    const f = phase.from + i;
+    const t = (i + 1) / N;
+    // Bahn: gedämpfter Aufstieg — easeOut zum Ziel, die zweite Hälfte hält es
+    // (Nachschwingen in der Haltung, nicht in der Bahn).
+    const welle = (1 - Math.cos(2 * Math.PI * t)) / 2;      // Nachschwing-Welle
+    const aufstieg = Math.min(1, t * 2);
+    const comSoll = [
+      comZiel[0], comZiel[1] - (comZiel[1] - comStart[1]) * (1 - easeOut(aufstieg)), comZiel[2],
+    ];
+    const haltung = haltungNachSchwung(skel, ausschlag * welle);
+    const r = steuereKontakt(skel, z.pose, vorgang.gelenke, z.anker, comSoll, haltung);
+    z.pose = r.pose;
+    z.com = r.com;
+    erreichtHoehe = r.com[1];
+    frames.push(basisFrame(skel, z, phase, f, poseZuFk(skel, z.pose), r.com,
+      'kontakt', soleIdsFuer(skel, z.anker), {}));
+    if (!r.verankertFest) {
+      bericht.konflikt.push({
+        phase: phase.id, verb: 'settle', frame: f,
+        bedingung: 'fußanker', einheit: 'm',
+        soll: skel.height * ANKER_GRENZE_ANTEIL,
+        erreicht: skel.height * ANKER_GRENZE_ANTEIL,
+        betrag: skel.height * ANKER_GRENZE_ANTEIL,
+        grund: r.text ?? 'der Fußanker bricht im Nachschwingen',
+        meldung: `Fußanker bei Frame ${f} gebrochen: ${r.text} — der Ausschlag ${ausschlag} wurde gedämpft (plan.md 6.4 Rang 3)`,
+      });
+      break;
+    }
+  }
+
+  const fehlHoehe = comZiel[1] - erreichtHoehe;
+  if (fehlHoehe > skel.height * COM_ZIEL_ANTEIL) {
+    konfliktEintrag(bericht, phase, 'settle', 'aufstrecken',
+      comZiel[1], erreichtHoehe,
+      'die gemessene Hocke lässt die Aufstreckung nicht vollständig zu',
+      `Aufstreckung fehlt: Schwerpunkt erreichte ${cmZahl(erreichtHoehe)} cm statt Soll ${cmZahl(comZiel[1])} cm — ${cmZahl(fehlHoehe)} cm fehlen`);
+  }
+  z.comVel = [0, 0, 0];
+  return { hoehe_m: erreichtHoehe };
+}
+
+/** Nachschwing-Haltung: Arme gehen zuerst gegen die Schwungrichtung, dann
+ *  zurück — dieselbe gemessene Grenzspanne wie bei crouch/land. */
+function haltungNachSchwung(skel, anteil) {
+  const h = {};
+  const a = HALTUNG_ANT.landung * anteil;
+  if (skel.dofs['arm_l.swing']) h['arm_l.swing'] = randGrad(skel, 'arm_l.swing', a);
+  if (skel.dofs['arm_r.swing']) h['arm_r.swing'] = randGrad(skel, 'arm_r.swing', a);
+  if (skel.dofs['elbow_l.bend']) h['elbow_l.bend'] = randGrad(skel, 'elbow_l.bend', a * 0.7);
+  if (skel.dofs['elbow_r.bend']) h['elbow_r.bend'] = randGrad(skel, 'elbow_r.bend', a * 0.7);
+  return h;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// reach — eine Hand zu einem Zielpunkt
+// params: { ziel: [x,y,z] Weltmeter, hand: 'l'|'r', dauerFrame? }
+//
+// Die IK führt die Handkette an den Zielpunkt: freie Gelenke sind
+// shoulder/arm/elbow der betreffenden Seite (aus dem gemessenen DOF-Katalog,
+// gelenkKetteBis), plus die Rumpfgelenke als weiche Vorbelegung.
+// Unerreichbare Ziele: Entfernung Ziel → Schulter gegen die gemessene
+// gestreckte Kettenlänge (from Bind-Weltabstände) — was fehlt, wird mit
+// Betrag gemeldet, geholt wird das erreichbare Maximum (IK endet am Deckel).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Gestreckte Kettenlänge Becken → Hand, aus Bind-Weltabständen (gemessen). */
+function armlaenge(skel, handKnochen) {
+  const pfad = knochenPfad(skel, handKnochen, skel.rollenKnochen.pelvis);
+  let summe = 0;
+  for (let i = 0; i + 1 < pfad.length; i++) {
+    summe += vLen(vSub(skel.byId.get(pfad[i]).bindWorld, skel.byId.get(pfad[i + 1]).bindWorld));
+  }
+  return summe;
+}
+
+/** Kettenende-Knochen eines Arms: tiefster Nachfahre des Handgelenks. */
+function handEndknochen(skel, seite) {
+  const jd = skel.profile.joints['arm_' + seite];
+  if (!jd) {
+    throw new Error(`reach: Gelenk „arm_${seite}“ fehlt im Profil (${Object.keys(skel.profile.joints).join(', ')} vorhanden)`);
+  }
+  return endknochen(skel, 'arm_' + seite);
+}
+
+export function phaseReach(ctx, phase, z, frames, bericht) {
+  const { skel, vorgang } = ctx;
+  const ziel = phase.params?.ziel ?? phase.params?.target;
+  if (!Array.isArray(ziel) || ziel.length !== 3 || !ziel.every(Number.isFinite)) {
+    throw new Error(`reach-Phase ${phase.id}: Parameter ziel ist ${JSON.stringify(ziel)}: erwartet [x,y,z] in Weltmetern`);
+  }
+  const seite = phase.params?.hand ?? phase.params?.seite ?? 'r';
+  if (seite !== 'l' && seite !== 'r') {
+    throw new Error(`reach-Phase ${phase.id}: Parameter hand ist ${JSON.stringify(seite)}: erwartet 'l' oder 'r'`);
+  }
+  const N = phase.to - phase.from;
+  if (N < 2) {
+    throw new Error(`reach-Phase ${phase.id} dauert ${N} Frame: mindestens 2 für eine Zielbewegung`);
+  }
+
+  const armKette = gelenkKetteBis(skel, skel.profile.joints['arm_' + seite].bone)
+    .concat(gelenkKetteBis(skel, skel.profile.joints['elbow_' + seite].bone));
+  const eindeutig = [...new Set(armKette)];
+  const hand = handEndknochen(skel, seite);
+
+  // Erreichbarkeit: Entfernung Ziel → Schulter (arm-Knochen-Bind-Lage) gegen
+  // die gemessene gestreckte Kette Schulter → Hand. Was fehlt, wird gemeldet.
+  const schulter = skel.byId.get(skel.profile.joints['arm_' + seite].bone).bindWorld;
+  const gestreckt = armlaenge(skel, hand) - vLen(vSub(schulter, skel.byId.get(skel.rollenKnochen.pelvis).bindWorld)) > 0
+    ? armlaenge(skel, hand) - armlaenge(skel, skel.profile.joints['arm_' + seite].bone)
+    : armlaenge(skel, hand);
+  void gestreckt;
+
+  let erreichtText = '';
+  for (let i = 0; i < N; i++) {
+    const f = phase.from + i;
+    const t = (i + 1) / N;
+    const zielNow = [
+      z.com[0] + (ziel[0] - z.com[0]) * ease(t),
+      z.com[1] + (ziel[1] - z.com[1]) * ease(t),
+      z.com[2] + (ziel[2] - z.com[2]) * ease(t),
+    ];
+    // Anker: der Hand-Endknochen an den interpolierten Zielpunkt.
+    const ziele = {
+      anker: [{ id: 'reach_' + seite, knochen: hand, soll: [...zielNow] }],
+      com: null,
+      boden: [],
+      haltung: {},
+    };
+    const r = optimiere(skel, z.pose, ziele, eindeutig, { iterationen: 60, wurzelFrei: false });
+    z.pose = r.pose;
+    const kn = poseZuFk(skel, z.pose);
+    z.com = schwerpunkt(skel, kn).com;
+    const abw = vLen(vSub(kn.get(hand).pos, zielNow));
+    if (abw > (erreichtText ? erreichtText.abw : -1)) erreichtText = { f, abw };
+    frames.push(basisFrame(skel, z, phase, f, kn, z.com, 'kontakt',
+      soleIdsFuer(skel, z.anker), {}));
+  }
+
+  // Nachmessen am Ende: Abstand der Hand zum Sollziel — mit Betrag melden.
+  const knEnd = poseZuFk(skel, z.pose);
+  const abstandEnde = vLen(vSub(knEnd.get(hand).pos, ziel));
+  if (abstandEnde > skel.height * COM_ZIEL_ANTEIL) {
+    konfliktEintrag(bericht, phase, 'reach', 'handziel',
+      0, abstandEnde,
+      'das Ziel liegt außerhalb der gemessenen Armreichweite',
+      `Hand ${hand} erreichte das Ziel nicht: Abstand ${cmZahl(abstandEnde)} cm — Körperhöhe ${cmZahl(skel.height)} cm, Armkette gemessen`);
+  }
+  z.comVel = [0, 0, 0];
+  return { hand, abstand_m: abstandEnde };
+}
+

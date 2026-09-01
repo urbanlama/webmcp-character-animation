@@ -31,13 +31,17 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { chromium } from 'playwright';
 
+import { KATALOG_SICHTBAR } from '../../src/tools/catalog.js';
 import { durchlauf, SCHRITTE, FRAMES } from './durchlauf.mjs';
 
 const HIER = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HIER, '..', '..');
 const XBOT = join(REPO, 'spikes', 'test-b-motion', 'assets', 'Xbot.glb');
 const STARTZEILE = /Server läuft: (http:\/\/localhost:\d+\/)/;
-const WERKZEUGE = 16;
+// Was der Agent sieht, nicht was der Gesamtbestand fuehrt: die Werkzeugkiste
+// (add_phase, edit_phase, set_target) ist dem Agenten absichtlich unsichtbar
+// und wird von createToolLayer deshalb nicht registriert.
+const WERKZEUGE = KATALOG_SICHTBAR.length;
 
 /** Derselbe Server, dieselbe Port-Vergabe wie tools/browser-test.mjs. */
 function serverStart() {
@@ -103,9 +107,11 @@ async function seiteMitModell() {
   assert.equal(await page.evaluate(() => !!window.__boot?.bereit), true,
     'Seitenmodul wurde nicht ausgeführt — ohne geladene Seite gibt es keinen Weg');
   await page.setInputFiles('#file', XBOT);
+  // Die Statuszeile zaehlt auf Englisch ("N bones"), siehe index.html;
+  // "Knochen" steht dort nicht.
   await page.waitForFunction(() => {
     const s = document.getElementById('status');
-    return !!s && s.textContent.indexOf('Knochen') >= 0;
+    return !!s && /\d+\s+bones/.test(s.textContent);
   }, null, { timeout: 30000 });
   return page;
 }
@@ -127,14 +133,39 @@ function schnittInDerSeite(page, { umgebungsname = 'browser', mitRenderer = true
       streifenRenderer: mitRenderer
         ? async ({ profile, frames, frameCount }) => {
           const { createStripRenderer } = await import('/src/render/strip.js');
-          return createStripRenderer({
-            scene, profile, frames, frameCount,
-            renderer: webgl, canvas: webgl.domElement,
+          // Erster Versuch: mit Scene, also mit gestelltem Mesh. Dafür braucht
+          // src/render/strip.js je Frame eine volle Knochenpose unter `bones`
+          // (position, quaternion, weltSkala). src/solver/loeser.js liefert
+          // heute `positions` je Knochen und `joints` je GELENKNAME, keine
+          // weltSkala — daraus lässt sich die Mesh-Pose nicht bauen, ohne
+          // Zahlen zu erfinden.
+          //
+          // Zweiter Versuch deshalb ohne Scene: strip.js rastert dann die Figur
+          // aus den GEMESSENEN Segmentradien des RigProfile. Das sind echte
+          // Pixel aus echten Maßen, nur ohne Haut — und strip.js weist es
+          // selbst als Warnung aus. Sobald der Löser Ausrichtungen mitgibt,
+          // greift wieder der erste Versuch, ohne dass hier jemand nachzieht.
+          const gemeinsam = { profile, frames, frameCount };
+          const mitMesh = createStripRenderer({
+            ...gemeinsam, scene, renderer: webgl, canvas: webgl.domElement,
           });
+          let ohneMesh = null;
+          window.__streifenBefund = { mesh: true, grund: null };
+          return {
+            streifen(arg) {
+              try {
+                return mitMesh.streifen(arg);
+              } catch (err) {
+                window.__streifenBefund = { mesh: false, grund: String(err.message ?? err) };
+                ohneMesh = ohneMesh ?? createStripRenderer({ ...gemeinsam, scene: undefined });
+                return ohneMesh.streifen(arg);
+              }
+            },
+          };
         }
         : undefined,
     });
-    return { ergebnis, text: berichtText(ergebnis) };
+    return { ergebnis, text: berichtText(ergebnis), streifenBefund: window.__streifenBefund ?? null };
   }, { solverDateien: SOLVER_DATEIEN, umgebungsname, mitRenderer });
 }
 
@@ -150,8 +181,33 @@ test('Browser: derselbe Lauf in der echten Seite endet am selben Schritt und mis
     `der Browser endet bei Schritt ${b.ergebnis.endeteBei}, Node bei ${n.endeteBei} — beide `
     + `Zweige müssen denselben Weg gehen. Browser: `
     + `${b.ergebnis.schritte.map((s) => `${s.id}:${s.status}`).join(' ')}`);
-  assert.equal(b.ergebnis.zahlen.gelaufen, n.zahlen.gelaufen,
-    `gelaufene Schritte: Browser ${b.ergebnis.zahlen.gelaufen}, Node ${n.zahlen.gelaufen}`);
+
+  // Ein Schritt darf legitim abweichen, und nur einer: Schritt 7 rendert im
+  // Browser echte Pixel und kann das in Node nicht. Jede andere Abweichung ist
+  // ein Befund — dann misst eine der beiden Umgebungen falsch.
+  const andersAls = SCHRITTE.map((s) => s.id).filter((id) => {
+    const bs = b.ergebnis.schritte.find((x) => x.id === id).status;
+    const ns = n.schritte.find((x) => x.id === id).status;
+    return bs !== ns;
+  });
+  assert.deepEqual(andersAls.filter((id) => id !== '7'), [],
+    `außer Schritt 7 (WebGL) darf kein Schritt zwischen den Umgebungen abweichen, es weichen ab: `
+    + andersAls.map((id) => `${id} (Browser ${b.ergebnis.schritte.find((x) => x.id === id).status}, `
+      + `Node ${n.schritte.find((x) => x.id === id).status})`).join('; '));
+  assert.equal(b.ergebnis.zahlen.gelaufen - n.zahlen.gelaufen, andersAls.length,
+    `gelaufene Schritte: Browser ${b.ergebnis.zahlen.gelaufen}, Node ${n.zahlen.gelaufen} — `
+    + `der Unterschied muss genau die ${andersAls.length} abweichenden Schritte sein`);
+
+  // B2: der Bildstreifen entsteht hier wirklich. Ein Platzhalter zählt nicht.
+  const s7 = b.ergebnis.schritte.find((s) => s.id === '7');
+  assert.equal(s7.status, 'gelaufen',
+    `Schritt 7 muss im Browser echte Pixel liefern, meldet "${s7.status}": ${s7.meldung ?? ''}`);
+  assert.equal(s7.zahlen.quelle, 'src/render/strip.js:createStripRenderer',
+    `der Streifen muss aus src/render/strip.js kommen, kam aus "${s7.zahlen.quelle}"`);
+  if (b.streifenBefund && b.streifenBefund.mesh === false) {
+    console.log('\nBEFUND Bildstreifen ohne Mesh — gerastert aus gemessenen Segmentradien:\n  '
+      + b.streifenBefund.grund + '\n');
+  }
   assert.equal(b.ergebnis.schritte.length, SCHRITTE.length,
     `der Bericht muss alle ${SCHRITTE.length} Schritte führen, er führt `
     + `${b.ergebnis.schritte.length}`);
@@ -175,45 +231,63 @@ test('Browser: derselbe Lauf in der echten Seite endet am selben Schritt und mis
   assert.equal(s4.frames, FRAMES, `die Timeline muss ${FRAMES} Frames haben, meldet ${s4.frames}`);
 });
 
-test('Browser: ohne WebGL-Kontext verweigert der Lauf den Bericht, auch in der Seite mit Renderer', async () => {
-  // Umkehrung von B2: nicht "kein Pixel gesehen, weil keiner gebraucht wurde",
-  // sondern "ohne Bild gibt es keinen Bericht" (plan.md 5.3). Dazu wird der
-  // Renderer-Port weggelassen, obwohl die Seite einen hätte.
+test('Browser: ohne Renderer-Port fällt der Lauf auf den Platzhalter zurück und sagt es, statt ein Bild zu behaupten', async () => {
+  // Umkehrung von B2: derselben Seite wird der Renderer-Port weggelassen,
+  // obwohl sie einen hätte. Die Regel aus plan.md 5.3 bleibt in Kraft — der
+  // Bericht trägt weiter einen Bildverweis —, aber der Verweis muss sich als
+  // Platzhalter zu erkennen geben, und Schritt 7 darf NICHT als gelaufen
+  // dastehen. Ein Lauf, der hier "Bildstreifen: gelaufen" meldete, würde ein
+  // Bild behaupten, das niemand gerendert hat.
   const page = await seiteMitModell();
   const ohne = await schnittInDerSeite(page, { umgebungsname: 'browser-ohne-webgl', mitRenderer: false });
   await page.close();
 
   const stopp = ohne.ergebnis.schritte.find((s) => s.id === '7');
-  assert.ok(ohne.ergebnis.schritte.some((s) => s.status !== 'gelaufen'),
-    `ein Lauf ohne Bildstreifen darf nicht vollständig sein:\n${ohne.text}`);
-
-  if (ohne.ergebnis.kamBis === '5') {
-    // Schritt 6 braucht den Streifen als Pflichteingang; er darf nicht gelaufen
-    // sein, nur weil report.js da ist.
-    assert.notEqual(ohne.ergebnis.schritte.find((s) => s.id === '6').status, 'gelaufen',
-      'Schritt 6 lief, obwohl 0 Bildstreifen vorlagen — ein Bericht ohne Bild wird nicht ausgeliefert');
-    assert.match(stopp.meldung, /0 WebGL-Kontext/,
-      `die Meldung muss den Grund mit Zahl nennen, war: "${stopp.meldung}"`);
-  } else {
-    assert.ok(['browser-ohne-webgl'].includes(ohne.ergebnis.umgebung),
-      'der Zweigname muss in der Meldung stehen');
-    assert.doesNotMatch(ohne.text, /endet bei Schritt 7/,
-      `ohne gelösten Schritt 5 darf der Lauf nicht behaupten, an 7 gescheitert zu sein:\n${ohne.text}`);
-  }
+  assert.notEqual(stopp.status, 'gelaufen',
+    `Schritt 7 meldet "gelaufen", obwohl 0 Renderer-Ports übergeben wurden:\n${ohne.text}`);
+  assert.match(stopp.meldung ?? '', /0 WebGL-Kontext/,
+    `die Meldung muss den Grund mit Zahl nennen, war: "${stopp.meldung}"`);
+  assert.equal(stopp.zahlen.gerendertBilder, 0,
+    `der Platzhalter muss 0 gerenderte Bilder ausweisen, meldet ${stopp.zahlen.gerendertBilder}`);
   assert.match(ohne.text, /nicht (verfügbar|erreicht)/,
     `der Bericht muss das Fehlen benennen:\n${ohne.text}`);
+
+  // Kam der Lauf bis zum Bericht, muss dessen Bildverweis den Platzhalter
+  // ausweisen — kein Eintrag darf wie eine gerenderte Ansicht aussehen.
+  const bericht = ohne.ergebnis.bericht;
+  if (bericht) {
+    assert.ok(bericht.images.length >= 1,
+      'die Bildpflicht aus plan.md 5.3 gilt auch für den Platzhalter');
+    for (const bild of bericht.images) {
+      assert.equal(bild.view, 'platzhalter',
+        `Bildeintrag gibt sich als Ansicht "${bild.view}" aus, obwohl nichts gerendert wurde`);
+      assert.match(bild.ref, /^platzhalter:\/\/kein-bild\//,
+        `der Bildverweis verschweigt, dass er keiner ist: "${bild.ref}"`);
+    }
+  }
 });
 
-test('Browser, Negativfall: die ausgelieferte Seite hängt ihre Werkzeuge an Attrappen — Anschluss fehlt, Zahl fehlt', async () => {
-  // Der dritte Befund, den nur dieser Zweig sehen kann: index.html ruft
-  // createToolLayer OHNE ports auf (Zeile 218), die Schicht steht damit auf den
-  // Attrappen aus src/tools/ports.js — obwohl Vermessung, Erkennung und
-  // Prüfungen schon existieren. Bis der Anschluss steht, ist "0 von 14
-  // Segmenten gemessen" die Antwort der fertigen Seite.
-  //
-  // Dieser Fall ist als BEHAUPTUNG der heutigen Lücke gebaut, nicht als Wunsch:
-  // Sobald index.html echte Ports bekommt, schlägt er rot und muss auf die
-  // gemessenen Zahlen umgestellt werden — gelöscht wird er nicht.
+// Referenz-Vermessung des Xbot, wie sie der Anschluss an echte Ports liefert
+// (Auftrag vom 2026-08-31: describe_body 14 Segmente / 8 Sohlen, describe_world
+// 67 Knochen / 28374 Vertices / 1,8093 m, describe_rig 18 Gelenke).
+// Das sind keine getippten Körpermaße: es ist das MESERGEBNIS an diesem einen
+// festen Referenzmodell, und der Test prüft die Seitenantworten doppelt — gegen
+// die Node-Vermessung desselben Modells (dynamisch) und gegen diese Zahlzeile
+// (fest). Ändert sich die Vermessung legitimate, muss sie hier und dort
+// gemeinsam umgestellt werden; leise abdriften darf sie nicht.
+const REFERENZ_XBOT = {
+  segmente: 14, gelenke: 18, knochen: 67, sohlen: 8,
+  vertices: 28374, hoeheMeter: 1.8093,
+};
+
+test('Browser, Negativfall: die ausgelieferte Seite hängt keine Attrappen mehr an — jedes describe-Werkzeug meldet gemessen', async () => {
+  // Umkehrung des alten Befunds: dieser Fall behauptete bis 2026-08-30 die
+  // Lücke („index.html ruft createToolLayer ohne ports auf, describe_body
+  // antwortet 0 von 14 Segmenten"). Die Lücke ist zu: index.html baut
+  // echtePorts({ renderer }) und hängt sie unter ports ein. Der Test prüft
+  // deshalb jetzt, dass KEINE Attrappe mehr dranhängt. Tauscht jemand die
+  // Anschlüsse zurück auf attrappenPorts(), werden die beiden Prüfungen auf
+  // quelle und das Wort „Attrappe" rot — genau der Negativfall.
   const page = await browser.newPage();
   await page.addInitScript(() => {
     const registriert = [];
@@ -224,35 +298,107 @@ test('Browser, Negativfall: die ausgelieferte Seite hängt ihre Werkzeuge an Att
   });
   await page.goto(basis, { waitUntil: 'load' });
   await page.setInputFiles('#file', XBOT);
-  await page.waitForFunction(() => document.getElementById('status').textContent.indexOf('Knochen') >= 0,
-    null, { timeout: 30000 });
+  // Nicht "Knochen" abwarten — das schreibt presentModel VOR der Vermessung.
+  // gewartet wird das ENDE der Vermessung: messeFuerWerkzeuge hängt "gemessen"
+  // an die Statuszeile, ein Scheitern "nicht vermessen" bzw. "Ladefehler".
+  await page.waitForFunction(() => {
+    const s = document.getElementById('status');
+    return !!s && /gemessen|nicht vermessen|Ladefehler/.test(s.textContent);
+  }, null, { timeout: 30000 });
 
   const befund = await page.evaluate(async () => {
     const t = window.__tools;
     if (!t) return { schicht: false };
-    const a = await t.rufe('describe_body', {});
-    const text = String(a?.content?.[0]?.text ?? '');
-    let profil = null;
-    try { profil = JSON.parse(text); } catch { /* Meldungstext, kein JSON */ }
-    return {
-      schicht: true, text,
-      segmente: Array.isArray(profil?.segments) ? profil.segments.length : null,
-      quelle: profil?.quelle ?? null,
-    };
+    const antworten = {};
+    for (const name of ['describe_world', 'describe_rig', 'describe_body']) {
+      const a = await t.rufe(name, {});
+      const text = String(a?.content?.[0]?.text ?? '');
+      let profil = null;
+      try { profil = JSON.parse(text); } catch { /* Fehlermeldung, kein JSON */ }
+      antworten[name] = {
+        isError: a?.isError === true,
+        text,
+        quelle: profil?.quelle ?? null,
+        segmente: Array.isArray(profil?.segments) ? profil.segments.length : null,
+        sohlen: Array.isArray(profil?.soles) ? profil.soles.length : null,
+        gelenke: profil?.joints ? Object.keys(profil.joints).length : null,
+        rollen: profil?.roles ? Object.keys(profil.roles).length : null,
+        rueckfragen: Array.isArray(profil?.questions) ? profil.questions.length : null,
+        knochen: typeof profil?.knochen === 'number' ? profil.knochen : null,
+        vertices: typeof profil?.vertices === 'number' ? profil.vertices : null,
+        hoehe: typeof profil?.height === 'number' ? profil.height : null,
+      };
+    }
+    return { schicht: true, registriert: t.getTools().length, antworten };
   });
   await page.close();
 
-  const gemessen = (await durchlauf(nodeUmgebung())).schritte.find((s) => s.id === '2a').zahlen;
+  // Node misst denselben Modellfall durch — der Positivfall prüft gegen diese
+  // zweite unabhängige Vermessung, nicht nur gegen Konstanten.
+  const n = (await durchlauf(nodeUmgebung())).schritte;
+  const g2a = n.find((s) => s.id === '2a').zahlen;
+  const g1 = n.find((s) => s.id === '1').zahlen;
+  const g2b = n.find((s) => s.id === '2b')?.zahlen ?? {};
+
   assert.equal(befund.schicht, true,
     'window.__tools muss stehen — ohne Modell-Kontext baut die Seite keine Werkzeugschicht');
-  assert.match(befund.text, /\d/,
-    `die Werkzeugantwort muss eine Zahl nennen (AGENTS.md), war: "${befund.text}"`);
-  assert.equal(befund.segmente, 0,
-    `DER ANSCHLUSS FEHLT: die Seite meldet ${befund.segmente} Segmente aus describe_body, die `
-    + `Vermessung am selben Modell liefert ${gemessen.segmente}. index.html baut createToolLayer `
-    + `ohne ports — Antwortquelle war "${befund.quelle}". Sobald echte Ports angeschlossen sind, `
-    + `ist diese Behauptung falsch und der Fall auf ${gemessen.segmente} umzustellen.`);
-  assert.equal(befund.quelle, 'attrappe',
-    `die Antwortquelle der Seite ist "${befund.quelle}", erwartet war "attrappe" — bei einem `
-    + `anderen Wert ist der Anschluss gebaut und dieser Fall muss auf gemessen umgestellt werden`);
+  assert.equal(befund.registriert, WERKZEUGE,
+    `die Seite registriert ${befund.registriert} Werkzeuge, der Katalog nennt ${WERKZEUGE}`);
+
+  // ── Negativfall: keine Attrappe mehr, nirgends ─────────────────────────────
+  for (const [name, a] of Object.entries(befund.antworten)) {
+    assert.equal(a.isError, false,
+      `${name} antwortet als Fehler — ohne Modell oder ohne Anschluss lautet die Meldung:\n${a.text}`);
+    assert.match(a.text, /\d/,
+      `die Werkzeugantwort von ${name} muss eine Zahl nennen (AGENTS.md), war: "${a.text}"`);
+    assert.equal(a.quelle, 'gemessen',
+      `${name} meldet quelle "${a.quelle}" — erwartet "gemessen". Steht hier wieder `
+      + `"attrappe", hat jemand die echten Anschlüsse aus index.html gegen attrappenPorts() `
+      + `getauscht; die Werkzeuge antworten dann aus src/tools/ports.js ohne Messung.`);
+    assert.doesNotMatch(a.text, /attrappe/i,
+      `${name} trägt eine Attrappen-Warnung im Antworttext — die Seite misst nicht mehr am `
+      + `Modell:\n${a.text}`);
+  }
+
+  // ── Positivfall: es sind die GEMESSENEN Werte ──────────────────────────────
+  const body = befund.antworten.describe_body;
+  const world = befund.antworten.describe_world;
+  const rig = befund.antworten.describe_rig;
+
+  assert.equal(body.segmente, g2a.segmente,
+    `describe_body meldet ${body.segmente} Segmente, die Node-Vermessung desselben Modells `
+    + `liefert ${g2a.segmente} — die Seite muss nachweisen, dass sie MISST, nicht dass ein Wert da ist`);
+  assert.equal(body.segmente, REFERENZ_XBOT.segmente,
+    `describe_body meldet ${body.segmente} Segmente, die Referenz-Vermessung des Xbot führt `
+    + `${REFERENZ_XBOT.segmente} — bei einer legitimate Änderung der Vermessung ist diese `
+    + `Zeile gemeinsam mit der Node-Brücke umzustellen`);
+  assert.equal(body.sohlen, REFERENZ_XBOT.sohlen,
+    `describe_body meldet ${body.sohlen} Sohlenpunkte, gemessen werden ${REFERENZ_XBOT.sohlen}`);
+  assert.equal(world.knochen, g1.knochen,
+    `describe_world meldet ${world.knochen} Knochen, das geladene Modell hat ${g1.knochen}`);
+  assert.equal(world.knochen, REFERENZ_XBOT.knochen,
+    `describe_world meldet ${world.knochen} Knochen, der Xbot führt ${REFERENZ_XBOT.knochen}`);
+  assert.equal(world.vertices, REFERENZ_XBOT.vertices,
+    `describe_world meldet ${world.vertices} Vertices, die Geometrie des Xbot hat `
+    + `${REFERENZ_XBOT.vertices}`);
+  assert.ok(Math.abs(world.hoehe - REFERENZ_XBOT.hoeheMeter) <= 0.0005,
+    `describe_world meldet ${world.hoehe} m Körperhöhe, gemessen am Xbot sind `
+    + `${REFERENZ_XBOT.hoeheMeter} m (Toleranz 0,0005 m)`);
+  assert.equal(world.hoehe, g2a.koerperhoeheMeter,
+    `describe_world meldet ${world.hoehe} m, die Node-Vermessung meldet ${g2a.koerperhoeheMeter} m — `
+    + `zwei Umgebungen, ein Modell, eine Vermessung`);
+  assert.equal(rig.gelenke, g2a.gelenke,
+    `describe_rig meldet ${rig.gelenke} Gelenke, die Vermessung führt ${g2a.gelenke}`);
+  assert.equal(rig.gelenke, REFERENZ_XBOT.gelenke,
+    `describe_rig meldet ${rig.gelenke} Gelenke, die Referenz-Vermessung des Xbot führt `
+    + `${REFERENZ_XBOT.gelenke}`);
+  if (g2b.rollen) {
+    assert.equal(rig.rollen, g2b.rollen,
+      `describe_rig meldet ${rig.rollen} Rollen, die Erkennung in Node führt ${g2b.rollen}`);
+  }
+  if (typeof g2b.rueckfragen === 'number') {
+    assert.equal(rig.rueckfragen, g2b.rueckfragen,
+      `describe_rig meldet ${rig.rueckfragen} Rückfragen, die Erkennung in Node stellt `
+      + `${g2b.rueckfragen} — ungefragte Rollen dürfen nicht verschwinden, aber auch nicht entstehen`);
+  }
 });

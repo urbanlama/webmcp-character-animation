@@ -5,10 +5,75 @@
 // und wird abgelehnt.
 // Pflichtfeld: images mit mindestens einem Eintrag — "Jeder Bericht enthaelt
 // immer einen Bildverweis. Zahlen ohne Bild werden nicht ausgeliefert." (plan.md 5.3)
+//
+// Befunde nach Ort: Punktbefunde tragen frame UND part (boden, durchdringung,
+// balance, rutschen, ballistik, ruck). Schichtweite Befunde haben keinen
+// einzelnen Frame und keine einzelne Partie — sie duerfen beides weglassen,
+// muessen aber einen Bereich nennen (frames-Liste oder von/bis). Erfundene
+// Zahlen sind schlimmer als fehlende, ortlose Befunde unbrauchbar.
 
 import { istZahl, istInt, fehler, ergebnis } from './validate.js';
 
 const ZUSTAENDE = ['kontakt', 'flug'];
+
+/**
+ * Befunde nach Ort. Zwei Klassen, zwei Regeln:
+ *
+ *   Punktbefunde  — geschehen in GENAU EINEM Frame an GENAU EINEM Koerperteil.
+ *                   `frame` und `part` sind zwingend.
+ *   Schichtbefunde  — geschehen UEBER einen Bereich und haben keinen einzelnen
+ *                   Frame (Bewegungsdichte, Antizipation). `frame` und `part`
+ *                   duerfen fehlen — MUESSEN aber eine Ortsangabe mitbringen:
+ *                   eine nicht-leere `frames`-Liste oder `von`/`bis`.
+ *
+ * Kein Befund ohne jeden Ort. Die Lockerung erlaubt das Weglassen einer Zahl,
+ * die es nicht gibt — nie das Weglassen jeder Ortsangabe.
+ */
+export const SCHICHTBEFUNDE = ['bewegungsdichte', 'antizipation'];
+
+/** Die Punktbefunde, Names wegen in der Fehlermeldung. Alles, was nicht unter
+ *  SCHICHTBEFUNDE faellt, wird als Punktbefund geprueft — `ruck` gehoert dazu:
+ *  sein Frame stand frueher nur im Meldungstext und steht jetzt im Feld. */
+export const PUNKTBEFUNDE = ['boden', 'durchdringung', 'balance', 'rutschen', 'ballistik', 'ruck'];
+
+/** Ortsangabe eines schichtweiten Befundes: frames-Liste oder von/bis. */
+function pruefeOrt(errors, f, it) {
+  const art = typeof it.kind === 'string' && it.kind !== '' ? it.kind : 'schichtweiter Befund';
+  const frameZahl = Array.isArray(it.frames) ? it.frames.length : 0;
+  const hatBereich = it.von !== undefined || it.bis !== undefined;
+
+  if (it.frame !== undefined && (!istInt(it.frame) || it.frame < 0)) {
+    fehler(errors, `${f}.frame`, it.frame,
+      `ganzzahliger Frame >= 0, wenn vorhanden — '${art}' ist schichtweit, sein Bereich steht in frames oder von/bis`);
+  }
+  if (it.part !== undefined && (typeof it.part !== 'string' || it.part === '')) {
+    fehler(errors, `${f}.part`, it.part,
+      `nicht-leerer String oder weggelassen — bei '${art}' gibt es kein einzelnes Koerperteil`);
+  }
+  if (Array.isArray(it.frames) && frameZahl > 0) {
+    const schlecht = it.frames.filter((x) => !istInt(x) || x < 0).length;
+    if (schlecht > 0) {
+      fehler(errors, `${f}.frames`, it.frames,
+        `Array von ganzen Frame-Zahlen >= 0 — ${schlecht} von ${frameZahl} Eintraegen ungueltig`);
+    }
+  }
+  if (hatBereich) {
+    if (!istInt(it.von) || it.von < 0) {
+      fehler(errors, `${f}.von`, it.von, 'ganzzahliger Frame >= 0 (Bereichsanfang des Befundes)');
+    }
+    if (!istInt(it.bis) || it.bis < 0) {
+      fehler(errors, `${f}.bis`, it.bis,
+        `ganzzahliger Frame >= 0 (Bereichsende), von = ${JSON.stringify(it.von)}`);
+    } else if (istInt(it.von) && it.bis < it.von) {
+      fehler(errors, `${f}.bis`, it.bis, `Frame >= von = ${it.von}`);
+    }
+  }
+  if (frameZahl === 0 && !hatBereich) {
+    fehler(errors, `${f}.frames`, it.frames,
+      `nicht-leere frames-Liste oder von/bis — '${art}' ist schichtweit und darf frame und part `
+      + `weglassen, aber nicht jeden Ort: 0 Frames, 0 Bereich`);
+  }
+}
 
 function pruefeIssues(errors, field, block) {
   if (block === null || typeof block !== 'object' || Array.isArray(block)) {
@@ -25,23 +90,32 @@ function pruefeIssues(errors, field, block) {
   block.issues.forEach((it, i) => {
     const f = `${field}.issues.${i}`;
     if (it === null || typeof it !== 'object' || Array.isArray(it)) {
-      fehler(errors, f, it, 'Objekt {kind, frame, value, unit, part, message}');
+      fehler(errors, f, it, 'Objekt {kind, frame, value, unit, part, message} — schichtweite '
+        + `Befunde (${SCHICHTBEFUNDE.join(', ')}) statt frame: frames oder von/bis`);
       return;
     }
     if (typeof it.kind !== 'string' || it.kind === '') {
       fehler(errors, `${f}.kind`, it.kind, 'nicht-leerer String');
     }
-    if (!istInt(it.frame) || it.frame < 0) {
-      fehler(errors, `${f}.frame`, it.frame, 'ganzzahliger Frame >= 0');
+    const schichtweit = SCHICHTBEFUNDE.includes(it.kind);
+    if (schichtweit) {
+      pruefeOrt(errors, f, it);
+    } else {
+      if (!istInt(it.frame) || it.frame < 0) {
+        fehler(errors, `${f}.frame`, it.frame,
+          `ganzzahliger Frame >= 0 — Punktbefund '${it.kind}' geschehen in einem Frame `
+          + `(schichtweit nur: ${SCHICHTBEFUNDE.join(', ')})`);
+      }
+      if (typeof it.part !== 'string' || it.part === '') {
+        fehler(errors, `${f}.part`, it.part,
+          `nicht-leerer String (betroffenes Koerperteil) — Punktbefund '${it.kind}'`);
+      }
     }
     if (!istZahl(it.value)) {
       fehler(errors, `${f}.value`, it.value, 'Zahl (gemessener Betrag)');
     }
     if (typeof it.unit !== 'string' || it.unit === '') {
       fehler(errors, `${f}.unit`, it.unit, 'nicht-leerer String (z. B. "m", "grad")');
-    }
-    if (typeof it.part !== 'string' || it.part === '') {
-      fehler(errors, `${f}.part`, it.part, 'nicht-leerer String (betroffenes Koerperteil)');
     }
     if (typeof it.message !== 'string' || it.message === '') {
       fehler(errors, `${f}.message`, it.message, 'nicht-leerer String');

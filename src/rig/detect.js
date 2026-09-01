@@ -25,6 +25,7 @@
 //   const bericht = detectRig(gltf, { file: 'charakter.glb' });
 //   bericht.roles.pelvis    // { bone: '…', confidence: 0.98, note?: '…' }
 //   bericht.questions       // Zuordnungen in der Rückfragezone, mit Optionen
+//   bericht.abgelehnteZuordnungen // unter 0,5: bester Kandidat, keine Rolle
 //   bericht.unknown         // Ketten ohne semantische Rolle — weiter nutzbar
 //
 // @throws {RigAbweisung} wenn das Modell kein aufrechtes zweibeiniges Humanoid
@@ -1062,10 +1063,18 @@ function blickRichtung(kn, V, wolke, u, seit, beine, kopf, params) {
     let auf = nul3();
     for (const s of nutzbar) auf = add(auf, norm(s.richtung));
     const kandidat = norm(auf);
-    const abweichungen = nutzbar.map((s) => winkel(s.richtung, kandidat));
-    streuung = r3(Math.max(...abweichungen));
-    einig = Math.max(...abweichungen) <= params.richtungEinigGrad;
-    if (einig) vor = kandidat;
+    if (laenge(kandidat) < 1e-6) {
+      // Genau gegenläufig: die Signale löschen einander statt eine Richtung zu
+      // ergeben. Das ist keine Entscheidung, sondern ihre Abwesenheit — ohne
+      // diese Prüfung würde der Nullvektor als Richtung gemeldet und alle
+      // Seitenzuordnungen fielen auf dieselbe Seite.
+      streuung = 180;
+    } else {
+      const abweichungen = nutzbar.map((s) => winkel(s.richtung, kandidat));
+      streuung = r3(Math.max(...abweichungen));
+      einig = Math.max(...abweichungen) <= params.richtungEinigGrad;
+      if (einig) vor = kandidat;
+    }
   }
   return { vor, einig, signale, nutzbar: nutzbar.length, streuung };
 }
@@ -1091,6 +1100,70 @@ const eindeutig = (bester, zweite) => faktor('eindeutig',
 const bestätigt = (anzahl) => faktor('bestaetigt',
   anzahl >= 3 ? 1 : anzahl === 2 ? 0.92 : anzahl === 1 ? 0.72 : 0.2,
   `${anzahl} unabhängige Signale bestätigen dieselbe Zuordnung`);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6b. Bekannte Namenskonventionen
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Rollen, die ein Mixamo-Rig ueber seine Knochennamen selbst benennt.
+ *
+ * Warum das hier steht: Die Konfidenzrechnung schaetzt aus Geometrie — Laenge,
+ * Lage, Symmetrie, Zahl der bestaetigenden Signale. Das ist richtig fuer ein
+ * unbekanntes Rig. Bei einem Rig, das seine Knochen `mixamorigLeftLeg` nennt,
+ * ist es Unfug: dort steht die Antwort im Namen, und die Schaetzung kam
+ * trotzdem auf 0,54 fuer den Unterschenkel und 0,72 fuer die Schulter. Die
+ * Seite fragte den Menschen daraufhin achtzehn Mal nach einem Modell, das sie
+ * selbst mitliefert — und ein Agent, der diese Meldung las, hielt die
+ * Zuordnungen fuer eine Vorbedingung und begann sie zu bestaetigen, statt zu
+ * animieren.
+ *
+ * Trifft die Konvention, ist die Zuordnung gemessen und nicht geraten: der
+ * Name IST der Beleg. Konfidenz 1, keine Rueckfrage.
+ */
+const MIXAMO_ROLLEN = {
+  pelvis: 'Hips',
+  spine: 'Spine',
+  chest: 'Spine2',
+  neck: 'Neck',
+  head: 'Head',
+  shoulder_l: 'LeftShoulder', shoulder_r: 'RightShoulder',
+  arm_l: 'LeftArm', arm_r: 'RightArm',
+  forearm_l: 'LeftForeArm', forearm_r: 'RightForeArm',
+  hand_l: 'LeftHand', hand_r: 'RightHand',
+  thigh_l: 'LeftUpLeg', thigh_r: 'RightUpLeg',
+  shin_l: 'LeftLeg', shin_r: 'RightLeg',
+  foot_l: 'LeftFoot', foot_r: 'RightFoot',
+  toe_l: 'LeftToeBase', toe_r: 'RightToeBase',
+};
+
+/** Wie viele Rollen mindestens per Name treffen muessen, damit die Konvention
+ *  als erkannt gilt. Bei weniger ist es ein Rig, das nur zufaellig aehnlich
+ *  heisst — dann bleibt es bei der Geometrie. */
+export const KONVENTION_MIN_TREFFER = 12;
+
+/**
+ * Sucht eine bekannte Namenskonvention und liefert die Zuordnung daraus.
+ *
+ * @param {string[]} knochenNamen  alle Knochennamen des Rigs
+ * @returns {{name: string, rollen: Record<string,string>}|null}
+ */
+export function erkenneKonvention(knochenNamen) {
+  const nachKlein = new Map();
+  for (const n of knochenNamen) nachKlein.set(String(n).toLowerCase(), n);
+
+  const rollen = {};
+  for (const [rolle, endung] of Object.entries(MIXAMO_ROLLEN)) {
+    // Mixamo schreibt je nach Exporter "mixamorigHips" oder "mixamorig:Hips".
+    for (const praefix of ['mixamorig', 'mixamorig:']) {
+      const treffer = nachKlein.get((praefix + endung).toLowerCase());
+      if (treffer) { rollen[rolle] = treffer; break; }
+    }
+  }
+  const n = Object.keys(rollen).length;
+  if (n < KONVENTION_MIN_TREFFER) return null;
+  return { name: 'Mixamo', rollen, treffer: n };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 7. Hauptweg
@@ -1260,19 +1333,77 @@ export function detectRig(gltf, opts = {}) {
   }
 
   // ── Rollen sammeln
+  // Konfidenzordnung plan.md 5.1, drei Zonen:
+  //   ab sicherAb            Rolle fest.
+  //   fragenAb … sicherAb    Rolle mit Marke `confirm: true` — „unsicher,
+  //                          Rückfrage nötig“, Vorschlag in `vorschlag`, Frage
+  //                          in `questions`.
+  //   unter fragenAb         KEINE Rolle im Feld `roles` — der Kandidat steht
+  //                          mit seiner gemessenen Konfidenz in
+  //                          `abgelehnteZuordnungen`, damit der Befund mit
+  //                          Zahl sichtbar bleibt statt in einer Warnung zu
+  //                          verschwinden.
   /** @type {Record<string, {bone: string, confidence: number, note?: string}>} */
   const roles = {};
   const evidence = {};
   const belegt = new Set();
   const seitenFaktor = seitenUnsicher ? params.seitenFaktorUnsicher : 1;
+  /** Zuordnungen unter der Frageschwelle: beste Kandidat, nie eine Rolle. */
+  const abgelehnteZuordnungen = [];
+
+  // Trifft eine bekannte Namenskonvention, steht die Antwort im Namen: die
+  // geometrische Schaetzung wird dann nicht befragt. Sonst schaetzt sie auf
+  // einem Mixamo-Rig 0,54 fuer den Unterschenkel, und die Seite fragt den
+  // Menschen nach einem Modell, das sie selbst mitbringt.
+  const konvention = erkenneKonvention(kn.entries.map((e) => e.id));
+  if (konvention) {
+    warnings.push(`Namenskonvention ${konvention.name} erkannt: `
+      + `${konvention.treffer} Rollen kommen aus den Knochennamen, nicht aus der Schätzung`);
+  }
 
   function setzen(rolle, knochen, faktoren, note) {
+    // Seitenrollen nur, wenn die Blickrichtung feststeht: der Name sagt
+    // „Left" im Bezugssystem des Rigs, nicht im Raum. Steht nicht fest, wo
+    // vorne ist, laesst sich das eine nicht auf das andere abbilden — dann
+    // gilt weiter die Messung, samt Rueckfrage.
+    const seitenrolle = /_(l|r)$/.test(rolle);
+    const ausKonvention = konvention
+      && !(seitenrolle && seitenUnsicher)
+      && konvention.rollen[rolle];
+    if (ausKonvention) {
+      roles[rolle] = {
+        bone: ausKonvention,
+        confidence: 1,
+        source: `Namenskonvention ${konvention.name}`,
+      };
+      evidence[rolle] = [{ name: 'namenskonvention', wert: 1,
+        messung: `Knochen heißt „${ausKonvention}“ — die Konvention ${konvention.name} `
+          + `benennt damit ${rolle}` }];
+      belegt.add(ausKonvention);
+      return;
+    }
     const k = konfidenz(globalFaktor, faktoren);
     if (k.confidence < params.fragenAb) {
       warnings.push(`Rolle ${rolle} unter der Frageschwelle: Konfidenz ${k.confidence} (Grenze ${params.fragenAb}) — bleibt ohne Rolle`);
+      abgelehnteZuordnungen.push({
+        rolle,
+        bone: kn.entries[knochen].id,
+        confidence: k.confidence,
+        grenze: params.fragenAb,
+        grund: `Konfidenz ${k.confidence} unter der Frageschwelle ${params.fragenAb} — geraten wird nie`,
+      });
       return;
     }
     const eintrag = { bone: kn.entries[knochen].id, confidence: k.confidence };
+    if (k.confidence < params.sicherAb) {
+      // Unsicher, aber fragwürdig: der Kandidat bleibt gesetzt, damit die
+      // Auskunftsschicht (describe_rig) ihn als Vorschlag anbieten kann. Der
+      // Mensch entscheidet über die Frage in `questions` und confirm_role.
+      eintrag.confirm = true;
+      eintrag.vorschlag = `unsicher, Rückfrage nötig: bester Kandidat „${kn.entries[knochen].id}“ `
+        + `mit Konfidenz ${k.confidence} (sicher ab ${params.sicherAb})`;
+      if (note) eintrag.unsicherGrund = `${note} — Konfidenz ${k.confidence} liegt in der Rückfragezone ${params.fragenAb}…${params.sicherAb}`;
+    }
     if (note) eintrag.note = note;
     roles[rolle] = eintrag;
     evidence[rolle] = k.evidence;
@@ -1510,6 +1641,7 @@ export function detectRig(gltf, opts = {}) {
     fragen.push({
       art: 'rollenbestaetigung',
       rolle,
+      vorschlag: r.vorschlag,
       frage: `Ist „${r.bone}“ die Rolle ${rolle}? Vorschlag mit Konfidenz ${r.confidence}, sicher ab ${params.sicherAb}.`,
       optionen: [
         { text: `ja, „${r.bone}“`, bone: r.bone, confidence: r.confidence },
@@ -1560,6 +1692,7 @@ export function detectRig(gltf, opts = {}) {
     },
     bones: bonesOut,
     roles,
+    abgelehnteZuordnungen,
     unknown,
     questions: fragen,
     richtung: {

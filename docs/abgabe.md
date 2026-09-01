@@ -1,5 +1,8 @@
 # Character animation in the browser — Submission Text
 
+- Live: https://urbanlama.github.io/webmcp-character-animation/
+- Code: https://github.com/urbanlama/webmcp-character-animation (MIT license)
+
 ## 1. Why does this fit WebMCP?
 
 LLM agents cannot animate rigged 3D characters. Elbows end up inside heads, feet float
@@ -36,9 +39,12 @@ their time spotting "elbow in face" errors that the agent cannot see.
 
 This project turns that around, with three concrete improvements:
 
-- **No rig setup.** The page measures the uploaded model itself — body height, segment
-  radii and masses, sole points, joint axes and signs, resting distances. The user
-  never assigns bones manually.
+- **No rig setup.** The page measures the uploaded model itself: body height, segment
+  radii and masses, sole points, joint axes and signs, resting distances. On the Xbot
+  test model this yields 67 bones, 28,374 vertices, a body height of 1.8093 m, a floor
+  plane at −0.00323 m, 14 segments, 8 sole points, 151.88 kg and a torso radius of
+  0.169 m (`describe_world`, `describe_body`) — none of these numbers was typed by
+  hand. The user never assigns bones manually.
 - **No invisible failures.** After every step the agent receives numbers *and* an
   annotated image strip (measured in meters relative to body height), always together
   in one response — this pairing is enabled by the verified `type: 'image'` support.
@@ -75,7 +81,40 @@ server process has no surface to click on. Additionally, the page can invoke its
 tools via `executeTool` — 50 chained calls in 16 ms — so the human gets reproducible
 regression runs of exactly the tool sequence the agent used.
 
-## 4. How is it implemented?
+## 4. What works today — end to end
+
+The full pipeline runs as an automated test, `tests/e2e/durchlauf.mjs`. In Node, 8 of
+its 9 steps run through in one pass:
+
+1. **Load** — GLB in, 67 bones, 7 animation clips, body height 1.8093 m.
+2. **Measure** — 18 joints, 14 segments, 8 sole points, 0 warnings.
+3. **Recognize roles** — 21 role assignments found by name and position.
+4. **Ask the human** — uncertain roles go to the person at the screen.
+5. **Intent and phases** — 16 tools available, 4 motion phases, 60 frames.
+6. **Solve** — 60 frames produced.
+7. **Validate and report** — 19 physics messages, 2 intent checks, 1 image.
+8. **Export** — 1,945,104 bytes of glTF; re-importing it and comparing against the
+   source produced 0 deviations.
+
+Step 7, the image strip, needs WebGL and therefore runs in the browser, where it
+executes with real pixels.
+
+The tools return measured values, not stubs:
+
+- `describe_world` → 1.8093 m body height, 67 bones, 28,374 vertices, floor plane at
+  −0.00323 m.
+- `describe_body` → 14 segments, 8 sole points, 151.88 kg, torso radius 0.169 m.
+
+Rigged humanoids from other sources than our test model behave as follows: of ten
+rigged models from different origins, all ten load; three run the full chain through to
+solving — CesiumMan (19 bones, 1.51 m), RiggedFigure (19 bones, 1.45 m) and Soldier
+(49 bones, 1.83 m).
+
+The tool catalog is operable from outside: a foreign language model that saw only the
+names and descriptions of the 16 tools picked the correct tool on 10 of 10 everyday
+requests.
+
+## 5. How is it implemented?
 
 A web page that loads any rigged humanoid GLB, measures it, and exposes a fixed
 catalog of 16 MCP tools (via `document.modelContext.registerTool`) covering three
@@ -108,23 +147,24 @@ action levels: motion phases, end-effector targets, and single joint angles.
   jerk. Every report ships with an annotated image strip automatically — the measured
   antidote to the agent that never looked at its work.
 - **Export.** glTF with root motion, verified by independent re-import and comparison
-  of joint trajectories and events.
+  of joint trajectories and events (see step 8 above: 0 deviations).
 
 ## Not finished at the time of writing
 
-Written from `README.md`, `VISION.md`, `docs/plan.md` and the spike results; the
-Leitung should verify each point below before submitting:
+Stated plainly, with numbers:
 
-- The behavior of a **real browser agent** (ChatGPT browser) with the 16-tool catalog
-  is untested — all WebMCP measurements were taken via `executeTool` through the
-  debug interface, because the ChatGPT browser is not installed on the build machine
-  (`spikes/test-a-webmcp/ERGEBNIS.md`, "Offen" section).
-- The demo video (<3 min, public YouTube, with sound) and the live URL are separate
-  submission requirements not covered by this text; their status is the Leitung's to
-  confirm.
-- Per `docs/plan.md` section 9, still open: whether foot sliding is correctly reported
-  in clips without root motion, and the procurement of at least three acceptance
-  models under a free license.
-- The backflip itself ("Press play and it looks right", `VISION.md`) is the project's
-  stated largest remaining risk; if a simpler motion (jump with landing) is the final
-  demo, section 2's example must be updated accordingly.
+- **The recorded demo run is missing.** Real WebMCP works — in Chrome 151 with
+  `--enable-features=WebMCP`, `document.modelContext` is present and an outside
+  agent drives the 19 visible tools through it. What is not yet recorded is one
+  complete, convincing clip built that way.
+- **7 of 10 foreign models are still rejected.** The measuring layer accepts
+  mandatory bone roles only at high confidence, and the human fallback does not
+  trigger there yet. Three models clear the bar: CesiumMan, RiggedFigure,
+  Soldier.
+- **The demo video** (<3 min, public YouTube, with sound) is a separate
+  submission requirement not covered by this text.
+- **A ten-verb motion library exists but is switched off.** Measured in two
+  agent runs: with `add_phase` next to `set_pose`, the agent builds the entire
+  motion from prefabricated phases and never sets a single pose of its own. Only
+  four of the ten verbs are wired into the solver anyway. The library is kept,
+  hidden, and can be switched back on — it is a library, not the main path.

@@ -1,10 +1,10 @@
 # Werkzeugkatalog — vollständige Beschreibungen (plan.md 5.5)
 
-Quelle: `docs/plan.md` Abschnitt 5.5, Stand 2026-08-30. Von der Leitung gepflegt.
+Quelle: `docs/plan.md` Abschnitt 5.5, Stand 2026-08-30.
 
-Diese Datei ist die Kopiervorlage für AP7 (Registrierung) und die A3-Attrappe. Der
-Beschreibungstext ist so formuliert, wie er dem Agenten angezeigt wird. Änderungen nur
-über die Leitung, vorher in `BRETT.md` gemeldet — nie divergent zu `docs/plan.md` 5.5.
+Diese Datei ist die Kopiervorlage für die Registrierung der Werkzeuge und die
+A3-Attrappe. Der Beschreibungstext ist so formuliert, wie er dem Agenten angezeigt
+wird. Nie divergent zu `docs/plan.md` 5.5.
 
 ## Bezugssätze
 

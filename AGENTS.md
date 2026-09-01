@@ -6,8 +6,6 @@ Beitrag zur OpenAI WebMCP Challenge. Eine Web-Oberfläche, in der ein Agent geri
 Lies `VISION.md` für das Ziel und `docs/plan.md` für die technischen Festlegungen —
 Datenformate, Werkzeugkatalog, Architektur.
 
-Wer die Arbeit verteilt statt sie auszuführen, liest `LEITUNG.md`.
-
 ---
 
 ## Die drei Regeln
@@ -36,32 +34,12 @@ Wer aus Daten lernt, prüft nicht mit denselben Daten.
 Belegt: Auf allen fünf Referenzclips kalibriert ergab null Fehlalarme. Auf zwei
 kalibriert und gegen die anderen drei geprüft ergab 150, 132 und 183.
 
+Konkret: Entwickelt wird nur auf `idle`, `walk`, `agree`, `sad_pose`. Die drei
+übrigen Referenzclips (`run`, `headShake`, `sneak_pose`) bleiben der Abnahme
+vorbehalten — nicht ansehen, nicht kalibrieren, nicht als Beispiel benutzen.
+
 **Zusatz:** Zahlen ohne Bild sind unvollständig. Widersprechen sich Zahl und Bild,
 gewinnt das Bild.
-
----
-
-## Dein Auftrag
-
-Im Auftrag steht, was zu bauen ist, welche Dateien dir gehören und woran man erkennt,
-dass es fertig ist. Diesen Test führst du aus und schickst die Ausgabe mit. Denk dir
-keinen eigenen aus und baue kein Testgebirge — der eine vorgegebene Test genügt.
-
-Fass keine Datei an, die dir nicht zugewiesen wurde. Wenn du eine brauchst, die einem
-anderen gehört, sag es, statt sie zu ändern.
-
----
-
-## Wenn dir etwas auffällt, das andere betrifft
-
-`BRETT.md` ist die gemeinsame Pinnwand. Dort hinein gehören:
-
-- Ein gemeinsames Format hat sich geändert
-- Eine Annahme, auf der andere aufbauen, ist falsch
-- Ein Weg ist eine Sackgasse — damit ihn niemand ein zweites Mal geht
-- Etwas ist fertig, worauf jemand wartet
-
-Nicht hinein gehören Fortschrittsmeldungen und alles, was nur dich betrifft.
 
 ---
 
@@ -84,6 +62,27 @@ scheitern — genau dann muss der Validator etwas melden.
 
 **Alle Toleranzen relativ zur Körperhöhe.** 50 cm bedeuten für eine 60 cm große Figur
 etwas anderes als für eine 2,40 m große.
+
+---
+
+## Testen
+
+**Runner ist der eingebaute:** `node --test`. Testdateien liegen neben dem Code, im
+Verzeichnis des eigenen Pakets, Muster `*.test.mjs`, mit `node:test` und
+`node:assert`. Dreistellig genau:
+
+    node --test "src/**/*.test.mjs"
+
+Mit Anführungszeichen — ohne sie schreibt Git Bash den Pfad um, und der Aufruf
+scheitert mit `MODULE_NOT_FOUND`, was kein Fehler im Test ist.
+
+**Node ist der Standard:** alles Rechnerische — Schemata, Vermessung, Erkennung,
+Prüfungen, Löser — läuft ohne Browser. **Browser nur, wo Pixel entstehen** (Ansicht,
+Bildstreifen); diese laufen über Playwright. `npm test` führt beide Hälften aus.
+
+**Bezugsmaterial:** Referenzclips sind die sieben Animationen in
+`spikes/test-b-motion/assets/Xbot.glb` (`agree`, `headShake`, `idle`, `run`,
+`sad_pose`, `sneak_pose`, `walk`) — siehe Regel 3, wer womit arbeitet.
 
 ---
 
@@ -116,13 +115,12 @@ await document.modelContext.registerTool({
 ```
 README.md         was das Projekt ist, für Menschen
 VISION.md         das Ziel in kurz
-AGENTS.md         diese Datei — für alle, die bauen
-LEITUNG.md        für die Sitzung, die verteilt
-BRETT.md          gemeinsame Pinnwand
+AGENTS.md         diese Datei — wie hier gearbeitet wird
 CLAUDE.md         Verweis auf AGENTS.md
 docs/plan.md      Datenformate, Werkzeugkatalog, Architektur
-docs/umsetzung.md Arbeitspakete: was jedes braucht, besitzt, woran es abgenommen wird
 docs/challenge.md offizielle Wettbewerbsfakten
+docs/abgabe.md    der Abgabetext
+docs/video.md     Demo-Video (Abgabepflicht)
 spikes/           Wegwerfcode aus Vorabtests, nicht Teil des Produkts
 ```
 

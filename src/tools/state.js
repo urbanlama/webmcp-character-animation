@@ -11,6 +11,8 @@
 //     waechst nicht (das ist der Abbruchfall aus dem Test "Rueckfrage")
 //   - rueckdrehbar: gelingt der Rumpf, liegt der vorige Zustand auf dem Stapel
 
+import { offenerRest } from './rollen-priorisierung.js';
+
 /** Verfahrensparameter: mehr Schritte haelt der Stapel nicht vor. 50 deckt eine
  *  volle Agentensitzung ab (16 Werkzeuge, typisch < 30 Aufrufe je Auftrag) und
  *  begrenzt den Speicher auf ein Vielfaches der Timeline-Groesse. */
@@ -49,7 +51,12 @@ export function leererZustand() {
     // Vom Menschen bestaetigte Rollenzuordnungen (confirm_role). Gehoert nicht
     // zum Timeline-Vertrag und wird beim Export ausgeblendet, ist aber
     // rueckdrehbar wie alles andere, was der Agent aendert.
-    roleConfirmations: {}
+    roleConfirmations: {},
+    // Unbeantwortet gebliebene Rollenfragen mit dem Budget, das zur Verfuegung
+    // stand (Auftrag "Zu viele unsichere Rollen": kein stilles Verschlucken).
+    // Gehoert wie roleConfirmations nicht zum Timeline-Vertrag. offeneRollen
+    // traegt Namen, budget die Fragezahl, die sie offen ließ.
+    offeneRollenFragen: { offeneRollen: [], budget: 0, meldung: '0 von 0 unsicheren Rollen blieben ungefragt (Budget: 0 Fragen): keine' }
   };
 }
 
@@ -106,6 +113,26 @@ export function createStore(start = leererZustand()) {
     neueId() {
       laufendeId += 1;
       return `p${laufendeId}`;
+    },
+
+    /**
+     * Zeichnet den ungefragten Rest der Rollenfragen auf — atomar und
+     * rueckdrehbar wie jede Aenderung. Genau hier liegt die Sichtbarkeit aus
+     * dem Auftrag "Zu viele unsichere Rollen": was nicht gefragt wurde, steht
+     * mit Namen im Zustand, statt still verschluckt zu werden.
+     *
+     * @param {{fragen: object[], beantwortet: string[], budget: number}} auftrag
+     *        fragen im Format von detect.js (je mit rolle), beantwortet die
+     *        Rollennamen der festgelegten Zuordnungen, budget das verbrauchte
+     *        bzw. verfuegbare Fragebudget (0 = gar nicht gefragt)
+     * @returns {{offeneRollen: string[], meldung: string}}
+     */
+    vermerkeOffeneRollen({ fragen, beantwortet, budget }) {
+      return this.aendere((z) => {
+        const { offeneRollen, meldung } = offenerRest(fragen, beantwortet, budget);
+        z.offeneRollenFragen = { offeneRollen, budget, meldung };
+        return { offeneRollen, meldung };
+      });
     }
   };
 }

@@ -41,7 +41,7 @@ test('Rückfrage: Werkzeug wartet, Klick liefert die Antwort im selben Aufruf', 
 test('Rückfrage: set_intent wartet auf die Bestätigung des Menschen (plan.md 6.7)', async () => {
   const schicht = await createToolLayer({});
   const aufruf = schicht.rufe('set_intent', {
-    checks: [{ kind: 'rotation', axis: 'x', degrees: 360, from: 12, to: 44 }]
+    checks: [{ kind: 'rotation', part: 'pelvis', axis: 'x', minDeg: 350, maxDeg: 370, from: 12, to: 44 }]
   });
 
   await warteAufFrage(schicht);
@@ -61,7 +61,7 @@ test('Rückfrage, Negativfall: Abbruch während der Wartezeit lässt die Timelin
   const tiefeVorher = schicht.store.tiefe();
 
   const aufruf = schicht.rufe('set_intent', {
-    checks: [{ kind: 'airtime', seconds: 0.8, apexHeight: 0.4 }]
+    checks: [{ kind: 'airtime', minSek: 0.6, maxSek: 1.0 }]
   });
   await warteAufFrage(schicht);
   schicht.ask.abbrechen('der Mensch hat abgebrochen');
@@ -140,7 +140,7 @@ test('Rückfrage: Budget 0 schaltet ask_human ab, die Pflichtbestätigung läuft
 
   // plan.md 6.7 nennt die drei Momente "kein Notausgang" — die Bestaetigung
   // der Absicht muss auch bei Budget 0 gehen.
-  const aufruf = schicht.rufe('set_intent', { checks: [{ kind: 'travel', heights: 1.2 }] });
+  const aufruf = schicht.rufe('set_intent', { checks: [{ kind: 'travel', part: 'com', richtung: [0, 0, 1], minHoehe: 1.0 }] });
   await warteAufFrage(schicht);
   schicht.ask.antworte(0);
   const antwort = await aufruf;

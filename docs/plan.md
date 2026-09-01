@@ -4,10 +4,7 @@ Beitrag zur OpenAI WebMCP Challenge. Abgabe: 3. September 2026, 13:00 PT.
 
 Hier stehen die technischen Festlegungen: was gemessen wurde, welche Datenformate
 gelten, wie die Teile zusammenspielen. Wie gearbeitet und geprüft wird, steht in
-`AGENTS.md`. Welches Paket wann startklar ist, in `docs/umsetzung.md`.
-
-Änderungsordnung: Abschnitt 5 mit allem, was dazugehört (5.1–5.6), ändert nur die
-Leitung — Absprache über `BRETT.md`, bevor eine Änderung fällt.
+`AGENTS.md`.
 
 ---
 

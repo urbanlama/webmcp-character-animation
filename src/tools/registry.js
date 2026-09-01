@@ -159,12 +159,26 @@ export function createRegistry({ modelContext = null } = {}) {
    * Die einzige Ausführungsfunktion. Sie wird registriert UND intern aufgerufen,
    * damit es gar nicht zwei Fehlerformen geben kann. Sie wirft nicht: was
    * irgendwo drinnen fliegt — abgelehnte Eingabe, Programmfehler, sogar eine
-   * kaputte Antwort — wird hier zu einer Fehlerantwort.
+   * kaputte Antwort — wird hier zu einer Fehlerantwort. Sie hängt auch nicht:
+   * läuft `execute` länger als AUFRUF_MAX_MS, kommt die Fehlerantwort, und die
+   * Ausführung läuft trotzdem weiter (siehe die Begründung an AUFRUF_MAX_MS).
    */
   async function ausfuehre(def, args) {
+    // Promise.race verliert den Verlierer nie aus den Augen; ein Ausreißer ist
+    // hier das kleinere Übel gegenüber einem Aufruf, der nie zurückkommt.
+    let timeoutId = null;
+    const zeitlimit = new Promise((resolve) => {
+      timeoutId = setTimeout(() => resolve(zeitlimitAntwort(def.name, AUFRUF_MAX_MS)), AUFRUF_MAX_MS);
+    });
     try {
-      return normalisiere(def.name, await def.execute(args ?? {}));
+      const antwort = await Promise.race([
+        def.execute(args ?? {}),
+        zeitlimit,
+      ]);
+      clearTimeout(timeoutId);
+      return normalisiere(def.name, antwort);
     } catch (e) {
+      clearTimeout(timeoutId);
       return fehlerantwort(def.name, def.inputSchema, args, e);
     }
   }
@@ -175,16 +189,20 @@ export function createRegistry({ modelContext = null } = {}) {
      * Beschreibung, bevor irgendetwas an den Browser geht — das ist der
      * Entwicklerpfad. Der AUFRUFPFAD wirft später nie mehr, siehe ausfuehre.
      */
-    async registriere(def) {
+    async registriere(def, { sichtbar = true } = {}) {
       pruefeDefinition(def);
       const eintrag = {
         name: def.name,
         description: def.description,
         inputSchema: def.inputSchema,
+        sichtbar,
         execute: (args) => ausfuehre(def, args)
       };
       werkzeuge.set(def.name, eintrag);
-      if (modelContext && typeof modelContext.registerTool === 'function') {
+      // Unsichtbare Werkzeuge gehen NICHT an WebMCP: der Agent soll sie nicht
+      // finden. Ueber rufe() bleiben sie erreichbar — die Oberflaeche und die
+      // Tests benutzen sie weiter. Begruendung: KISTE in catalog.js.
+      if (sichtbar && modelContext && typeof modelContext.registerTool === 'function') {
         await modelContext.registerTool(eintrag);
       }
       return eintrag;
@@ -192,8 +210,9 @@ export function createRegistry({ modelContext = null } = {}) {
 
     /** Was der Agent sieht: Name, Beschreibung, Schema. Ohne execute. */
     getTools() {
-      return [...werkzeuge.values()].map(({ name, description, inputSchema }) =>
-        ({ name, description, inputSchema }));
+      return [...werkzeuge.values()]
+        .filter((w) => w.sichtbar !== false)
+        .map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
     },
 
     anzahl() {
@@ -228,65 +247,94 @@ export function createRegistry({ modelContext = null } = {}) {
 export const AUSNAHME_MAX_ZEICHEN = 400;
 
 /**
+ * BENANNTER VERFAHRENSPARAMETER (kein Körpermaß, AGENTS.md Regel 1).
+ *
+ * Höchste Ausführungszeit eines Werkzeugaufrufs in Millisekunden, gemessen
+ * vor dem ersten Fix am 31.08.2026:
+ *
+ *   validate, Xbot, 60 Frames, 4 Phasen, 1 Absichtskriterium, 5 kritische
+ *   Frames im Streifen:  0,42 s (gemessen in headless Chromium über
+ *   playwright, 10 Durchläufe: 0,38–0,45 s)
+ *
+ * 1 Werkzeugaufruf eines Agenten muss in Sekunden antworten, nicht in Minuten
+ * (Auftrag validate-fehler, Befund 2). Die Grenze sitzt bei 20 s — Faktor 47
+ * über der gemessenen Zeit —, damit jeder normale Lauf weit unter ihr bleibt;
+ * wird sie überschritten, kam in Reproduktionsläufen die Antwort auch nach
+ * 5 Minuten nicht zurück. Wird der Wert angepasst, erneut gegen Xbot messen
+ * und die Messung oben fortschreiben.
+ */
+export const AUFRUF_MAX_MS = 20000;
+
+/**
  * Die einzige Stelle, an der eine Ausnahme zu einer Antwort wird. Beide
  * Aufrufwege laufen hier durch, also gibt es danach nur noch eine Fehlerform.
  *
  * @param {string} name   das Werkzeug, das aufgerufen war
- * @param {object} schema sein inputSchema — fuer den Vergleich mit dem, was kam
- * @param {*}      args   was der Aufrufer uebergeben hat
+ * @param {object} schema sein inputSchema — für den Vergleich mit dem, was kam
+ * @param {*}      args   was der Aufrufer übergeben hat
  * @param {*}      e      was geflogen ist (alles, auch Nicht-Fehler)
  */
 function fehlerantwort(name, schema, args, e) {
-  if (e instanceof WerkzeugFehler) return nenneZahl(e.toResult(), name, schema, args);
+  if (e instanceof WerkzeugFehler) return nenneZahl(e.toResult());
 
+  // Eine unerwartete Ausnahme ist KEIN Eingabefehler des Agenten. Der alte
+  // Text hing einen widersprüchlichen Parametervergleich an ("übergeben sind
+  // 0 Parameter, validate beschreibt 0" — validate hat laut Schema gar keine)
+  // undriet, fehlende Felder nachzuschicken (gemeldeter Befund im echten
+  // Browserlauf). Jetzt: was die Ausführung wirklich sagte, unter dem Namen
+  // des Werkzeugs.
   return nenneZahl(new WerkzeugMeldung({
     tool: name,
     param: 'Ausführung',
-    value: text(e instanceof Error ? e.name : e, 'Ausnahme ohne Namen'),
-    range: `${name} soll 1 Antwort liefern und wirft intern; erlaubt sind 0 Ausnahmen`,
-    next: 'hier liegt kein Fehler deiner Eingabe vor; versuche denselben Aufruf erneut '
-      + 'und melde ihn, wenn er noch 1 Mal auftritt',
-    message: `Werkzeug "${name}" ist abgestürzt, statt zu antworten: ${kuerze(ursprung(e))}. `
-      + aufrufZaehlung(name, schema, args)
-  }).toResult(), name, schema, args);
+    value: 0,
+    range: `1 Antwort von ${name}`,
+    next: 'hier liegt kein Fehler deiner Eingabe vor; rufe getTools() auf und '
+      + 'versuche denselben Aufruf erneut, oder frage den Menschen mit ask_human',
+    message: `Werkzeug "${name}" ist abgestürzt, statt zu antworten: ${kuerze(ursprung(e))}`
+  }).toResult());
+}
+
+/**
+ * Zeitlimit-Antwort: was der Agent sieht, wenn ein Aufruf länger als
+ * AUFRUF_MAX_MS braucht. Der Rat muss der nächste brauchbare Schritt sein:
+ * weniger verlangen — bei validate zum Beispiel weniger Frames oder weniger
+ * kritische Stellen. Die Ausführung läuft dahinter trotzdem weiter (#harte
+ * Rueckfallebene im Abschnitt "Beides gleichzeitig": Ein Abbruch von außen
+ * würde rendernde WebGL-Kontexte und laufende Timer der Seite zerstören).
+ */
+function zeitlimitAntwort(name, maxMs) {
+  return new WerkzeugMeldung({
+    tool: name,
+    param: 'Ausführungsdauer',
+    value: Math.round(maxMs / 1000),
+    range: `höchstens ${maxMs} ms`,
+    next: 'verkleinere die Anfrage: bei look weniger Frames oder weniger '
+      + 'Ansichten, bei validate weniger Frames im set_duration davor',
+    message: `Werkzeug "${name}" liefert nach ${maxMs} ms immer noch nichts; `
+      + 'verkleinere die Anfrage: bei look weniger Frames oder weniger '
+      + 'Ansichten, bei validate weniger Frames im set_duration davor'
+  }).toResult();
 }
 
 /**
  * AGENTS.md: "Jede Fehlermeldung nennt eine Zahl." Der Kern der Meldungen wird
- * nicht angetastet — wer ohne Ziffer herauskommt, bekommt die Aufrufzaehlung
- * untergestetzt, damit die Zusage auch fuer den Agenten gilt.
+ * nicht angetastet — wer ohne Ziffer herauskommt, bekommt die Aufrufdaten
+ * untergestellt, damit die Zusage auch fuer den Agenten gilt.
  */
-function nenneZahl(antwort, name, schema, args) {
+function nenneZahl(antwort) {
   const content = Array.isArray(antwort?.content) ? antwort.content : [];
   const erste = typeof content[0]?.text === 'string' ? content[0].text : null;
   if (erste !== null && /\d/.test(erste)) return antwort;
 
-  const zusatz = `Diese Meldung nannte keine Zahl; ${aufrufZaehlung(name, schema, args)}`;
+  const zusatz = 'Diese Meldung nannte keine Zahl; übergeben wurde 1 Aufruf, '
+    + 'verlangt ist 1 Antwort.';
   if (erste === null) {
     return { ...antwort, content: [{ type: 'text', text: zusatz }, ...content] };
   }
   return {
     ...antwort,
-    content: [{ ...content[0], text: `${erste}\n${zusatz}` }, ...content.slice(1)]
+    content: [{ ...content[0], text: `${erste} ${zusatz}` }, ...content.slice(1)]
   };
-}
-
-/** Was der Aufrufer geliefert hat gegen das, was das Schema beschreibt. */
-function aufrufZaehlung(name, schema, args) {
-  const uebergeben = felder(args);
-  const beschrieben = felder(schema?.properties);
-  return `übergeben sind ${uebergeben} Parameter, ${name} beschreibt ${beschrieben}; `
-    + 'rufe getTools() auf und schicke die fehlenden Felder mit';
-}
-
-/** Anzahl Felder eines Objekts — wirft nie, auch nicht bei null oder 42. */
-function felder(objekt) {
-  if (objekt === null || typeof objekt !== 'object') return 0;
-  try {
-    return Object.keys(objekt).length;
-  } catch {
-    return 0;
-  }
 }
 
 /** Name und Meldung dessen, was flog — auch von einem Symbol oder von Luft. */
