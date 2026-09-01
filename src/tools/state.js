@@ -48,6 +48,8 @@ export function leererZustand() {
     phases: [],
     overrides: {},
     intent: null,
+    // Festgenagelte Fuesse: [{foot, von, bis}] — der Loeser haelt sie.
+    anchors: [],
     // Vom Menschen bestaetigte Rollenzuordnungen (confirm_role). Gehoert nicht
     // zum Timeline-Vertrag und wird beim Export ausgeblendet, ist aber
     // rueckdrehbar wie alles andere, was der Agent aendert.
@@ -64,6 +66,11 @@ export function createStore(start = leererZustand()) {
   let zustand = kopie(start);
   const stapel = [];
   let laufendeId = 0;
+  // Zaehlt JEDE angenommene Aenderung, auch das Zurueckdrehen. Die Anzeige
+  // fragt ihn, statt eine Liste aendernder Werkzeugnamen zu pflegen: eine
+  // solche Liste vergisst man, und das Vergessen faellt niemandem auf — der
+  // Browser zeigt dann stumm einen aelteren Stand als der Loeser rechnet.
+  let rev = 0;
 
   return {
     /** Lesekopie. Wer sie veraendert, veraendert den Zustand nicht. */
@@ -78,6 +85,15 @@ export function createStore(start = leererZustand()) {
 
     fingerabdruck() {
       return fingerabdruck(zustand);
+    },
+
+    /**
+     * Stand der Aenderungen, monoton steigend. Wer ihn beim letzten Blick
+     * gemerkt hat, weiss beim naechsten, ob sich etwas geruehrt hat.
+     * @returns {number} 0 vor der ersten Aenderung
+     */
+    revision() {
+      return rev;
     },
 
     /** Anzahl rueckdrehbarer Schritte. */
@@ -96,6 +112,7 @@ export function createStore(start = leererZustand()) {
       stapel.push(kopie(zustand));
       if (stapel.length > UNDO_TIEFE) stapel.shift();
       zustand = entwurf;
+      rev += 1;
       return ergebnis;
     },
 
@@ -106,6 +123,7 @@ export function createStore(start = leererZustand()) {
     undo() {
       if (stapel.length === 0) return false;
       zustand = stapel.pop();
+      rev += 1;
       return true;
     },
 

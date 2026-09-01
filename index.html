@@ -192,41 +192,7 @@
   /* Kein Platz für die lange Linie (schmale Leinwand, T-Pose): dann behält
      auch die Scheitelmarke den Teilstrich. */
   .massmarke.scheitel.kurz .massmarke-strich { flex:0 0 26px; }
-  /* ── Titelkarte über der leeren Bühne ─────────────────────────────────────
-     Solange nichts geladen ist, gehört die Bühne der Ansage: was das ist und
-     was man drückt. Sobald eine Figur steht, erklärt die Figur sich selbst —
-     Titel und Satz treten weg, der Knopf bleibt als stille Zeile unten links. */
-  #einstieg {
-    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
-    width:min(540px, 80%);
-  }
-  #einstieg-titel {
-    margin:0 0 16px; font-size:31px; line-height:1.16; font-weight:600;
-    letter-spacing:-.022em; color:var(--schrift);
-  }
-  #einstieg-satz { margin:0 0 28px; color:var(--leise); font-size:14px; line-height:1.65; }
-  #einstieg-beispiel {
-    font:inherit; font-size:13px; font-weight:500; color:#fff; cursor:pointer;
-    background:var(--ruf); border:1px solid var(--ruf); border-radius:5px;
-    padding:11px 22px; transition:background .15s, border-color .15s;
-  }
-  #einstieg-beispiel:hover { background:var(--ruf-hell); border-color:var(--ruf-hell); }
-  #einstieg-beispiel:focus-visible { outline:2px solid var(--ruf-hell); outline-offset:3px; }
-  #einstieg-beispiel:disabled { background:transparent; color:var(--still);
-    border-color:var(--linie-hell); cursor:wait; }
-  /* Die Messzeile der Erstsicht bleibt aus: dieselben Zahlen stehen genauer in
-     der Messleiste unter der Figur. Ein Element, eine Aufgabe. */
-  #einstieg-messung { display:none; }
-
-  body.hat-modell #einstieg {
-    left:auto; right:0; top:auto; bottom:18px; transform:none; width:auto;
-  }
-  body.hat-modell #einstieg-titel, body.hat-modell #einstieg-satz { display:none; }
-  /* Der Beispielknopf verschwindet, sobald ein Modell steht: es laedt beim
-     Start von selbst, und "Open GLB" oben rechts holt jedes andere Rig. Ein
-     dritter Weg zum selben Ziel, mitten im Bild, ist nur Unruhe. */
-  body.hat-modell #einstieg-beispiel { display:none; }
-  body.hat-modell #einstieg-beispiel:hover { color:var(--schrift); border-color:var(--still); }
+  /* ── Anleitungsspalte ────────────────────────────────────────────────────── */
 
   /* ── Messleiste unter der Figur ───────────────────────────────────────────
      Der eine Ort für alles, was am Modell gemessen wurde. Der erste Wert ist
@@ -388,7 +354,7 @@
   }
   .einstieg-punkt strong { font-weight:500; font-size:12.5px; color:var(--schrift); }
   .einstieg-punkt .einstieg-wie { color:var(--still); font-size:11.5px; line-height:1.55; }
-  .einstieg-punkt code, #einstieg-satz code {
+  .einstieg-punkt code {
     font-family:var(--mono); font-size:11px; color:var(--leise);
   }
 
@@ -447,7 +413,6 @@
          CSS, deshalb hier !important. */
       max-width:none !important;
     }
-    #einstieg-titel { font-size:23px; }
   }
   @media (max-width: 620px) {
     :root { --rand:14px; }
@@ -529,7 +494,6 @@ setTimeout(() => {
            Stufe: eine Anleitung, die lauter waere als die Messwerte, haette
            das Gewicht falsch verteilt. -->
       <p id="bediensatz" aria-hidden="true"></p>
-      <section id="einstieg"></section>
     </div>
     <!-- Die Abspielleiste steht DIREKT unter der Ansicht, die sie steuert.
          Vorher sass sie unter der Messwertzeile und wirkte wie angeklebt: ein
@@ -544,7 +508,6 @@ setTimeout(() => {
          die Rueckfrage draengt sich davor, die Spur laeuft darunter, und die
          Anleitung bleibt unten stehen, solange Platz ist. -->
     <section id="hinweis"></section>
-    <section id="frage" hidden></section>
     <section id="spur" hidden></section>
     <section id="einstieg-spalte"></section>
   </aside>
@@ -557,14 +520,14 @@ import { frameCamera } from './src/scene/view.js';
 import { createToolLayer } from './src/tools/index.js';
 import { KATALOG_SICHTBAR } from './src/tools/catalog.js';
 import { echtePorts } from './src/tools/ports.js';
-import { mounteFragePanel } from './src/ui/frage-panel.js';
 import { mounteSpur, spurKontext, ergebnisZeile } from './src/ui/agentenspur.js';
 import { createKnochenLeuchten } from './src/ui/knochen-leuchten.js';
-import { frageRollenAb } from './src/ui/rollen-bestaetigung.js';
-import { mounteEinstieg, ladeBeispielDatei } from './src/ui/einstieg.js';
+import { mounteAnleitung, ladeBeispielDatei } from './src/ui/einstieg.js';
 import { createBodengitter } from './src/ui/bodengitter.js';
 import { mounteHoehenmassstab } from './src/ui/hoehenmassstab.js';
 import { mounteKamerasteuerung } from './src/ui/kamerasteuerung.js';
+import { mounteKamerfolger, WELT_ABSTAND_ANTEIL, WELT_NAH_ANTEIL, WELT_WEIT_ANTEIL,
+  WELT_SEITWINKEL, WELT_ZIEL_ANTEIL, WELT_ANHEBUNG_ANTEIL } from './src/ui/kamerfolger.js';
 import { mounteAbspieler } from './src/ui/abspieler.js';
 import { ANSICHT_EDITOR, ANSICHT_WELT, frameFuerAnsicht, mounteAnsichtsumschalter } from './src/ui/ansichtsmodus.js';
 import { stellePose } from './src/render/strip.js';
@@ -758,18 +721,24 @@ function rahmeWelt() {
   // Ansicht unabhängig vom Modell klar lesbar, aber zeigt echte Tiefe statt
   // wieder die frontale Arbeitsansicht.
   const richtung = rahmen.forward.vector.clone()
-    .applyAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 6).normalize();
+    .applyAxisAngle(new THREE.Vector3(0, 1, 0), WELT_SEITWINKEL).normalize();
   const ziel = rahmen.center.clone();
-  ziel.y = rahmen.box.min.y + hoehe * 0.58;
-  const abstand = hoehe * 2.7;
+  ziel.y = rahmen.box.min.y + hoehe * WELT_ZIEL_ANTEIL;
+  const abstand = hoehe * WELT_ABSTAND_ANTEIL;
   camera.fov = 45;
   steuerung.controls.target.copy(ziel);
   camera.position.copy(ziel)
     .addScaledVector(richtung, abstand)
-    .add(new THREE.Vector3(0, hoehe * 1.5, 0));
+    .add(new THREE.Vector3(0, hoehe * WELT_ANHEBUNG_ANTEIL, 0));
   camera.lookAt(ziel);
   steuerung.controls.update();
   setzeWeltClipEbenen();
+  // Körperrelative Zoomgrenzen der Welt — die des Editors gelten hier nicht:
+  // dessen Nahgrenze liegt bei 5 % der Körperhöhe (Gelenklupe), die Welt will
+  // den ganzen Körper im Raum.
+  steuerung.controls.minDistance = hoehe * WELT_NAH_ANTEIL;
+  steuerung.controls.maxDistance = hoehe * WELT_WEIT_ANTEIL;
+  folger.ein();
 }
 
 function setzeAnsicht(neu) {
@@ -796,6 +765,9 @@ function setzeAnsicht(neu) {
     : 'Drag to orbit · Scroll to zoom · Right-drag to pan · Editor keeps horizontal travel in place';
   if (istWelt) rahmeWelt();
   else {
+    folger.aus();
+    // Die Zoomgrenzen der Welt (körperrelativ, weit) dürfen nicht im Editor
+    // weiterleben — die Rahmung setzt sie dort auf die gemessenen Werte zurück.
     steuerung.zurueck();
     massstab.neuZeichnen();
   }
@@ -832,6 +804,11 @@ const steuerung = mounteKamerasteuerung({
     massstab.neuZeichnen();
   },
 });
+
+// Der Folger der Weltkamera. Er schiebt Kamera und Drehpunkt um den geglätteten
+// Weg der Figur weiter — Drehen und Zoom bleiben unangetastet beim Menschen.
+// Erst wenn die Welt gerahmt ist (rahmeWelt, folger.ein()), fährt er mit.
+const folger = mounteKamerfolger({ kamera: camera, controls: steuerung.controls });
 
 // Die Abspielleiste. Sie loest die aktuelle Timeline ueber denselben Loeser,
 // den auch validate nutzt (werkzeugPorts.solver.loese, src/tools/ports.js:
@@ -875,6 +852,10 @@ const abspieler = mounteAbspieler({
   stelleFrame: (frame) => {
     if (!model) throw new Error('0 Modelle geladen: Frame ' + (frame?.frame ?? '?') + ' nicht stellbar');
     stellePose(model, frameFuerAnsicht(ansicht, frame, ersterBewegungsFrame));
+    // Die Weltkamera fährt den Beckenpunkt des Frames mit. Im Editor ist der
+    // Folger aus (setzeZiel ignoriert dann) — dort steht die Figur ja auf der
+    // Stelle, und die Kamera gehört dem Menschen.
+    folger.setzeZiel(frame?.root?.pos);
   },
 });
 window.__abspieler = abspieler;
@@ -894,7 +875,13 @@ setzeAnsicht(ansicht);
 window.__ansicht = ansichtsumschalter;
 
 // Zwei Wege zurueck auf die gemessene Ansicht, beide ueber dieselbe Messung.
-canvas.addEventListener('dblclick', () => steuerung.zurueck());
+// Rückkehr in der WELT zielt auf die Welt-Rahmung, nicht auf die des
+// Editors — dieselbe Messung, anderer Blick. Der Folger startet darin neu.
+function zurueckAnsicht() {
+  if (ansicht === ANSICHT_WELT) { rahmeWelt(); return; }
+  steuerung.zurueck();
+}
+canvas.addEventListener('dblclick', () => zurueckAnsicht());
 window.addEventListener('keydown', (e) => {
   // Nicht, waehrend jemand tippt, und nicht als zweite Bedeutung einer
   // Tastenkombination.
@@ -902,7 +889,8 @@ window.addEventListener('keydown', (e) => {
   if (ziel && /^(INPUT|TEXTAREA|SELECT)$/.test(ziel.tagName)) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === 'r' || e.key === 'R' || e.key === 'Home') {
-    if (steuerung.zurueck()) e.preventDefault();
+    zurueckAnsicht();
+    e.preventDefault();
   }
 });
 
@@ -1087,18 +1075,31 @@ async function bestaetigeUnsichereRollen(gltf) {
     return null;
   }
 
+  // ABGESCHALTET: es wird niemand mehr nach Rollen gefragt.
+  //
+  // Die Rueckfrage war fuer fremde Modelle gedacht, deren Rig sich nicht
+  // eindeutig vermessen laesst. Am ausgelieferten Modell entsteht sie nie —
+  // gemessen am Xbot: 0 Fragen, keine Rolle unter der Sicherheitsschwelle.
+  // Was blieb, war ein Fragefenster, das dem Menschen Knochennamen und
+  // Konfidenzwerte vorlegte, ohne dass es dafuer einen Anlass gab.
+  //
+  // Der Weg bleibt im Code (src/ui/rollen-bestaetigung.js, questions aus
+  // detect.js) und laesst sich ueber window.__ui.rollenAbfragen(profil) von
+  // Hand ausloesen. Fuer den Tag, an dem beliebige Modelle hochgeladen werden
+  // duerfen, wird er neu gebaut — dann als Frage, die ein Mensch beantworten
+  // kann, zum leuchtenden Koerperteil.
+  //
+  // Bis dahin: unsichere Rollen bleiben unsicher und stehen im Rig-Bericht.
+  // Der Agent sieht sie ueber describe_rig und kann mit ask_human nachfragen,
+  // wenn er sie wirklich braucht. Das ist der richtige Weg: der Agent fragt,
+  // wenn ihm etwas fehlt — nicht die Seite, weil eine Schwelle unterschritten ist.
   const offene = profil.questions?.length ?? 0;
-  if (offene === 0) {
-    window.__ui.spur.notiere({
-      name: 'Role detection',
-      text: `${Object.keys(profil.roles ?? {}).length} roles assigned with confidence, 0 questions`
-    });
-    return null;
-  }
-
-  const ergebnis = await window.__ui.rollenAbfragen(profil);
-  window.__ui.spur.notiere({ name: 'Role detection', text: ergebnis.meldung });
-  return ergebnis;
+  window.__ui.spur.notiere({
+    name: 'Rollenerkennung',
+    text: `${Object.keys(profil.roles ?? {}).length} Rollen zugeordnet, `
+      + `${offene} unsicher (nicht nachgefragt)`
+  });
+  return null;
 }
 
 /**
@@ -1148,15 +1149,7 @@ async function loadFile(file) {
     const buffer = await file.arrayBuffer();
     const gltf = await loadGLB(buffer);
     presentModel(gltf, file.name);
-    const stand = await messeFuerWerkzeuge(gltf, file.name);
-    if (stand) {
-      // Kurz halten: die Zahlen stehen in der Werteleiste unter der Leinwand.
-      // Diese Zeile bestätigt nur, dass der Klick angekommen ist — ein Element,
-      // eine Aufgabe.
-      einstieg.setzeGemessen(
-        `Loaded ${file.name} — ${stand.hoehe.toFixed(4)} m tall, measured.`
-      );
-    }
+    await messeFuerWerkzeuge(gltf, file.name);
     await bestaetigeUnsichereRollen(gltf);
   } catch (err) {
     removeFromScene();
@@ -1167,7 +1160,7 @@ async function loadFile(file) {
 }
 
 // Der einzige Ladepfad der Seite. Die Datei-Auswahl ruft ihn, und der
-// Beispiel-Knopf ruft ihn — mit einem File-Objekt, das aus einem fetch des
+// Autostart ruft ihn — mit einem File-Objekt, das aus einem fetch des
 // Beispielverzeichnisses entsteht. Nicht zwei Wege bauen: beide Eingänge
 // laufen durch dieselben Prüfungen und denselben Fehlerpfad.
 window.__ladeDatei = loadFile;
@@ -1176,17 +1169,9 @@ document.getElementById('file').addEventListener('change', (e) => {
   loadFile(e.target.files[0]);
 });
 
-// Der eine Satz über der Leinwand, der Beispiel-Knopf darunter — und die
-// drei Schritte in der rechten Leerspalte. Ohne das liest der Juror nur
-// „Kein Modell geladen“ und weiß weder, was die Seite ist, noch dass er eine
-// GLB hineinladen soll, noch woher er eine nimmt.
-const einstieg = mounteEinstieg({
-  wurzel: document.getElementById('einstieg'),
-  spalte: document.getElementById('einstieg-spalte'),
-  async dateiLaden() {
-    return ladeBeispielDatei();
-  },
-});
+// Die drei Schritte in der rechten Spalte: Agent verbinden, Auftrag geben,
+// zusiehen. Ohne das weiß ein Erstbesitzer nicht, was als Nächstes kommt.
+mounteAnleitung({ spalte: document.getElementById('einstieg-spalte') });
 
 // Die Figur steht sofort da.
 //
@@ -1199,8 +1184,7 @@ const einstieg = mounteEinstieg({
   try {
     await loadFile(await ladeBeispielDatei());
   } catch (e) {
-    // Kein stiller Ausfall: schlägt es fehl, bleibt der Einstieg stehen und
-    // sagt, was war.
+    // Kein stiller Ausfall: schlägt es fehl, sagt die Spur, was war.
     if (window.__ui?.spur) {
       window.__ui.spur.notiere({
         name: 'Start', fehler: true,
@@ -1239,6 +1223,9 @@ function render() {
   // aus dem Sitzungszustand), nicht in der Bildrate des Browsers: er sammelt
   // die verstrichenen Sekunden und schaltet, wenn ein Frame voll ist.
   abspieler.tick((jetzt - letzteZeit) / 1000);
+  // Der Folger fährt vor dem Rendern nach — sonst zeichnet das Bild einen
+  // Stand, den der Folger im selben Bild schon wieder korrigiert.
+  folger.tick((jetzt - letzteZeit) / 1000);
   letzteZeit = jetzt;
   renderer.render(scene, camera);
   requestAnimationFrame(render);
@@ -1309,9 +1296,16 @@ window.__tools = await createToolLayer({
 // Die Werkzeugschicht selbst bleibt unberuehrt (src/tools/), und der Agent
 // merkt nichts davon: die Antwort geht unveraendert zurueck.
 
-/** Werkzeuge, nach denen sich die Ansicht geaendert haben kann. */
-const AENDERT_BILD = new Set(['set_pose', 'set_joint', 'set_target', 'add_phase',
-  'edit_phase', 'set_duration', 'undo', 'look', 'describe_pose', 'validate', 'probe_joint']);
+// Hier stand eine Namensliste der Werkzeuge, nach denen neu geloest wird.
+// Sie war unvollstaendig: hold_foot, move_pose und delete_pose fehlten. Wer
+// eines davon rief, sah im Browser weiter den Stand von davor — waehrend der
+// Loeser laengst etwas anderes rechnete. Der Mensch beurteilte eine Bewegung,
+// die es nicht mehr gab, und fand Rucke, die keiner nachmessen konnte.
+//
+// Statt der Liste fragt die Anzeige den Store, ob sich etwas geruehrt hat
+// (store.revision(), src/tools/state.js). Ein neues Werkzeug kann nicht mehr
+// vergessen werden: aendert es den Zustand, steigt der Zaehler.
+let gesehenerStand = -1;
 
 /**
  * Kurzfassung einer Werkzeugantwort fuers Protokoll.
@@ -1378,18 +1372,28 @@ window.__tools.rufe = async (name, args) => {
  * @param {object} args  Argumente, falls bekannt — daraus kommt der Frame
  */
 function zeigeFrameZumAufruf(name, args) {
-  if (!AENDERT_BILD.has(name)) return;
-  // Welchen Frame zeigen: den, den der Agent genannt hat. Nennt er keinen,
-  // bleibt die Ansicht auf dem zuletzt gestellten Frame — sie springt nicht
-  // grundlos an den Anfang.
+  // Zwei Anlaesse, unabhaengig voneinander:
+  //   geaendert  — der Zustand ist ein anderer als beim letzten Blick, also
+  //                muss neu geloest werden, egal welches Werkzeug es war.
+  //   gewuenscht — das Werkzeug nennt einen Frame; dorthin springt die
+  //                Ansicht, damit der Mensch sieht, worueber der Agent redet.
+  const rev = window.__tools?.store?.revision?.();
+  const geaendert = Number.isInteger(rev) && rev !== gesehenerStand;
   const gewuenscht = Number.isInteger(args?.frame) ? args.frame
     : (Array.isArray(args?.frames) && Number.isInteger(args.frames[0]) ? args.frames[0] : null);
+  if (!geaendert && gewuenscht === null) return;
   try {
-    // pruefe() zuerst: der Abspieler haelt seinen Bereitschaftszustand fest
-    // und meldet ohne diesen Aufruf weiter "bereit: false, frameCount: 0".
-    abspieler.pruefe();
+    if (geaendert) {
+      // pruefe() loest neu und haelt den Bereitschaftszustand fest; ohne
+      // diesen Aufruf meldet die Leiste weiter "bereit: false, frameCount: 0".
+      abspieler.pruefe();
+      gesehenerStand = rev;
+    }
     const stand = abspieler.stand();
     if (stand?.bereit) {
+      // Nennt das Werkzeug keinen Frame, bleibt die Ansicht auf dem zuletzt
+      // gestellten — sie springt nicht grundlos an den Anfang. Gestellt wird
+      // trotzdem, sonst zeigt die Szene die alte Loesung.
       const ziel = Math.min(Math.max(gewuenscht ?? stand.index ?? 0, 0), stand.frameCount - 1);
       abspieler.anfahren(ziel);
     }
@@ -1397,18 +1401,30 @@ function zeigeFrameZumAufruf(name, args) {
 }
 
 
-// Sichtbare Hälfte der Rückfrage (plan.md 6.7): ohne sie wartet ask_human auf
-// einen Klick, den niemand sehen und deshalb niemand geben kann.
-mounteFragePanel({ ask: window.__tools.ask, wurzel: document.getElementById('frage') });
+// ABGESCHALTET: kein Fragefenster mehr.
+//
+// Es zeigte zwei Sorten Fragen, und beide waren dem Menschen nicht zumutbar:
+// die Bestätigung der Erfolgskriterien (rohes JSON, bei jedem set_intent) und
+// die Rollenbestätigung (Knochenname, Rollenkürzel, Konfidenzwert). Am
+// ausgelieferten Modell gibt es für die zweite ohnehin keinen Anlass —
+// gemessen am Xbot: 0 Rückfragen, keine Rolle unter der Schwelle.
+//
+// Damit fragt niemand mehr: nicht die Seite, nicht der Agent (ask_human liegt
+// in der Kiste, siehe catalog.js). Der Mensch sieht zu und greift über die
+// Oberfläche ein, statt Ja/Nein auf Fachfragen zu klicken.
+//
+// Der Bausatz bleibt vollständig liegen — frage-panel.js, ask-human.js,
+// rollen-bestaetigung.js, die questions aus detect.js. Für den Tag, an dem
+// beliebige Modelle hochgeladen werden dürfen, wird daraus eine Rückfrage
+// gebaut, die ein Mensch beantworten kann: zum leuchtenden Körperteil, in
+// ganzen Sätzen, ohne eine einzige Zahl.
 
 window.__ui = {
   spur,
   hatKontext,
   get leuchten() { return leuchten; },
-  /** Mensch-Moment 1 aus plan.md 6.7, auch einzeln aufrufbar. */
-  rollenAbfragen: (profil) => frageRollenAb({
-    profil, ask: window.__tools.ask, rufe: window.__tools.rufe, leuchten
-  }),
+  /** Rueckfrage-Bausatz, abgeschaltet. Wird beim Neubau wieder angehaengt. */
+  rollenAbfragen: null,
 };
 window.__ports = werkzeugPorts;
 
