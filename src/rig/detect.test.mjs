@@ -577,8 +577,10 @@ test('Fragezone: 0,5–0,9 wird als „unsicher, Rückfrage nötig“ markiert, 
 
   // Zu jeder unsicheren Pflichtrolle gehört eine Frage mit Vorschlag.
   for (const frage of bericht.questions.filter((q) => q.rolle === 'foot_l' || q.rolle === 'foot_r')) {
-    assert.match(frage.frage, /Konfidenz/,
-      `die Frage nennt die gemessene Konfidenz: "${frage.frage}"`);
+    // Die Frage selbst ist fuer den Menschen und nennt keine Messgroessen —
+    // die stehen in `diagnose` und gehen in den Rig-Bericht.
+    assert.match(frage.diagnose, /Konfidenz/,
+      `die Diagnose nennt die gemessene Konfidenz: "${frage.diagnose}"`);
     assert.equal(frage.vorschlag, bericht.roles[frage.rolle].vorschlag,
       `die Frage zu ${frage.rolle} trägt denselben Vorschlag wie die Rolle`);
   }

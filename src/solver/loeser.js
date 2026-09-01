@@ -35,7 +35,7 @@ import { validateRigProfile } from '../contracts/rig-profile.js';
 import { validateTimeline } from '../contracts/timeline.js';
 import { schwerpunkt, sohlenWelt } from './kinematik.js';
 import { G, KONTAKT_SCHWELLE_ANTEIL } from '../validate/physics.js';
-import { poseZuFk, kopierePose } from './ik.js';
+import { poseZuFk, kopierePose, optimiere } from './ik.js';
 import {
   vermesseAusgangslage, startZustand,
   phaseCrouch, phaseTakeoff, phaseAirborne, phaseLand,
@@ -98,6 +98,10 @@ export function loeseBewegung(profile, skel, timeline, opts = {}) {
     phases: timeline.phases ?? [],
     overrides: timeline.overrides ?? {},
   };
+  // Anker reisen NEBEN dem geprueften Vertrag mit: validateTimeline kennt sie
+  // nicht, und ein unbekanntes Feld darf den Vertrag nicht kippen. Sie werden
+  // nach der Pruefung wieder angehaengt, damit halteAnker sie findet.
+  const anker = Array.isArray(timeline.anchors) ? timeline.anchors : [];
   const tv = validateTimeline(tl);
   if (!tv.ok) {
     throw new Error(`Löser abgelehnt: Timeline ungültig (${tv.errors.length} Fehler, erster: ${tv.errors[0].field} — ${tv.errors[0].message})`);
@@ -165,6 +169,9 @@ export function loeseBewegung(profile, skel, timeline, opts = {}) {
 
   // ── Overrides (Ebene 2/3): nach dem Lösen setzen, hart klemmen ──────────
   wendeOverridesAn(ctx, z, tl, frames, bericht);
+
+  // ── Fußanker: NACH den Haltungen, sonst schreiben sie ihn wieder weg ────
+  halteAnker(ctx, { ...tl, anchors: anker }, frames, bericht);
 
   // ── Nachmessen: hat die Timeline Bewegung? (Fehlerfreiheit ist kein Erfolg)
   bericht.bewegung = bewegeKennzahlen(frames);
@@ -299,6 +306,146 @@ export function baueWurzelkurven(overrides) {
 }
 
 /**
+ * Verankert jede Kanalkurve an den benachbarten Schlüsselbildern.
+ *
+ * Ohne das springt ein Kanal, statt zu blenden. Gemessen am Agentenlauf vom
+ * 1. September 2026: Frame 19 setzte `spine.bend`, Frame 26 zusätzlich
+ * `spine.side` und `pelvis.roll`. Die zwei neuen Kanäle hatten nur EIN
+ * Schlüsselbild — ihre Kurve galt damit nur auf Frame 26 selbst. Ergebnis:
+ * die Neigung des Oberkörpers stand bis Frame 25 bei 1,8° und schlug auf
+ * Frame 26 auf 12,3° um. Ein Frame, 10,5° — eine Stufe, keine Bewegung.
+ *
+ * Isoliert nachgestellt: ein Kanal, der nur auf Frame 30 steht, ergab
+ * 5,9° über die Frames 0 bis 29, dann 16,7° auf Frame 30, dann wieder 5,9°.
+ *
+ * Verankert heißt: der Kanal bekommt am nächstgelegenen Schlüsselbild davor
+ * und dahinter eine Stützstelle mit dem Wert, den er ohne Schlüsselbild hätte
+ * (die Ausgangshaltung). Dazwischen blendet er wie jeder andere Kanal. Über
+ * das nächste Schlüsselbild hinaus wirkt er weiterhin NICHT — die Regel aus
+ * kurvenWert bleibt: was außerhalb steht, gehört den Phasen.
+ *
+ * @param {Map<string, Array>} kurven     aus baueKurven, wird an Ort verändert
+ * @param {object} overrides              timeline.overrides
+ * @param {(k: string) => number} basiswert  Wert des Kanals in der Ausgangshaltung
+ * @returns {number} wie viele Kurven verankert wurden
+ */
+export function verankereKurven(kurven, overrides, basiswert) {
+  const anker = Object.entries(overrides ?? {})
+    .map(([key, ov]) => ({ frame: Number(key), ov }))
+    .filter((a) => Number.isInteger(a.frame)
+      && a.ov && a.ov.joints && Object.keys(a.ov.joints).length > 0)
+    .map((a) => ({ frame: a.frame, ease: EASE[a.ov.ease] ? a.ov.ease : 'smooth' }))
+    .sort((a, b) => a.frame - b.frame);
+  if (anker.length < 2) return 0;
+
+  let verankert = 0;
+  for (const [k, liste] of kurven) {
+    if (!liste || liste.length === 0) continue;
+    // Ein Kanal, den die Ausgangshaltung nicht nennt, steht in der Ruhelage.
+    // Ohne diesen Rueckfall verankert nichts: die Basispose fuehrt nur die
+    // Freiheitsgrade, die eine Phase belegt hat — bei einer reinen
+    // Schluesselbild-Timeline sind das null.
+    const roh = basiswert(k);
+    const basis = typeof roh === 'number' && Number.isFinite(roh) ? roh : 0;
+
+    let getan = false;
+
+    // VORNE: einblenden. Vor seinem ersten Schluesselbild gab es den Kanal
+    // nicht, also kommt er aus der Ruhelage. Ohne diese Stuetzstelle springt er
+    // (gemessen: 1,8 Grad auf Frame 25, 12,3 Grad auf Frame 26).
+    const davor = anker.filter((a) => a.frame < liste[0].frame).pop();
+    if (davor) {
+      liste.unshift({ frame: davor.frame, grad: basis, ease: davor.ease });
+      getan = true;
+    }
+
+    // HINTEN: HALTEN, nicht ausblenden.
+    //
+    // Der erste Anlauf setzte hier ebenfalls die Ruhelage — und riss damit
+    // jede Haltung wieder ein. Setzt der Agent auf Frame 30 pelvis.tilt = 5
+    // und nennt den Kanal auf Frame 36 nicht mehr, dann WILL er die Neigung
+    // behalten; er wiederholt nicht jeden Kanal in jedem Schluesselbild. Mit
+    // der Ruhelage als Stuetzstelle wanderte der Wert zwischen 30 und 36 auf
+    // null zurueck: die Figur ging in eine Haltung und wurde wieder
+    // herausgezogen. Im Bild sah das aus wie Zucken.
+    //
+    // Gehalten heisst: dieselbe Zahl noch einmal. Die Kurve laeuft flach
+    // weiter bis zum naechsten Schluesselbild und endet dort — was danach
+    // kommt, gehoert weiter den Phasen (Regel aus kurvenWert).
+    const letzterEigener = liste[liste.length - 1];
+    const danach = anker.find((a) => a.frame > letzterEigener.frame);
+    if (danach) {
+      liste.push({ frame: danach.frame, grad: letzterEigener.grad, ease: letzterEigener.ease });
+      getan = true;
+    }
+    if (getan) verankert += 1;
+  }
+  return verankert;
+}
+
+/**
+ * Tangente eines Schluesselbilds fuer die weiche Ueberblendung.
+ *
+ * Warum es sie gibt: `smooth` war smoothstep, t²(3−2t). Dessen Ableitung ist
+ * an BEIDEN Enden null — jeder Kanal blieb also an jedem Schluesselbild kurz
+ * stehen und lief wieder an. Gemessen am Anlauf des Laufs vom 1. September
+ * 2026, Fusshoehe foot_l ueber die Frames 3–15 mit Schluesselbildern auf
+ * 3, 5, 7, 11, 13, 15:
+ *
+ *     F4 → F5   +112,9 mm      (volle Fahrt)
+ *     F5 → F6    +15,2 mm      (Key auf F5: Vollbremsung, Faktor 7)
+ *     F8 → F9     −2,7 mm      (praktisch Stillstand)
+ *
+ * Schwankung zwischen 2,7 und 112,9 mm je Frame, Faktor 42, dazu vier
+ * Richtungswechsel in zwoelf Frames. Ein menschlicher Schwungfuss hat EINE
+ * Kurve: hoch, Scheitel, runter.
+ *
+ * Die Tangente kommt aus den NACHBARN (Catmull-Rom bei ungleichen
+ * Abstaenden), damit der Wert durch das Schluesselbild hindurchlaeuft statt
+ * dort anzuhalten. Das ist dieselbe Rechnung, die Maya und Blender „Auto"
+ * bzw. „Spline" nennen.
+ *
+ * Sie ist MONOTON gedeckelt (Fritsch–Carlson): wo die beiden angrenzenden
+ * Sekanten das Vorzeichen wechseln, wird die Tangente null. Ohne diesen
+ * Deckel schwingt Catmull-Rom an Wendepunkten ueber — bei 30 fps verstaerkt
+ * die zweite Differenz das um den Faktor 900, und Ballistik- wie
+ * Bodenpruefung melden Fehler, die die Bewegung nicht hat (siehe
+ * wurfHoehe()).
+ *
+ * @param {Array<{frame:number, grad:number, ease:string}>} liste  Schluessel, aufsteigend
+ * @param {number} i  Index des Schluesselbilds
+ * @returns {number} Steigung in Grad (bzw. Metern) je Frame
+ */
+export function tangente(liste, i) {
+  const p = liste[i];
+  const vor = i > 0 ? liste[i - 1] : null;
+  const nach = i < liste.length - 1 ? liste[i + 1] : null;
+
+  // `hold` heisst: der Wert steht bis zum naechsten Schluessel. Ein Anlaufen
+  // aus dem Stillstand ist dort gewollt, keine Steifheit.
+  if (vor && vor.ease === 'hold') return 0;
+  if (p.ease === 'hold') return 0;
+
+  const sekante = (a, b) => (b.frame > a.frame ? (b.grad - a.grad) / (b.frame - a.frame) : 0);
+  const dVor = vor ? sekante(vor, p) : null;
+  const dNach = nach ? sekante(p, nach) : null;
+
+  if (dVor === null && dNach === null) return 0;
+  if (dVor === null) return dNach;   // erstes Schluesselbild: einseitig
+  if (dNach === null) return dVor;   // letztes Schluesselbild: einseitig
+
+  // Vorzeichenwechsel oder Plateau: Scheitelpunkt, Tangente null. Genau das
+  // haelt den Ueberschwinger heraus.
+  if (dVor * dNach <= 0) return 0;
+
+  // Catmull-Rom ueber die gesamte Nachbarspanne, dann auf das Dreifache der
+  // kleineren Sekante gedeckelt — die Monotoniebedingung von Fritsch-Carlson.
+  const roh = (nach.grad - vor.grad) / (nach.frame - vor.frame);
+  const deckel = 3 * Math.min(Math.abs(dVor), Math.abs(dNach));
+  return Math.sign(roh) * Math.min(Math.abs(roh), deckel);
+}
+
+/**
  * Wert einer Kurve in einem Frame, oder null außerhalb ihrer Spanne.
  *
  * Die Kurve gilt von ihrem ersten bis zu ihrem letzten Schlüsselbild. Davor
@@ -323,6 +470,19 @@ export function kurvenWert(liste, f, { hoehenachse = false, fps = 0 } = {}) {
   if (a.ease === 'wurf' && hoehenachse && fps > 0) {
     const T = spanne / fps;
     return wurfHoehe(a.grad, b.grad, T, t * T);
+  }
+  // Weiche Ueberblendung laeuft als Hermite-Kurve DURCH die Schluesselbilder,
+  // statt an jedem auf null zu bremsen. linear, hold und wurf bleiben, was sie
+  // sind: der Agent hat sie ausdruecklich gewaehlt.
+  if ((a.ease ?? 'smooth') === 'smooth') {
+    const dt = spanne;
+    const m0 = tangente(liste, i) * dt;
+    const m1 = tangente(liste, i + 1) * dt;
+    const s2 = t * t, s3 = s2 * t;
+    return (2 * s3 - 3 * s2 + 1) * a.grad
+         + (s3 - 2 * s2 + t) * m0
+         + (-2 * s3 + 3 * s2) * b.grad
+         + (s3 - s2) * m1;
   }
   const form = EASE[a.ease] ?? EASE.smooth;
   return a.grad + (b.grad - a.grad) * form(t);
@@ -448,6 +608,15 @@ function wendeOverridesAn(ctx, z, tl, frames, bericht) {
   }
   if (gueltig.size === 0 && wurzelkurven.size === 0) return;
 
+  // Erst nach der Klemmprüfung verankern: die Ankerpunkte kommen aus der
+  // Ausgangshaltung und sind keine Forderung des Agenten — eine Klemmmeldung
+  // über sie wäre eine Meldung über etwas, das niemand verlangt hat.
+  const verankert = verankereKurven(
+    new Map([...gueltig].map(([k, v]) => [k, v.liste])),
+    tl.overrides,
+    (k) => z.pose.dofs[k],
+  );
+
   // Spanne über alle Kurven — Gelenke UND Wurzel: nur darin wird geschrieben.
   let von = Infinity, bis = -Infinity;
   for (const { liste } of gueltig.values()) {
@@ -497,7 +666,8 @@ function wendeOverridesAn(ctx, z, tl, frames, bericht) {
 
   bericht.hinweise.push(`${gueltig.size} Gelenkkanäle und ${wurzelkurven.size} Wurzelkanäle `
     + `aus ${gesetzteSchluessel(tl.overrides)} Schlüsselbildern über Frames ${von}–${bis} `
-    + `überblendet (${geschrieben} Frames gesetzt).`);
+    + `überblendet (${geschrieben} Frames gesetzt, ${verankert} Kanäle am Nachbar-Schlüsselbild `
+    + 'verankert).');
 }
 
 /** Wie viele Frames eine Haltung tragen — für die Meldung. */
@@ -535,6 +705,155 @@ function messeKontakt(skel, kn) {
 }
 
 /** Pose-Änderung in einen fertigen Frame zurückschreiben. */
+/**
+ * Hält festgenagelte Füße an ihrem Ort — die Antwort auf „der Fuß rutscht".
+ *
+ * Warum es das braucht, gemessen an zwei Agentenläufen am 1. September 2026:
+ * der Agent setzt Gelenkwinkel und wird an Weltpositionen gemessen. Damit ein
+ * Standfuß beim Gehen stehen bleibt, müsste er die Beinkette im Kopf rechnen —
+ * für jeden Frame, während sich das Becken bewegt. Er hat es versucht: 213
+ * Sekunden für einen Block, und danach rutschten die Füße immer noch bis 31 cm.
+ *
+ * Diese Rechnung ist die Aufgabe des Lösers. hold_foot setzt den Anker, hier
+ * wird er durchgesetzt: für jeden Frame der Spanne wird die Beinkette so
+ * optimiert, dass der Fuß dort bleibt, wo er zu Beginn der Spanne stand.
+ * Gelenkgrenzen bleiben hart (das macht optimiere), die Wurzel bleibt fest —
+ * der Agent bestimmt weiter, WO die Figur steht.
+ *
+ * Läuft NACH wendeOverridesAn: sonst schreiben die Haltungen den Anker wieder weg.
+ *
+ * Was nicht erreicht wurde, steht mit Betrag im Bericht. Ein Anker, der nicht
+ * zu halten ist (Bein zu kurz), wird gemeldet, nicht stillschweigend verfehlt.
+ */
+function halteAnker(ctx, tl, frames, bericht) {
+  const { skel } = ctx;
+  const anker = Array.isArray(tl.anchors) ? tl.anchors : [];
+  if (anker.length === 0) return;
+
+  for (const a of anker) {
+    const knochen = skel.rollenKnochen?.[a.foot];
+    if (!knochen) {
+      bericht.lucken.push({
+        meldung: `Anker für „${a.foot}“: diese Rolle ist am Modell nicht zugeordnet `
+          + `(${Object.keys(skel.rollenKnochen ?? {}).length} Rollen bekannt)`,
+      });
+      continue;
+    }
+
+    // Die Kette vom Becken zu diesem Fuß — aber NUR die Kanaele, die der Agent
+    // nie angefasst hat.
+    //
+    // Vorher standen alle hip/knee/ankle-Kanaele der Seite zur Verfuegung, die
+    // gesetzten mit Gewicht 4 gegen den Anker mit 100. Das ist 25 zu 1: der
+    // Anker gewann jedes Mal, und die Handschrift des Agenten wurde
+    // weggebogen. Gemessen an Frame 58 des Laufs vom 1. September 2026: der
+    // Agent setzte hip_r.flex 20, heraus kam 20.6 — dazu spread -7.7 und
+    // twist 0.3 auf Kanaelen, die er nie genannt hatte. Aus seiner Sicht ging
+    // die Figur in eine Haltung und wurde wieder herausgerissen.
+    //
+    // Gesetzt heisst jetzt fest. Reicht der Rest nicht, um den Fuss zu halten,
+    // steht das als Konflikt im Bericht — der Loeser darf scheitern, aber er
+    // darf die Vorgabe nicht umschreiben (AGENTS.md, "Der Loeser korrigiert,
+    // der Validator prueft die Nachbedingung").
+    const vomAgenten = new Set(baueKurven(tl.overrides).keys());
+    const seite = a.foot.endsWith('_l') ? '_l' : '_r';
+    const beinKanaele = Object.keys(skel.dofs).filter(
+      (k) => /^(hip|knee|ankle)/.test(k) && k.split('.')[0].endsWith(seite));
+    const frei = beinKanaele.filter((k) => !vomAgenten.has(k));
+    if (beinKanaele.length === 0) {
+      bericht.lucken.push({ meldung: `Anker für „${a.foot}“: 0 Beingelenke gefunden` });
+      continue;
+    }
+
+    const inSpanne = frames.filter((f) => f.frame >= a.von && f.frame <= a.bis && f.loeserPose);
+    if (inSpanne.length === 0) {
+      bericht.lucken.push({
+        meldung: `Anker für „${a.foot}“ über Frames ${a.von}–${a.bis}: 0 gelöste Frames darin`,
+      });
+      continue;
+    }
+
+    // Sollort: wo der Fuss im ERSTEN Frame der Spanne steht. Der Agent hat ihn
+    // dort hingestellt; ab da bleibt er.
+    const soll = inSpanne[0].positions?.[knochen];
+    if (!soll) continue;
+
+    let groesster = 0;
+    let verbogeneFrames = 0;
+    for (const f of inSpanne) {
+      // Die gesetzte Haltung ist die WEICHE Vorgabe, gegen die optimiert wird.
+      //
+      // Ohne sie behandelt die IK die Beinwinkel als voellig frei und sucht
+      // irgendeine Loesung, die den Fuss haelt. Gemessen am Lauf vom
+      // 1. September 2026: 11 gesetzte Beinwinkel wurden um mehr als 10 Grad
+      // verbogen, bei hip_r.flex auf Frame 19 sogar das Vorzeichen gedreht —
+      // der Agent wollte das Bein nach hinten, die IK zog es nach vorn. Aus
+      // seiner Sicht ging die Figur in eine Haltung und wurde wieder
+      // herausgerissen.
+      //
+      // `haltung` haelt die FREIEN Kanaele nahe an ihrer Ausgangslage, damit
+      // die IK sie nicht grundlos verdreht (GEWICHT.anker 100 gegen
+      // GEWICHT.haltung 4, siehe ik.js). Die gesetzten Kanaele sind gar nicht
+      // erst in `kette` — sie koennen nicht mehr verbogen werden.
+      // Zwei Durchgaenge, in dieser Reihenfolge:
+      //
+      //   1. NUR die Kanaele, die der Agent nie angefasst hat. Wo der Fuss
+      //      damit steht, bleibt seine Haltung unberuehrt — er hat sie so
+      //      gewollt.
+      //   2. Reicht das nicht, kommen die gesetzten dazu. Dann wird verbogen,
+      //      aber der Betrag steht im Bericht. Stumm umschreiben waere das,
+      //      was den Agenten vorher aus seinen eigenen Haltungen gerissen hat.
+      const lauf = (kanaele) => {
+        if (kanaele.length === 0) return null;
+        const haltung = {};
+        for (const k of kanaele) haltung[k] = f.loeserPose.dofs[k] ?? 0;
+        const ziele = { anker: [{ knochen, soll: [...soll], id: a.foot }], com: null, boden: [], haltung };
+        // Kopie: optimiere() arbeitet auf der uebergebenen Pose. Ohne sie
+        // startet der zweite Durchgang auf dem Ergebnis des ersten.
+        const erg = optimiere(skel, kopierePose(f.loeserPose), ziele, kanaele, { wurzelFrei: false });
+        const kn = poseZuFk(skel, erg.pose);
+        const ist = kn.get(knochen)?.pos;
+        const rest = ist ? Math.hypot(ist[0] - soll[0], ist[1] - soll[1], ist[2] - soll[2]) : Infinity;
+        return { erg, kn, rest };
+      };
+
+      const toleranz = skel.height * 0.02;
+      let treffer = lauf(frei);
+      if (!treffer || treffer.rest > toleranz) {
+        const voll = lauf(beinKanaele);
+        if (voll && (!treffer || voll.rest < treffer.rest)) {
+          treffer = voll;
+          verbogeneFrames += 1;
+        }
+      }
+      if (!treffer) continue;
+      ueberschreibeFrame(ctx, skel, f, treffer.erg.pose, treffer.kn);
+      groesster = Math.max(groesster, treffer.rest);
+    }
+
+    bericht.hinweise.push(`Anker ${a.foot} über Frames ${a.von}–${a.bis} gehalten `
+      + `(${inSpanne.length} Frames, ${frei.length} freie Gelenke, `
+      + `größte verbleibende Abweichung ${(groesster * 100).toFixed(1)} cm).`);
+    if (verbogeneFrames > 0) {
+      bericht.hinweise.push(`Dafür mussten in ${verbogeneFrames} von ${inSpanne.length} Frames `
+        + `auch von dir gesetzte Beinwinkel nachgeben — die freien Kanäle `
+        + `(${frei.length} von ${beinKanaele.length}) reichten dort nicht aus. `
+        + 'Willst du deine Winkel unangetastet, verkürze die Ankerspanne oder '
+        + 'stelle die Wurzel näher an den Fuß.');
+    }
+    if (groesster > skel.height * 0.02) {
+      bericht.konflikt.push({
+        frame: a.von, verb: 'anker', bedingung: 'fussanker', einheit: 'm',
+        soll: 0, erreicht: +groesster.toFixed(4), betrag: +groesster.toFixed(4),
+        grund: 'Beinkette reicht nicht bis zum Ankerpunkt',
+        meldung: `Anker ${a.foot} über Frames ${a.von}–${a.bis} um bis zu `
+          + `${(groesster * 100).toFixed(1)} cm verfehlt — die Wurzel steht zu weit weg, `
+          + 'setze sie näher oder verkürze die Ankerspanne',
+      });
+    }
+  }
+}
+
 function ueberschreibeFrame(ctx, skel, frame, pose, kn) {
   const com = schwerpunkt(skel, kn).com;
   const positionen = {};
@@ -545,6 +864,7 @@ function ueberschreibeFrame(ctx, skel, frame, pose, kn) {
     if (b) joints[name] = [...b.quat];
   }
   frame.positions = positionen;
+  frame.solePositions = sohlenVerzeichnis(skel, kn);
   frame.com = [...com];
   frame.joints = joints;
   frame.root = { pos: [...pose.wpos], quat: [...(wurzelQ(pose))] };
@@ -555,6 +875,7 @@ function ueberschreibeFrame(ctx, skel, frame, pose, kn) {
   // Der Bewegungszustand wird MITGERECHNET, nicht uebernommen: eine Haltung,
   // die die Figur vom Boden hebt, muss auch als Flug gelten.
   frame.contact = messeKontakt(skel, kn);
+  frame.loeserPose = kopierePose(pose);
   frame.override = true;
 }
 
@@ -591,12 +912,33 @@ function halteFrame(ctx, z, phase, f) {
     root: { pos: [...z.pose.wpos], quat: [...wurzelQ(z.pose)] },
     joints,
     positions: positionen,
+    solePositions: sohlenVerzeichnis(skel, kn),
     com: [...com],
     dofs: { ...z.pose.dofs },
     contact: z.kontakt ? 'kontakt' : 'flug',
     anchored: z.kontakt ? soleIds(skel, z.anker) : [],
     geschwindigkeit: [...z.comVel],
   };
+}
+
+/**
+ * Weltpositionen der Sohlenpunkte als {id: [x,y,z]} fuer einen Frame.
+ *
+ * Warum das an den Frame gehoert: die Physikpruefung entschied ueber
+ * Bodenkontakt bisher mit `bonesOf(f)[s.bone]` — also mit der Position des
+ * FUSSKNOCHENS, fuer alle vier Sohlen desselben Fusses dieselbe. Der lokale
+ * Versatz s.local wurde nie angewendet. Am Xbot liegt der Fussknochen 7,2 cm
+ * ueber der Sohle; die Kontaktschwelle von 3,5 % der Koerperhoehe (6,3 cm)
+ * gleicht genau diesen Rechenfehler aus, statt eine Toleranz zu sein.
+ *
+ * Mit den echten Sohlenpunkten braucht die Pruefung keine aufgeblasene
+ * Schwelle mehr und kann sagen, welcher Fuss traegt — statt nur, ob die Figur
+ * irgendwo den Boden beruehrt.
+ */
+function sohlenVerzeichnis(skel, kn) {
+  const out = {};
+  for (const s of sohlenWelt(skel, kn)) out[s.id] = [...s.pos];
+  return out;
 }
 
 function soleIds(skel, anker) {

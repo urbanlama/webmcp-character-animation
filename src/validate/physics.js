@@ -60,6 +60,25 @@ export const G = 9.81;
  *  RigProfile gelesen (params.soleTolerance), hier nur der Fallback. */
 export const KONTAKT_SCHWELLE_ANTEIL = 0.035;
 
+/** Auflageschwelle: ein Fuss TRAEGT, wenn eine seiner Sohlen naeher als dieser
+ *  Anteil der Koerperhoehe am Boden liegt. 1 % = 1,8 cm am Xbot.
+ *
+ *  Getrennt von KONTAKT_SCHWELLE_ANTEIL, und das ist der Punkt: die 3,5 %
+ *  dort beantworten die Frage „beruehrt die Figur ueberhaupt den Boden?" und
+ *  duerfen grosszuegig sein, damit auch ein Modell erfasst wird, das auf dem
+ *  Ballen steht. Fuer die Frage „steht dieser Fuss fest genug, dass Rutschen
+ *  ein Fehler waere?" sind sie viel zu weit: ein Schwungfuss geht beim
+ *  Durchschwingen 2 bis 5 cm ueber den Boden und liegt damit unter 6,3 cm —
+ *  er galt als aufliegend, und seine Vorwaertsbewegung wurde als Rutschen
+ *  gemeldet.
+ *
+ *  Gemessen am Agentenlauf vom 1. September 2026: 19 bis 33 cm „Rutschen" in
+ *  den Frames 4–34, also im gesamten Anlauf, bei einem Gang, der nicht
+ *  rutschte. Der Agent schrieb selbst „der Pruefer wertet sie als Kontakt"
+ *  und beugte daraufhin die Knie von 40 auf 56 Grad, um die Fuesse hoeher zu
+ *  bekommen — aus einem Gang wurde ein Storchengang. */
+export const AUFLAGE_SCHWELLE_ANTEIL = 0.01;
+
 /** Numerische Schwelle des Geschlossenheits-Verfahrens (segSegDist): ab
  *  dieser Degenerierheit gilt ein Streckensegment als Punkt. 1e-12 liegt an
  *  der Maschinengenauigkeit der Quadratsummen (Werte > 1 m² im Rig), macht
@@ -221,9 +240,31 @@ export function pruefePhysik(profile, frames, fps) {
   // ── 1. Bodendurchdringung ──────────────────────────────────────────────────
   // Körperteile = Segment-Endpunkte (Knochen-Weltpositionen). Ein unter dem
   // Boden liegender Knochen wird gemeldet mit der Tiefe als Betrag.
+  //
+  // NUR Knochen, an denen Haut hängt (profile.skinnedBones, gemessen in
+  // measure.js). Mixamo führt Hilfsknochen ohne jede Geometrie — beide
+  // Toe_End, HeadTop_End, die Augen, alle zehn Fingerspitzen. Am Xbot sind
+  // das 15 von 67 Knochen.
+  //
+  // Warum das nicht kosmetisch ist: Toe_End liegt konstruktiv TIEFER als der
+  // tiefste Sohlenpunkt — in der Ruhehaltung 1,53 cm, bei 30 Grad
+  // gestrecktem Fuß 1,85 cm. Die Bodentoleranz sind 1,8 cm. Sobald die Sohle
+  // sauber aufliegt und der Fuß auch nur leicht abrollt, meldet die Prüfung
+  // einen Fehler, den die Bewegung nicht hat und den kein Agent beheben kann:
+  // Null ist unerreichbar, solange die Sohle den Boden berührt.
+  //
+  // Gemessen am Agentenlauf vom 1. September 2026: der Agent kämpfte über
+  // rund 40 Aufrufe von 12,6 cm auf 3,5 cm herunter, kam nie auf null und
+  // baute dabei den Anlauf zum Storchengang um (knee.bend 40 -> 56 Grad).
+  //
+  // Fehlt das Feld (älteres Profil), wird wie bisher alles geprüft.
+  const hatHaut = Array.isArray(profile.skinnedBones) && profile.skinnedBones.length > 0
+    ? new Set(profile.skinnedBones)
+    : null;
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i];
     for (const [bone, p] of Object.entries(f.positions)) {
+      if (hatHaut && !hatHaut.has(bone)) continue;
       const tiefe = groundY - p[1];
       if (tiefe > bodenTol) {
         issues.push(issue(
@@ -340,12 +381,36 @@ export function pruefePhysik(profile, frames, fps) {
     if (!Array.isArray(f.anchored)) return true;
     return (solesByBone.get(bone) ?? []).some((id) => f.anchored.includes(id));
   };
+
+  // Liegt DIESER Fuss auf? Nicht: beruehrt die Figur irgendwo den Boden.
+  //
+  // Vorher entschied die figurweite Phase, und geprueft wurden dann BEIDE
+  // Fuesse. Beim Gehen steht immer einer — damit galt der Schwungfuss als
+  // aufliegend und seine Vorwaertsbewegung als Rutschen. Der Anlauf war
+  // durchgehend rot, ohne dass etwas rutschte.
+  const auflageSchwelle = height * AUFLAGE_SCHWELLE_ANTEIL;
+  const liegtAuf = (f, bone) => {
+    const pts = f.solePositions ?? null;
+    const ids = solesByBone.get(bone) ?? [];
+    if (pts && ids.length) {
+      return ids.some((id) => pts[id] && (pts[id][1] - groundY) < auflageSchwelle);
+    }
+    // Kein Sohlenverzeichnis im Frame: auf den Fussknochen zurueckfallen. Er
+    // liegt hoeher als die Sohle, deshalb die Sohlentoleranz obendrauf.
+    const p = bonesOf(f)[bone];
+    return !!p && (p[1] - groundY) < auflageSchwelle + (profile.params?.soleTolerance ?? KONTAKT_SCHWELLE_ANTEIL) * height;
+  };
+
   for (let i = 1; i < frames.length; i++) {
+    // Phasengrenze bleibt tabu (AGENTS.md: jede Pruefung ist phasenabhaengig).
+    // Die Figur muss in BEIDEN Frames Kontakt haben — und zusaetzlich muss
+    // DIESER Fuss aufliegen.
     if (phasen[i] !== 'kontakt' || phasen[i - 1] !== 'kontakt') continue;
     const prev = frames[i - 1], f = frames[i];
     for (const role of ['foot_l', 'foot_r']) {
       const bone = profile.roles?.[role]?.bone;
       if (!bone) continue;
+      if (!liegtAuf(prev, bone) || !liegtAuf(f, bone)) continue;
       if (!fussVerankert(prev, bone) || !fussVerankert(f, bone)) continue;
       const a = prev.positions?.[bone], b = bonesOf(f)[bone];
       if (!a || !b) continue;

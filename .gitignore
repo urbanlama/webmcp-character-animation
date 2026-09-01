@@ -8,3 +8,15 @@ dist/
 spikes/**/shots/
 spikes/**/_check.mjs
 spikes/**/_c.mjs
+
+# Gespeicherte fremde Webseiten (Recherchematerial): WebMCP-Doku, Atlas-
+# Ankuendigung, Devpost-FAQ. Rund 1,9 MB fremde Inhalte — gehoeren nicht in
+# ein oeffentliches Repo mit eigener Lizenz.
+/atlas.html
+/atlas2.html
+/wm.html
+/wm2.html
+/wm3.html
+/wmc.html
+/agents.html
+/faq.html

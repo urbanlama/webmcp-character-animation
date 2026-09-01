@@ -43,6 +43,23 @@ export const CONTACT_MARGIN = 0.015;
  *  für messbare Wirkung am Kettenende, klein genug ohne Überschlag. */
 export const PROBE_DEG = 20;
 
+/** Ab diesem Skin-Gewicht traegt ein Knochen ueberhaupt Haut.
+ *
+ *  Getrennt von MIN_DOMINANT_WEIGHT: dort geht es um die Frage, WELCHEM
+ *  Segment ein Vertex gehoert; hier nur darum, OB an einem Knochen
+ *  ueberhaupt Geometrie haengt.
+ *
+ *  Warum das gebraucht wird: Mixamo-Rigs fuehren Hilfsknochen ohne jede
+ *  Haut — beide Toe_End, HeadTop_End, die Augen und alle zehn
+ *  Fingerspitzen (…4). Gemessen am Xbot: 15 Knochen mit 0 gewichteten
+ *  Vertices. Die Bodenpruefung lief ueber ALLE Knochenpositionen und
+ *  meldete deshalb Toe_End als „im Boden steckend" — an einem Punkt, an
+ *  dem kein einziges Dreieck haengt.
+ *
+ *  Der Betrag ist unkritisch: gemessen liegt jedes echte Gewicht ueber
+ *  0,01, jeder Hilfsknochen exakt bei 0. */
+export const MIN_HAUT_GEWICHT = 0.001;
+
 /** Minimal-Skin-Gewicht, ab dem ein Vertex seinem dominanten Knochen zugerechnet
  *  wird. 0,5 heißt: mehr als die Hälfte der Hautwirkung liegt bei diesem Knochen. */
 export const MIN_DOMINANT_WEIGHT = 0.5;
@@ -208,7 +225,7 @@ const JOINT_CATALOG = [
       swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-130, 90],
                richtung: 'swing: + schwingt den linken Arm nach vorn, - nach hinten' },
       twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
-               richtung: 'twist: + dreht den linken Arm um seine eigene Achse (vorwärts rollend), - rückwärts' } } },
+               richtung: 'twist: + dreht den linken Arm um seine eigene Achse (vorwärts rollend), - rückwärts. WICHTIG beim Senken: in der T-Pose zeigt die Handfläche nach unten. Senkst du den Arm nur mit lift, zeigt sie danach nach vorn und die Hand steht unnatürlich ab. Ein Mensch dreht dabei mit. Faustregel am haengenden Arm: links twist +75, rechts twist -75.' } } },
   { joint: 'arm_r',      bone: 'arm_r',     end: 'ende_hand_r', dofs: {
       lift:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-95, 100],
                richtung: 'lift: + hebt den rechten Arm nach oben, - senkt ihn. '
@@ -216,15 +233,27 @@ const JOINT_CATALOG = [
       swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-130, 90],
                richtung: 'swing: + schwingt den rechten Arm nach vorn, - nach hinten' },
       twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
-               richtung: 'twist: + dreht den rechten Arm um seine eigene Achse (vorwärts rollend), - rückwärts' } } },
+               richtung: 'twist: + dreht den rechten Arm um seine eigene Achse (vorwärts rollend), - rückwärts. WICHTIG beim Senken: in der T-Pose zeigt die Handfläche nach unten. Senkst du den Arm nur mit lift, zeigt sie danach nach vorn und die Hand steht unnatürlich ab. Ein Mensch dreht dabei mit. Faustregel am haengenden Arm: links twist +75, rechts twist -75.' } } },
   { joint: 'elbow_l',    bone: 'forearm_l', end: 'ende_hand_l', dofs: {
-      bend:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-2, 150],
-               richtung: 'bend: + beugt den linken Ellbogen (Hand zum Oberarm), - streckt ihn' },
+      // ACHSE GEMESSEN, nicht katalogisiert. Am Xbot durchprobiert: die alte
+      // Achse 'z' bewegte die Hand bei bend=+60 um 24,5 cm nach OBEN und 0,0 cm
+      // nach vorn - der Arm knickte in der Frontalebene, seitlich weg vom Koerper.
+      // Ein menschlicher Ellbogen fuehrt die Hand nach VORN zur Schulter. Nur die
+      // Achse 'y' tut das (24,5 cm vorn, Hand-Schulter 0,562 -> 0,486 m); 'x' ist
+      // die Armachse und wirkungslos. Das Vorzeichen ist seitenverschieden.
+      bend:  { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [0, 150],
+               richtung: 'bend: + beugt den linken Ellbogen, die Hand kommt nach VORN zur Schulter. 0 ist der gestreckte Arm und die Untergrenze - ein Ellbogen laesst sich nicht ueberstrecken.' },
       twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
                richtung: 'twist: + dreht den linken Unterraum (Handfläche nach oben), - nach unten' } } },
   { joint: 'elbow_r',    bone: 'forearm_r', end: 'ende_hand_r', dofs: {
-      bend:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-2, 150],
-               richtung: 'bend: + beugt den rechten Ellbogen (Hand zum Oberarm), - streckt ihn' },
+      // ACHSE GEMESSEN, nicht katalogisiert. Am Xbot durchprobiert: die alte
+      // Achse 'z' bewegte die Hand bei bend=+60 um 24,5 cm nach OBEN und 0,0 cm
+      // nach vorn - der Arm knickte in der Frontalebene, seitlich weg vom Koerper.
+      // Ein menschlicher Ellbogen fuehrt die Hand nach VORN zur Schulter. Nur die
+      // Achse 'y' tut das (24,5 cm vorn, Hand-Schulter 0,562 -> 0,486 m); 'x' ist
+      // die Armachse und wirkungslos. Das Vorzeichen ist seitenverschieden.
+      bend:  { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [0, 150],
+               richtung: 'bend: + beugt den rechten Ellbogen, die Hand kommt nach VORN zur Schulter. 0 ist der gestreckte Arm und die Untergrenze - ein Ellbogen laesst sich nicht ueberstrecken.' },
       twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
                richtung: 'twist: + dreht den rechten Unterarm (Handfläche nach oben), - nach unten' } } },
   { joint: 'hip_l',      bone: 'thigh_l',   end: 'ende_fuss_l', dofs: {
@@ -717,6 +746,7 @@ function collectContext(gltf, opts = {}) {
   // Jede Toleranz dieses Profils ist auf diese Höhe relativ, also wäre das
   // gesamte Profil um 13,3 % zu eng. (Beleg: src/rig/measure.test.mjs,
   // „Vertrag, Positivfall“.)
+  const knochenMitHaut = new Set();
   for (const haut of meshes) {
     const posAttr = haut.geometry.attributes.position;
     const si = haut.geometry.attributes.skinIndex;
@@ -741,6 +771,7 @@ function collectContext(gltf, opts = {}) {
       for (let k = 0; k < 4; k++) {
         const w = sw.getComponent(i, k);
         const bi = si.getComponent(i, k);
+        if (w > MIN_HAUT_GEWICHT && bones[bi]) knochenMitHaut.add(bones[bi].name);
         if (w > bestW) { bestW = w; bestB = bi; }
       }
       segOfVertex.push(bestW >= MIN_DOMINANT_WEIGHT ? (segOfBoneObj.get(bones[bestB]) ?? null) : null);
@@ -771,7 +802,7 @@ function collectContext(gltf, opts = {}) {
   return {
     scene, mesh, skeleton, bones, byName,
     rollen, bericht,
-    vertexCount, worldVerts, segOfVertex,
+    vertexCount, worldVerts, segOfVertex, knochenMitHaut,
     minY, maxY, height,
     soleTolMeters,
     footL, footR,
@@ -1442,6 +1473,9 @@ export function measureRigProfile(gltf, opts = {}) {
       boneCount: ctx.bones.length,
       vertexCount: ctx.vertexCount,
     },
+    // Knochen, an denen ueberhaupt Haut haengt. Wer das nicht hat, kann auch
+    // nicht im Boden stecken — siehe MIN_HAUT_GEWICHT.
+    skinnedBones: [...ctx.knochenMitHaut].sort(),
     world: {
       up: 'y',
       forward: 'z',

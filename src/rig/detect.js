@@ -164,6 +164,37 @@ export const ROLLEN = [
   'hand_l', 'hand_r',
 ];
 
+/**
+ * Wie eine Rolle heisst, wenn ein Mensch sie lesen soll.
+ *
+ * Die Rueckfragen gehen an den Menschen am Bildschirm, nicht an den Agenten.
+ * Vorher stand dort woertlich „Ist ‚mixamorigLeftFoot' die Rolle foot_l?
+ * Vorschlag mit Konfidenz 0.72, sicher ab 0.9." — drei Fachbegriffe und zwei
+ * Schwellwerte in einem Satz. Wer die Werkzeugschicht nicht kennt, kann das
+ * nicht beantworten, und wer sie kennt, braucht die Frage nicht.
+ *
+ * Der Knochen leuchtet im Bild, waehrend gefragt wird (src/ui/rollen-bestaetigung.js).
+ * Die Frage muss deshalb nur noch benennen, WAS leuchten soll.
+ */
+export const ROLLENNAME = {
+  pelvis: 'das Becken',
+  foot_l: 'der linke Fuß', foot_r: 'der rechte Fuß',
+  thigh_l: 'der linke Oberschenkel', thigh_r: 'der rechte Oberschenkel',
+  shin_l: 'der linke Unterschenkel', shin_r: 'der rechte Unterschenkel',
+  toe_l: 'die linken Zehen', toe_r: 'die rechten Zehen',
+  spine: 'die untere Wirbelsäule', chest: 'der Brustkorb',
+  neck: 'der Hals', head: 'der Kopf',
+  shoulder_l: 'die linke Schulter', shoulder_r: 'die rechte Schulter',
+  arm_l: 'der linke Oberarm', arm_r: 'der rechte Oberarm',
+  forearm_l: 'der linke Unterarm', forearm_r: 'der rechte Unterarm',
+  hand_l: 'die linke Hand', hand_r: 'die rechte Hand',
+};
+
+/** Rollenname fuer den Menschen; unbekannte Rollen behalten ihren Bezeichner. */
+export function menschlich(rolle) {
+  return ROLLENNAME[rolle] ?? rolle;
+}
+
 /** Pflichtrollen des RigProfile-Vertrags: fehlt eine, wird abgelehnt. */
 export const PFLICHTROLLEN = ['pelvis', 'foot_l', 'foot_r'];
 
@@ -1619,12 +1650,16 @@ export function detectRig(gltf, opts = {}) {
     fragen.push({
       art: 'seitenverwechslung',
       rollen: SEITENROLLEN.filter((r) => roles[r]),
-      frage: `Die Blickrichtung ist nicht messbar: ${richtung.nutzbar} von ${richtung.signale.length} Richtungssignalen über der Grenze`
-        + ` (stärkstes Signal ${r3(Math.max(0, ...richtung.signale.map((s) => s.anteil)))} der Körperhöhe).`
-        + ` Welcher Fuß ist links — „${paar[0]}“ oder „${paar[1]}“?`,
+      // Der Mensch sieht beide Fuesse markiert, mit 1 und 2 beschriftet. Die
+      // Diagnose (wie viele Richtungssignale ueber der Grenze lagen) gehoert
+      // in den Rig-Bericht, nicht in die Frage.
+      frage: 'Welcher der beiden markierten Füße ist der LINKE?',
+      diagnose: `Blickrichtung nicht messbar: ${richtung.nutzbar} von `
+        + `${richtung.signale.length} Richtungssignalen über der Grenze, stärkstes `
+        + `${r3(Math.max(0, ...richtung.signale.map((s) => s.anteil)))} der Körperhöhe`,
       optionen: [
-        { text: `„${paar[0]}“ ist links`, zuordnung: seitenZuordnung(false) },
-        { text: `„${paar[1]}“ ist links`, zuordnung: seitenZuordnung(true) },
+        { text: 'Der mit der 1', zuordnung: seitenZuordnung(false) },
+        { text: 'Der mit der 2', zuordnung: seitenZuordnung(true) },
       ],
     });
   }
@@ -1642,10 +1677,17 @@ export function detectRig(gltf, opts = {}) {
       art: 'rollenbestaetigung',
       rolle,
       vorschlag: r.vorschlag,
-      frage: `Ist „${r.bone}“ die Rolle ${rolle}? Vorschlag mit Konfidenz ${r.confidence}, sicher ab ${params.sicherAb}.`,
+      // Der fragliche Knochen leuchtet mit der 1, die Alternative mit der 2.
+      // Gefragt wird nach dem, was der Mensch SIEHT, nicht nach dem, was im
+      // Modell steht. Die Konfidenz gehoert in den Rig-Bericht, nicht hierher.
+      frage: `Ist das markierte Teil ${menschlich(rolle)}?`,
+      diagnose: `Knochen „${r.bone}“, Konfidenz ${r.confidence}, `
+        + `sicher ab ${params.sicherAb}`,
       optionen: [
-        { text: `ja, „${r.bone}“`, bone: r.bone, confidence: r.confidence },
-        ...(alternativen.length ? [{ text: `nein, sondern „${alternativen[0]}“`, bone: alternativen[0], confidence: 0 }] : []),
+        { text: 'Ja, das stimmt', bone: r.bone, confidence: r.confidence },
+        ...(alternativen.length
+          ? [{ text: 'Nein, das andere markierte Teil', bone: alternativen[0], confidence: 0 }]
+          : []),
       ],
     });
   }

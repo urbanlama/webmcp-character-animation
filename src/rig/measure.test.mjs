@@ -142,7 +142,10 @@ const BENANNTE_RICHTUNG = {
   'shoulder_r.shrug': ['+y'], 'shoulder_r.fwd': ['+z'],
   'arm_l.lift': ['+y'], 'arm_l.swing': ['+z'],
   'arm_r.lift': ['+y'], 'arm_r.swing': ['+z'],
-  'elbow_l.bend': ['+y'], 'elbow_r.bend': ['+y'],
+  // Ellbogen: Achse im Katalog auf 'y' umgestellt (gemessen am Xbot: nur 'y'
+  // führt die Hand nach VORN zur Schulter, 'z' kippte sie seitlich nach
+  // oben). Die benannte Richtung folgt: + beugt, Hand kommt nach +z vorn.
+  'elbow_l.bend': ['+z'], 'elbow_r.bend': ['+z'],
   'hip_l.flex': ['+z'], 'hip_l.spread': ['+x'],
   'hip_r.flex': ['+z'], 'hip_r.spread': ['-x'],
   'knee_l.bend': ['-z'], 'knee_r.bend': ['-z'],
@@ -968,6 +971,10 @@ test('Rollen, Positivfall: umbenannte Knochen ändern kein einziges Maß', async
   for (const j of Object.values(uebersetzt.joints)) j.bone = zurueck(j.bone);
   uebersetzt.segments = uebersetzt.segments.map((s) => ({ ...s, from: zurueck(s.from), to: zurueck(s.to) }));
   uebersetzt.soles = uebersetzt.soles.map((s) => ({ ...s, bone: zurueck(s.bone) }));
+  // Knochen mit Haut: traegt Namen, also ebenfalls zurueckfuehren. Sortiert,
+  // weil das Profil sie sortiert ausgibt und die Umbenennung die Reihenfolge
+  // aendert.
+  uebersetzt.skinnedBones = uebersetzt.skinnedBones.map(zurueck).sort();
 
   assert.deepStrictEqual(getarnt, uebersetzt,
     `das Profil des umbenannten Modells weicht ab — Körperhöhe ${getarnt.world.height} gegen ${original.world.height} m,`
