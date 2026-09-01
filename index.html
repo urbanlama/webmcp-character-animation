@@ -605,8 +605,8 @@ scene.add(studioLicht);
 // nur die ruhige, räumliche Beleuchtung derselben Figur und derselben Frames.
 const weltLicht = new THREE.Group();
 weltLicht.visible = false;
-weltLicht.add(new THREE.HemisphereLight(0xe8edf2, 0x66717d, 1.35));
-const weltSonne = new THREE.DirectionalLight(0xfff7ec, 1.9);
+weltLicht.add(new THREE.HemisphereLight(0xf4f5f6, 0x7f858b, 1.7));
+const weltSonne = new THREE.DirectionalLight(0xfff9f0, 2.3);
 weltSonne.castShadow = true;
 weltSonne.shadow.mapSize.set(2048, 2048);
 weltLicht.add(weltSonne);
@@ -634,6 +634,7 @@ let boden = null;
 let weltBoden = null;
 let ansicht = ANSICHT_EDITOR;
 let ersterBewegungsFrame = null;
+let ansichtsumschalter = null;
 
 function entferneWeltBoden() {
   if (!weltBoden) return;
@@ -691,7 +692,7 @@ function baueWeltBoden({ groundY, hoehe }) {
   gruppe.name = 'welt-buehne';
   const flaeche = new THREE.Mesh(
     new THREE.PlaneGeometry(groesse, groesse),
-    new THREE.MeshStandardMaterial({ color: 0x9098a1, roughness: 1, metalness: 0 }),
+    new THREE.MeshStandardMaterial({ color: 0xc4c7ca, roughness: 1, metalness: 0 }),
   );
   flaeche.name = 'welt-boden';
   flaeche.rotation.x = -Math.PI / 2;
@@ -757,14 +758,15 @@ function rahmeWelt() {
 
 function setzeAnsicht(neu) {
   ansicht = neu === ANSICHT_WELT ? ANSICHT_WELT : ANSICHT_EDITOR;
+  ansichtsumschalter?.zeige(ansicht);
   const istWelt = ansicht === ANSICHT_WELT;
   document.body.classList.toggle('welt-ansicht', istWelt);
-  scene.background.set(istWelt ? 0xa8adb2 : 0x0e0e10);
+  scene.background.set(istWelt ? 0xa9a9a9 : 0x0e0e10);
   if (istWelt && model) {
     const hoehe = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3()).y;
     // Der Boden soll vor seinem geometrischen Ende im Horizont verschwinden,
     // nicht als rechteckige Kante gegen den Himmel laufen.
-    scene.fog = new THREE.Fog(0xa8adb2, hoehe * 2, hoehe * 10);
+    scene.fog = new THREE.Fog(0xa9a9a9, hoehe * 7, hoehe * 17);
   } else {
     scene.fog = null;
   }
@@ -858,16 +860,18 @@ const abspieler = mounteAbspieler({
 });
 window.__abspieler = abspieler;
 
-const ansichtsumschalter = mounteAnsichtsumschalter({
+ansichtsumschalter = mounteAnsichtsumschalter({
   wurzel: document.getElementById('ansicht'),
   beimWechsel: (neu) => {
-    setzeAnsicht(neu);
+    const sichtbar = setzeAnsicht(neu);
     const stand = abspieler.stand();
     // Der Umschalter ist ein bewusster Blickwechsel. Der angehaltene aktuelle
     // Frame bleibt derselbe, nur seine Darstellung wechselt sofort mit.
     if (stand.bereit) abspieler.anfahren(stand.index);
+    return sichtbar;
   },
 });
+setzeAnsicht(ansicht);
 window.__ansicht = ansichtsumschalter;
 
 // Zwei Wege zurueck auf die gemessene Ansicht, beide ueber dieselbe Messung.

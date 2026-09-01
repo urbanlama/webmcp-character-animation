@@ -67,16 +67,17 @@ export function mounteAnsichtsumschalter({ wurzel, beimWechsel, initial = ANSICH
   insel.setAttribute('role', 'group');
   insel.setAttribute('aria-label', 'Ansicht');
   const knoepfe = new Map();
-  let ansicht = initial === ANSICHT_WELT ? ANSICHT_WELT : ANSICHT_EDITOR;
 
-  function setze(neu) {
-    ansicht = neu === ANSICHT_WELT ? ANSICHT_WELT : ANSICHT_EDITOR;
+  // Die Insel besitzt KEINEN Modus. Sie zeichnet ausschließlich den Zustand,
+  // den die Bühne hält. Zwei getrennte Wahrheiten führten zu widersprüchlichen
+  // Screenshots: Welt gerendert, aber Editor noch hervorgehoben.
+  function zeige(neu) {
+    const ansicht = neu === ANSICHT_WELT ? ANSICHT_WELT : ANSICHT_EDITOR;
     for (const [wert, knopf] of knoepfe) {
       const aktiv = wert === ansicht;
       knopf.classList.toggle('aktiv', aktiv);
       knopf.setAttribute('aria-pressed', String(aktiv));
     }
-    beimWechsel(ansicht);
     return ansicht;
   }
 
@@ -85,12 +86,12 @@ export function mounteAnsichtsumschalter({ wurzel, beimWechsel, initial = ANSICH
     knopf.type = 'button';
     knopf.className = 'ansicht-knopf';
     knopf.textContent = titel;
-    knopf.addEventListener('click', () => setze(wert));
+    knopf.addEventListener('click', () => beimWechsel(wert));
     knoepfe.set(wert, knopf);
     insel.append(knopf);
   }
   wurzel.replaceChildren(insel);
-  setze(ansicht);
+  zeige(initial);
 
-  return { setze, ansicht: () => ansicht };
+  return { zeige };
 }
