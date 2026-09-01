@@ -653,7 +653,7 @@ function entferneWeltBoden() {
 /** Das Raster ist eine Textur AUF dem Boden, nicht ein zweites Linienobjekt
  * darüber. Dadurch bleibt es bei jeder Kameraposition geometrisch Teil der
  * Fläche und wird mit ihren Perspektiv- und Nebelwerten ausgeblendet. */
-function weltRasterTextur() {
+function weltRasterTextur(wiederholungen) {
   const leinwand = document.createElement('canvas');
   leinwand.width = 1024;
   leinwand.height = 1024;
@@ -672,9 +672,7 @@ function weltRasterTextur() {
   const textur = new THREE.CanvasTexture(leinwand);
   textur.wrapS = THREE.RepeatWrapping;
   textur.wrapT = THREE.RepeatWrapping;
-  // 20 Kacheln mit je 8 Zellen ergeben bei jeder Körpergröße ein feines,
-  // aber lesbares Bodenraster statt riesiger Debug-Quadrate.
-  textur.repeat.set(20, 20);
+  textur.repeat.set(wiederholungen, wiederholungen);
   textur.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return textur;
 }
@@ -687,7 +685,11 @@ function baueWeltBoden({ groundY, hoehe }) {
   entferneWeltBoden();
   if (!(Number.isFinite(groundY) && Number.isFinite(hoehe) && hoehe > 0)) return;
 
-  const groesse = hoehe * 36;
+  // Die Welt endet nicht knapp außerhalb des Kamerabilds. Das Raster behält
+  // dabei dieselbe körperrelative Zellgröße wie die bisherige 36-Höhen-Bühne.
+  const groesse = hoehe * 640;
+  const zellweite = hoehe * 0.225;
+  const wiederholungen = groesse / (zellweite * 8);
   const gruppe = new THREE.Group();
   gruppe.name = 'welt-buehne';
   gruppe.userData.hoehe = hoehe;
@@ -704,7 +706,7 @@ function baueWeltBoden({ groundY, hoehe }) {
   const raster = new THREE.Mesh(
     new THREE.PlaneGeometry(groesse, groesse),
     new THREE.MeshBasicMaterial({
-      map: weltRasterTextur(), transparent: true, opacity: 0.72,
+      map: weltRasterTextur(wiederholungen), transparent: true, opacity: 0.72,
       depthWrite: false, fog: true,
     }),
   );
