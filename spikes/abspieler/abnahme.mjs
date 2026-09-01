@@ -21,7 +21,8 @@ const ausstand = await page.evaluate(() => {
 ok('Auszustand: Leiste da, grau, Grund sichtbar',
   ausstand.da && ausstand.grau && ausstand.grundSichtbar && ausstand.grund.length > 0, JSON.stringify(ausstand));
 
-await page.click('#einstieg-beispiel');
+// Das Beispielmodell lädt beim Start von selbst; auf einen Knopf zu warten
+// wäre veraltet.
 await page.waitForFunction(() => document.body.classList.contains('hat-modell'), null, { timeout: 20000 });
 
 // crouch + takeoff + airborne + land sind gebaut (GEBAUTE_VERBEN): ein Hopser.

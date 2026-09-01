@@ -59,7 +59,7 @@ alle grün.** `node tools/browser-test.mjs` über Playwright: **13 Tests, alle g
 **Echtes WebMCP, nachgemessen.** In Chrome 151 mit
 `--enable-features=WebMCP` liegt `document.modelContext` vor, mit
 `registerTool`, `getTools` und `executeTool`. Die Seite registriert darüber ihre
-19 sichtbaren Werkzeuge, meldet `connected`, und ein Agent von außen ruft sie über
+18 sichtbaren Werkzeuge, meldet `connected`, und ein Agent von außen ruft sie über
 genau diesen Weg auf — nicht über einen Ersatzpfad. Zwei Eigenheiten der echten
 Schnittstelle, die dabei zutage kamen: `getTools()` liefert Objekte mit Funktionen
 (sie müssen abgeflacht werden, sonst lehnt die Serialisierung ab), und

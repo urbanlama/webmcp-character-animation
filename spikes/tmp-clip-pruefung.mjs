@@ -31,8 +31,7 @@ const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 960, height: 720 } });
 await page.goto(startZeile);
 
-// Beispiel-Robot laden
-await page.click('#einstieg-beispiel');
+// Beispiel-Robot lädt beim Start von selbst
 await page.waitForFunction(() => window.__scene?.model, null, { timeout: 15000 });
 await page.waitForTimeout(500);
 

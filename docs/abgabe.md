@@ -90,7 +90,7 @@ its 9 steps run through in one pass:
 2. **Measure** — 18 joints, 14 segments, 8 sole points, 0 warnings.
 3. **Recognize roles** — 21 role assignments found by name and position.
 4. **Ask the human** — uncertain roles go to the person at the screen.
-5. **Intent and phases** — 22 registered tools (19 visible to the agent), 4 motion
+5. **Intent and phases** — 22 registered tools (18 visible to the agent), 4 motion
    phases, 60 frames.
 6. **Solve** — 60 frames produced.
 7. **Validate and report** — 19 physics messages, 2 intent checks, 1 image.
@@ -112,14 +112,14 @@ solving — CesiumMan (19 bones, 1.51 m), RiggedFigure (19 bones, 1.45 m) and So
 (49 bones, 1.83 m).
 
 The tool catalog is operable from outside: a foreign language model that saw only the
-names and descriptions of the 19 visible tools picked the correct tool on 10 of 10
+names and descriptions of the 18 visible tools picked the correct tool on 10 of 10
 everyday
 requests.
 
 ## 5. How is it implemented?
 
 A web page that loads any rigged humanoid GLB, measures it, and exposes a fixed
-catalog of 22 MCP tools (19 visible to the agent via `document.modelContext.registerTool`;
+catalog of 22 MCP tools (18 visible to the agent via `document.modelContext.registerTool`;
 three prefabricated-motion tools stay hidden so the agent sets its own poses) covering
 three action levels: motion phases, end-effector targets, and single joint angles.
 The human watches the agent's work in two views: the **Editor** holds the figure at
