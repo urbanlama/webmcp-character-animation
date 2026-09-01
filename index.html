@@ -690,6 +690,7 @@ function baueWeltBoden({ groundY, hoehe }) {
   const groesse = hoehe * 36;
   const gruppe = new THREE.Group();
   gruppe.name = 'welt-buehne';
+  gruppe.userData.hoehe = hoehe;
   const flaeche = new THREE.Mesh(
     new THREE.PlaneGeometry(groesse, groesse),
     new THREE.MeshStandardMaterial({ color: 0xc4c7ca, roughness: 1, metalness: 0 }),
@@ -729,6 +730,18 @@ function baueWeltBoden({ groundY, hoehe }) {
   weltBoden = gruppe;
 }
 
+/** Die Messkamera setzt beim Orbit eine enge Nahgrenze für den Körper. In der
+ * Welt würde sie damit aber den Boden unmittelbar vor der Kamera abschneiden.
+ * Deshalb besitzt die Welt ihren eigenen, körperrelativen Sichtbereich. */
+function setzeWeltClipEbenen() {
+  if (ansicht !== ANSICHT_WELT || !weltBoden) return;
+  const hoehe = weltBoden.userData.hoehe;
+  if (!(Number.isFinite(hoehe) && hoehe > 0)) return;
+  camera.near = hoehe * 0.005;
+  camera.far = hoehe * 100;
+  camera.updateProjectionMatrix();
+}
+
 /** Die Welt startet bewusst nicht frontal wie das Messbild, sondern leicht
  * erhöht und seitlich: Nur so werden Boden, Schatten und Vorwärtsbewegung als
  * Raum gelesen. Danach gehört die Orbit-Kamera wieder dem Menschen. */
@@ -754,6 +767,7 @@ function rahmeWelt() {
     .add(new THREE.Vector3(0, hoehe * 1.5, 0));
   camera.lookAt(ziel);
   steuerung.controls.update();
+  setzeWeltClipEbenen();
 }
 
 function setzeAnsicht(neu) {
@@ -811,7 +825,10 @@ const steuerung = mounteKamerasteuerung({
   // Der Massstab liest dieselbe Kamera: dreht der Nutzer, wandern seine Marken
   // mit. Ohne diesen Anschluss stuenden die gemessenen Meter nach der ersten
   // Drehung auf den Bildhoehen der alten Ansicht.
-  aufAenderung: () => massstab.neuZeichnen(),
+  aufAenderung: () => {
+    setzeWeltClipEbenen();
+    massstab.neuZeichnen();
+  },
 });
 
 // Die Abspielleiste. Sie loest die aktuelle Timeline ueber denselben Loeser,
