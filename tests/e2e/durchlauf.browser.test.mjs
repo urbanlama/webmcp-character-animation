@@ -31,7 +31,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { chromium } from 'playwright';
 
-import { KATALOG_SICHTBAR } from '../../src/tools/catalog.js';
+import { KATALOG, KATALOG_SICHTBAR, KISTE } from '../../src/tools/catalog.js';
 import { durchlauf, SCHRITTE, FRAMES } from './durchlauf.mjs';
 
 const HIER = dirname(fileURLToPath(import.meta.url));
@@ -40,8 +40,15 @@ const XBOT = join(REPO, 'spikes', 'test-b-motion', 'assets', 'Xbot.glb');
 const STARTZEILE = /Server läuft: (http:\/\/localhost:\d+\/)/;
 // Was der Agent sieht, nicht was der Gesamtbestand fuehrt: die Werkzeugkiste
 // (add_phase, edit_phase, set_target) ist dem Agenten absichtlich unsichtbar
-// und wird von createToolLayer deshalb nicht registriert.
-const WERKZEUGE = KATALOG_SICHTBAR.length;
+// und wird von createToolLayer deshalb nicht an document.modelContext
+// weitergereicht — registriert sind trotzdem alle, siehe registry.anzahl().
+// Schritt 4 meldet registry.anzahl() (alle 22), der sichtbare Katalog nennt
+// KATALOG_SICHTBAR.length (19). Beide Zahlen gehoeren zum selben Stand.
+const WERKZEUGE = KATALOG.length;
+const SICHTBAR = KATALOG_SICHTBAR.length;
+assert.equal(WERKZEUGE - KISTE.length, SICHTBAR,
+  `${KISTE.length} Werkzeuge in der Kiste, ${WERKZEUGE} im Katalog, ${SICHTBAR} sichtbar `
+  + `— der Bestand muss aufgehen, sonst steht hier eine alte Zahl`);
 
 /** Derselbe Server, dieselbe Port-Vergabe wie tools/browser-test.mjs. */
 function serverStart() {
@@ -227,7 +234,7 @@ test('Browser: derselbe Lauf in der echten Seite endet am selben Schritt und mis
 
   const s4 = b.ergebnis.schritte.find((s) => s.id === '4').zahlen;
   assert.equal(s4.werkzeuge, WERKZEUGE,
-    `die Werkzeugschicht der Seite registriert ${s4.werkzeuge} Werkzeuge, der Katalog nennt ${WERKZEUGE}`);
+    `die Werkzeugschicht der Seite registriert ${s4.werkzeuge} Werkzeuge, der Katalog führt ${WERKZEUGE}`);
   assert.equal(s4.frames, FRAMES, `die Timeline muss ${FRAMES} Frames haben, meldet ${s4.frames}`);
 });
 
@@ -299,11 +306,16 @@ test('Browser, Negativfall: die ausgelieferte Seite hängt keine Attrappen mehr 
   await page.goto(basis, { waitUntil: 'load' });
   await page.setInputFiles('#file', XBOT);
   // Nicht "Knochen" abwarten — das schreibt presentModel VOR der Vermessung.
-  // gewartet wird das ENDE der Vermessung: messeFuerWerkzeuge hängt "gemessen"
-  // an die Statuszeile, ein Scheitern "nicht vermessen" bzw. "Ladefehler".
+  // Gewartet wird das ENDE der Vermessung: bei Erfolg haengt zeigeMesswerte
+  // "measured, no warnings" an #messwerte, ein Scheitern schreibt in #status
+  // ("not measured", "No model loaded"). Nur in #status zu lauschen haette
+  // beim Erfolg ewig gewartet — der Timeout, gegen den dieser Fix geht.
   await page.waitForFunction(() => {
     const s = document.getElementById('status');
-    return !!s && /gemessen|nicht vermessen|Ladefehler/.test(s.textContent);
+    const m = document.getElementById('messwerte');
+    const gemessen = !!m && /measured/.test(m.textContent);
+    const gescheitert = !!s && /not measured|No model loaded/.test(s.textContent);
+    return gemessen || gescheitert;
   }, null, { timeout: 30000 });
 
   const befund = await page.evaluate(async () => {
@@ -311,7 +323,10 @@ test('Browser, Negativfall: die ausgelieferte Seite hängt keine Attrappen mehr 
     if (!t) return { schicht: false };
     const antworten = {};
     for (const name of ['describe_world', 'describe_rig', 'describe_body']) {
-      const a = await t.rufe(name, {});
+      // describe_rig antwortet standardmaessig als Tabelle (Agentenformat);
+      // die Pruefungen brauchen Struktur, deshalb mit detail: true anfragen —
+      // dasselbe, was auch die Unit-Tests fuer die Strukturpruefung tun.
+      const a = await t.rufe(name, name === 'describe_rig' ? { detail: true } : {});
       const text = String(a?.content?.[0]?.text ?? '');
       let profil = null;
       try { profil = JSON.parse(text); } catch { /* Fehlermeldung, kein JSON */ }
@@ -342,8 +357,10 @@ test('Browser, Negativfall: die ausgelieferte Seite hängt keine Attrappen mehr 
 
   assert.equal(befund.schicht, true,
     'window.__tools muss stehen — ohne Modell-Kontext baut die Seite keine Werkzeugschicht');
-  assert.equal(befund.registriert, WERKZEUGE,
-    `die Seite registriert ${befund.registriert} Werkzeuge, der Katalog nennt ${WERKZEUGE}`);
+  assert.equal(befund.registriert, SICHTBAR,
+    `die Seite macht ${befund.registriert} Werkzeuge sichtbar, der sichtbare Katalog führt `
+    + `${SICHTBAR} — die ${KISTE.length} Kisten-Werkzeuge (${KISTE.join(', ')}) bleiben `
+    + `dem Agenten verborgen`);
 
   // ── Negativfall: keine Attrappe mehr, nirgends ─────────────────────────────
   for (const [name, a] of Object.entries(befund.antworten)) {

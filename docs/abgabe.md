@@ -90,7 +90,8 @@ its 9 steps run through in one pass:
 2. **Measure** — 18 joints, 14 segments, 8 sole points, 0 warnings.
 3. **Recognize roles** — 21 role assignments found by name and position.
 4. **Ask the human** — uncertain roles go to the person at the screen.
-5. **Intent and phases** — 16 tools available, 4 motion phases, 60 frames.
+5. **Intent and phases** — 22 registered tools (19 visible to the agent), 4 motion
+   phases, 60 frames.
 6. **Solve** — 60 frames produced.
 7. **Validate and report** — 19 physics messages, 2 intent checks, 1 image.
 8. **Export** — 1,945,104 bytes of glTF; re-importing it and comparing against the
@@ -111,14 +112,20 @@ solving — CesiumMan (19 bones, 1.51 m), RiggedFigure (19 bones, 1.45 m) and So
 (49 bones, 1.83 m).
 
 The tool catalog is operable from outside: a foreign language model that saw only the
-names and descriptions of the 16 tools picked the correct tool on 10 of 10 everyday
+names and descriptions of the 19 visible tools picked the correct tool on 10 of 10
+everyday
 requests.
 
 ## 5. How is it implemented?
 
 A web page that loads any rigged humanoid GLB, measures it, and exposes a fixed
-catalog of 16 MCP tools (via `document.modelContext.registerTool`) covering three
-action levels: motion phases, end-effector targets, and single joint angles.
+catalog of 22 MCP tools (19 visible to the agent via `document.modelContext.registerTool`;
+three prefabricated-motion tools stay hidden so the agent sets its own poses) covering
+three action levels: motion phases, end-effector targets, and single joint angles.
+The human watches the agent's work in two views: the **Editor** holds the figure at
+the origin in a dry run (all information, no travel), the **World** view shows the
+same frames with the real root motion through the room — one timeline, two
+presentations, the agent's data model unchanged.
 
 - **Measuring, not guessing.** Body dimensions come from the loaded model: radii from
   vertex distances to the segment axis (90th percentile), masses from capsule volume,
@@ -153,8 +160,9 @@ action levels: motion phases, end-effector targets, and single joint angles.
 
 Stated plainly, with numbers:
 
-- **The recorded demo run is missing.** Real WebMCP works — in Chrome 151 with
-  `--enable-features=WebMCP`, `document.modelContext` is present and an outside
+- **The recorded demo run is missing.** Real WebMCP works — in Chrome 152 with
+  `chrome://flags/#enable-webmcp-testing`, `document.modelContext` is present and an
+  outside
   agent drives the 19 visible tools through it. What is not yet recorded is one
   complete, convincing clip built that way.
 - **7 of 10 foreign models are still rejected.** The measuring layer accepts
