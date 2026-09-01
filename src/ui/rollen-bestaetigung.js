@@ -23,7 +23,7 @@ const PFLICHT = true;
 /** Eine Frage mit nur einer Antwortmoeglichkeit ist keine Frage. Findet
  * detect.js keine Alternative, kommt diese Ablehnung dazu: der Mensch muss
  * einen Vorschlag ablehnen koennen, ohne ihn zu ersetzen. */
-export const ABLEHNUNG = 'No — leave this role open';
+export const ABLEHNUNG = 'Weiß ich nicht — offen lassen';
 
 /**
  * Fragt alle offenen Rollen der Reihe nach ab.
@@ -82,9 +82,9 @@ export async function frageRollenAb({ profil, ask, rufe, leuchten = null }) {
   const bestaetigt = Object.keys(zuordnungen).length;
   return {
     gefragt, bestaetigt, offen, abgebrochen, zuordnungen,
-    meldung: `asked about ${gefragt} of ${fragen.length} uncertain assignments, `
-      + `${bestaetigt} confirmed, ${offen} still open`
-      + (abgebrochen ? ' — cancelled' : '')
+    meldung: `${gefragt} von ${fragen.length} unsicheren Zuordnungen gefragt, `
+      + `${bestaetigt} bestätigt, ${offen} weiterhin offen`
+      + (abgebrochen ? ' — abgebrochen' : '')
   };
 }
 

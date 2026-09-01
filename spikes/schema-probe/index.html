@@ -1,0 +1,21 @@
+<!doctype html><meta charset="utf-8"><title>Schema-Probe</title>
+<body><pre id="out">läuft…</pre><script type="module">
+const faelle = {
+  a_ascii:          { type:'object', properties:{ x:{type:'string', description:'Frames, 1 bis 12 Stueck'} }, required:['x'] },
+  b_umlaut_desc:    { type:'object', properties:{ x:{type:'string', description:'Frames, 1 bis 12 Stück'} }, required:['x'] },
+  c_umlaut_tief:    { type:'object', properties:{ x:{type:'array', items:{type:'string'}, description:'Antwortmöglichkeiten'} }, required:['x'] },
+  d_emoji:          { type:'object', properties:{ x:{type:'string', description:'Pfeil → hin'} }, required:['x'] },
+  e_ascii_kontroll: { type:'object', properties:{ x:{type:'array', items:{type:'string'}, description:'nur ascii'} }, required:['x'] },
+};
+const zeilen = [];
+for (const [name, inputSchema] of Object.entries(faelle)) {
+  try {
+    await document.modelContext.registerTool({
+      name, description: 'Probe für genau ein Schema-Merkmal, sonst nichts.',
+      inputSchema, async execute(){ return { content:[{type:'text',text:'ok'}] }; }
+    });
+    zeilen.push(name + ': registriert');
+  } catch (e) { zeilen.push(name + ': WURF ' + e.message); }
+}
+document.getElementById('out').textContent = zeilen.join('\n');
+</script>

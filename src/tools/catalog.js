@@ -56,6 +56,39 @@ export const EASE_STANDARD = 'smooth';
 export const FRAME_MIN = 12;
 export const FRAME_MAX = 600;
 
+/**
+ * BENANNTER VERFAHRENSPARAMETER: wie viele Einzelbilder ein look-Aufruf
+ * hoechstens liefert — Frames MAL Ansichten, nicht Frames allein.
+ *
+ * Gemessen an den Antworten des Agentenlaufs vom 1. September 2026:
+ *
+ *     6 Frames × 1 Ansicht  = 6 Kacheln  → 164 KB
+ *     2 Frames × 2 Ansichten = 4 Kacheln → 183 KB
+ *     10 Frames × 2 Ansichten = 20 Kacheln → 654 KB, abgewiesen
+ *
+ * Rund 33 KB je Kachel im dichtesten Fall. 12 Kacheln sind damit rund 400 KB
+ * und liegen mit dem Antworttext unter der 512-KB-Grenze. Das alte Schema
+ * erlaubte 12 Frames × 4 Ansichten = 48 Kacheln — ein Versprechen, das die
+ * Antwortgrenze nie einhalten konnte.
+ *
+ * Wird der Wert angepasst, erneut an einem echten Lauf messen.
+ */
+export const KACHELN_MAX = 12;
+
+/**
+ * BENANNTER VERFAHRENSPARAMETER: wie viele Frames ein measure-Aufruf auf
+ * einmal misst.
+ *
+ * Der Loeser laeuft je Aufruf genau einmal, egal wie viele Frames gefragt
+ * sind — die Kosten steigen also nur mit der Auswertung, nicht mit dem Loesen.
+ * 20 deckt einen Bewegungsabschnitt Frame fuer Frame ab und haelt die Antwort
+ * unter der 512-KB-Grenze, auch bei 20 Fragen je Frame.
+ */
+export const MESS_FRAMES_MAX = 20;
+
+/** Gemessene Groesse einer Kachel, fuer die Fehlermeldung. */
+export const KACHEL_KB = 33;
+
 const leer = { type: 'object', properties: {}, required: [] };
 
 /**
@@ -125,8 +158,8 @@ export const KATALOG = [
   },
   {
     name: 'set_intent',
-    description: 'Legt fest, woran die fertige Bewegung gemessen wird - was am Ende zutreffen muss. Der '
-      + 'Mensch bestaetigt sie; antwortet er nicht, gilt sie unbestaetigt weiter. Jedes Kriterium '
+    description: 'Legt fest, woran die fertige Bewegung gemessen wird - was am Ende zutreffen muss. Wird '
+      + 'sofort uebernommen, ohne Rueckfrage. Jedes Kriterium '
       + 'braucht seine Pflichtfelder: rotation {part, axis, minDeg oder maxDeg}, airtime {minSek '
       + 'oder maxSek}, travel {part, richtung, minHoehe oder maxHoehe}, contact_change {foot, von, '
       + 'bis}, clearance {partA, partB, minAnteil oder maxAnteil}, part_height {part, minAnteil '
@@ -367,7 +400,14 @@ export const KATALOG = [
     inputSchema: {
       type: 'object',
       properties: {
-        frame: { type: 'integer', minimum: 0, description: 'Frame, in dem gemessen wird' },
+        frame: { type: 'integer', minimum: 0, description: 'Frame, in dem gemessen wird. Fuer mehrere Frames nimm frames.' },
+        frames: {
+          type: 'array', items: { type: 'integer', minimum: 0 }, minItems: 1,
+          maxItems: MESS_FRAMES_MAX,
+          description: `Mehrere Frames auf einmal, 1 bis ${MESS_FRAMES_MAX}. Dieselben Fragen `
+            + 'werden auf jeden davon angewendet - so bekommst du einen Verlauf in EINEM Aufruf '
+            + 'statt einem Aufruf je Frame. Ersetzt frame.'
+        },
         fragen: {
           type: 'array',
           minItems: 1,
@@ -402,7 +442,7 @@ export const KATALOG = [
           },
         },
       },
-      required: ['frame', 'fragen'],
+      required: ['fragen'],
     }
   },
   {
@@ -480,12 +520,16 @@ export const KATALOG = [
       type: 'object',
       properties: {
         frames: {
-          type: 'array', items: { type: 'integer', minimum: 0 }, minItems: 1, maxItems: 12,
-          description: 'Frames, 1 bis 12 Stück'
+          type: 'array', items: { type: 'integer', minimum: 0 }, minItems: 1,
+          maxItems: KACHELN_MAX,
+          description: `Frames, 1 bis ${KACHELN_MAX} Stueck. Frames MAL Ansichten `
+            + `darf ${KACHELN_MAX} nicht ueberschreiten: gerendert wird ein Bild je Paar, `
+            + `und mehr passt nicht in eine Antwort von 512 KB.`
         },
         views: {
           type: 'array', items: { type: 'string', enum: ANSICHTEN }, minItems: 1, maxItems: 4,
-          description: `Ansichten aus ${ANSICHTEN.join('/')}`
+          description: `Ansichten aus ${ANSICHTEN.join('/')}. Bei 2 Ansichten also `
+            + `hoechstens ${KACHELN_MAX / 2} Frames, bei 4 hoechstens ${KACHELN_MAX / 4}.`
         }
       },
       required: ['frames', 'views']
@@ -493,6 +537,18 @@ export const KATALOG = [
   },
   {
     name: 'ask_human',
+    // IN DER KISTE, also fuer den Agenten unsichtbar.
+    //
+    // Gemessen am ausgelieferten Modell: die Erkennung stellt 0 Rueckfragen,
+    // keine Rolle liegt unter der Sicherheitsschwelle. Es gibt nichts, was der
+    // Agent den Menschen fragen muesste. Was blieb, war ein Fragefenster mit
+    // Knochennamen und Konfidenzwerten darin — eine Sperre ohne Anlass.
+    //
+    // Der Rumpf bleibt (handlers.js) und ist ueber rufe() erreichbar. Wenn
+    // spaeter beliebige Modelle hochgeladen werden duerfen, wird die Rueckfrage
+    // neu gebaut: als Frage, die ein Mensch beantworten kann, zum leuchtenden
+    // Koerperteil. Bis dahin fragt niemand.
+    kiste: true,
     description: 'Fragt den Menschen am Bildschirm etwas, das sich nicht messen laesst - Geschmack, eine '
       + 'Entscheidung zwischen zwei Varianten. Der Aufruf wartet auf den Klick. Nur fuer Fragen, '
       + 'die man nicht selbst mit describe_rig, describe_pose oder look beantworten kann.',
@@ -502,10 +558,30 @@ export const KATALOG = [
         question: { type: 'string', description: 'Frage in Alltagssprache' },
         options: {
           type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 6,
-          description: 'Antwortmöglichkeiten, 2 bis 6 Stück'
+          description: 'Antwortmoeglichkeiten, 2 bis 6 Stueck'
         }
       },
       required: ['question', 'options']
+    }
+  },
+  {
+    name: 'hold_foot',
+    description: 'Nagelt einen Fuss ueber einen Frame-Bereich fest: er bleibt da stehen, wo er zu Beginn '
+      + 'des Bereichs steht, auch wenn sich das Becken bewegt. Der Loeser rechnet die Beinkette dafuer '
+      + 'selbst - du musst keine Gelenkwinkel dafuer suchen. GENAU DAS BRAUCHST DU FUER SCHRITTE: der '
+      + 'Standfuss bleibt fest, waehrend die Figur ueber ihn hinweg wandert, der andere schwingt frei. '
+      + 'Ohne das rutschen die Fuesse mit dem Becken mit und validate meldet es. Mehrere Anker sind '
+      + 'erlaubt, auch fuer beide Fuesse gleichzeitig. Setze sie ERST, wenn die Haltungen stehen: sie '
+      + 'wirken nach den Haltungen.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        foot: { type: 'string', description: 'Fussrolle aus describe_rig, foot_l oder foot_r' },
+        von: { type: 'integer', minimum: 0, description: 'erster Frame, in dem der Fuss steht' },
+        bis: { type: 'integer', minimum: 0, description: 'letzter Frame, in dem er steht' },
+        remove: { type: 'boolean', description: 'true entfernt alle Anker dieses Fusses in diesem Bereich' }
+      },
+      required: ['foot', 'von', 'bis']
     }
   },
   {
@@ -538,4 +614,4 @@ export const KISTE = KATALOG.filter((t) => t.kiste).map((t) => t.name);
 export const KATALOG_SICHTBAR = KATALOG.filter((t) => !t.kiste);
 
 /** Erwartete Anzahl. Weicht KATALOG davon ab, ist etwas verlorengegangen. */
-export const KATALOG_GROESSE = 22;
+export const KATALOG_GROESSE = 23;

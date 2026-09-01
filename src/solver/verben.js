@@ -936,6 +936,10 @@ function basisFrame(skel, z, phase, f, kn, com, kontakt, ankerIds, extra) {
     contact: kontakt,
     anchored: ankerIds,
     geschwindigkeit: [...z.comVel],
+    // Die Pose selbst reist mit. Ohne sie kann eine spaetere Korrekturschicht
+    // (halteAnker in loeser.js) den Frame nicht erneut rechnen: aus Positionen
+    // und Quaternionen laesst sich die Gelenkstellung nicht zurueckgewinnen.
+    loeserPose: kopierePose(z.pose),
     ...extra,
   };
 }

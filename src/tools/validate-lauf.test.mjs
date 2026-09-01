@@ -30,12 +30,16 @@ import { createToolLayer, KATALOG, INTENT_ARTEN, attrappenPorts } from './index.
 import { createRegistry, ANTWORT_MAX_BYTES } from './registry.js';
 import { berichtTextKompaktFuerTest, VALIDATE_FRAMES_MAX } from './handlers.js';
 
-/** set_intent wartet auf die Pflichtbestaetigung (plan.md 6.7) — hier klicken. */
+/**
+ * Setzt die Absicht. Ohne Rueckfrage: set_intent fragt den Menschen nicht mehr.
+ *
+ * Vorher stand hier eine Warteschleife auf die Pflichtbestaetigung. Sie lief
+ * nach dem Ausbau der Rueckfrage endlos — der Testlauf blieb bei 120 Sekunden
+ * haengen, obwohl alle Zusicherungen gruen waren. Ein Test, der auf etwas
+ * wartet, das es nicht mehr gibt, meldet keinen Fehler; er meldet gar nichts.
+ */
 async function setzeAbsicht(s, checks) {
-  const aufruf = s.rufe('set_intent', { checks });
-  while (!s.ask.stand().wartet) await new Promise((r) => setTimeout(r, 5));
-  s.ask.antworte(0);
-  return aufruf;
+  return s.rufe('set_intent', { checks });
 }
 
 /** Baut eine Schicht und legt die Timeline für validate bereit. */

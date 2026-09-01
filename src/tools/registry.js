@@ -288,8 +288,11 @@ function fehlerantwort(name, schema, args, e) {
     param: 'Ausführung',
     value: 0,
     range: `1 Antwort von ${name}`,
+    // Kein Verweis auf ask_human: das Werkzeug liegt in der Kiste und ist fuer
+    // den Agenten nicht sichtbar. Ein Rat auf ein Werkzeug, das der Katalog
+    // nicht kennt, kostet den Agenten einen Aufruf und liefert "Tool not found".
     next: 'hier liegt kein Fehler deiner Eingabe vor; rufe getTools() auf und '
-      + 'versuche denselben Aufruf erneut, oder frage den Menschen mit ask_human',
+      + 'versuche denselben Aufruf erneut',
     message: `Werkzeug "${name}" ist abgestürzt, statt zu antworten: ${kuerze(ursprung(e))}`
   }).toResult());
 }

@@ -14,7 +14,7 @@ import {
   pruefeFrame, pruefeObjekt
 } from './errors.js';
 import {
-  KATALOG, VERBEN, INTENT_ARTEN, ANSICHTEN, KANAELE, FRAME_MIN, FRAME_MAX,
+  KATALOG, VERBEN, INTENT_ARTEN, ANSICHTEN, KANAELE, FRAME_MIN, FRAME_MAX, KACHELN_MAX, KACHEL_KB, MESS_FRAMES_MAX,
   EASE_ARTEN, EASE_STANDARD
 } from './catalog.js';
 import { nichtAngeschlossen } from './ports.js';
@@ -54,7 +54,8 @@ export function alsTimeline(z) {
     frameCount: z.frameCount,
     rotationFormat: z.rotationFormat,
     phases: z.phases,
-    overrides: z.overrides
+    overrides: z.overrides,
+    anchors: z.anchors ?? []
   };
 }
 
@@ -175,16 +176,6 @@ function pruefeGelenkKanal(tool, ports, joint, channel) {
   }
   return dof[channel];
 }
-
-/**
- * Wie lange eine Pflichtrueckfrage auf den Klick des Menschen wartet.
- *
- * Muss unter dem Zeitlimit der Werkzeugschicht liegen (AUFRUF_MAX_MS): laeuft
- * die Rueckfrage in DIESES Limit, bekommt der Agent eine Meldung ueber eine zu
- * grosse Anfrage statt der Auskunft, dass niemand geantwortet hat. Drei
- * Viertel lassen genug Luft fuer das Speichern und die Antwort.
- */
-export const BESTAETIGUNG_MAX_MS = Math.round(AUFRUF_MAX_MS * 0.75);
 
 /**
  * Macht aus der flachen Freiheitsgrad-Tabelle des Loesers ("arm_l.lift": 70)
@@ -537,60 +528,57 @@ export function baueWerkzeuge({ store, ask, ports }) {
         });
       }
 
-      // Fester Moment 2 aus plan.md 6.7: der Mensch bestaetigt die Absicht,
-      // bevor gebaut wird.
+      // KEINE Rueckfrage mehr. Sie stand hier als "fester Mensch-Moment 2"
+      // (plan.md 6.7) und ist ersatzlos gestrichen.
       //
-      // Die Rueckfrage bleibt, ihre Wartezeit ist jetzt begrenzt. Gemessen im
-      // Browserlauf: sitzt niemand am Schirm, lief set_intent in das Zeitlimit
-      // der Werkzeugschicht (20 s) und der Agent bekam "liefert nichts" mit
-      // dem Rat, die Anfrage zu verkleinern — ein Rat, der hier nichts nutzt.
-      // Bleibt die Antwort aus, wird die Absicht trotzdem gesetzt und der
-      // Agent erfaehrt im Klartext, dass sie unbestaetigt ist; ein Mensch, der
-      // gar nicht da ist, darf die Arbeit nicht anhalten.
-      const zeilen = checks.map((c) => `- ${c.kind}: ${JSON.stringify(c)}`).join('\n');
-      const antwort = await Promise.race([
-        ask.frage({
-          pflicht: true,
-          question: `Soll die Bewegung an diesen ${checks.length} Kriterien gemessen werden?
-${zeilen}`,
-          options: ['Ja, so bauen', 'Nein, verwerfen']
-        }),
-        new Promise((r) => setTimeout(() => {
-          // Die abgelaufene Frage MUSS vom Brett: der Broker laesst immer nur
-          // eine offene Frage zu. Blieb sie stehen, wies jeder weitere Aufruf
-          // mit "1 Frage wartet bereits auf eine Antwort" ab — im Agentenlauf
-          // war danach set_intent dauerhaft blockiert.
-          try { ask.abbrechen('nach der Wartezeit ohne Antwort zurueckgezogen'); }
-          catch { /* schon beantwortet: nichts zurueckzuziehen */ }
-          r({ index: -1, answer: null });
-        }, BESTAETIGUNG_MAX_MS))
-      ]).catch((e) => {
-        // abbrechen() lehnt die wartende Zusage ab. Das ist hier kein Fehler,
-        // sondern der Ablauf der Wartezeit — er darf set_intent nicht kippen.
-        if (String(e && e.message || e).includes('zurueckgezogen')) {
-          return { index: -1, answer: null };
-        }
-        throw e;
-      });
+      // Grund: sie war eine Zumutung. Der Text, den der Mensch zu sehen bekam,
+      // lautete woertlich
+      //
+      //     Soll die Bewegung an diesen 2 Kriterien gemessen werden?
+      //     - airtime: {"kind":"airtime","minSek":0.3}
+      //
+      // — rohes JSON mit englischen Bezeichnern, zu einer Frage, die niemand
+      // ohne Kenntnis der Werkzeugschicht beantworten kann. Dazu kam sie bei
+      // JEDEM Aufruf: im Agentenlauf vom 1. September 2026 fuenfmal, jedes Mal
+      // mit 15 Sekunden Wartezeit, in denen die Arbeit stand.
+      //
+      // Ein Rueckfrage-Werkzeug gibt es weiterhin, und es ist das richtige:
+      // ask_human. Damit fragt der AGENT, wenn er etwas nicht messen kann —
+      // "ist das der linke Fuss?" zum leuchtenden Knochen. Das ist der Zweck,
+      // fuer den die Mensch-Momente gedacht waren. Eine Zustimmung zu einer
+      // Liste von Schwellwerten ist es nicht.
+      //
+      // Der Mensch behaelt die Kontrolle ueber die Kriterien: sie stehen in
+      // jeder validate-Antwort, samt jedem Wechsel (siehe fassungen unten).
 
-      if (antwort.index > 0) {
-        throw new WerkzeugMeldung({
-          tool: 'set_intent', param: 'Bestätigung', value: 0,
-          range: `1 Bestätigung für ${checks.length} Kriterien`,
-          next: 'frage den Menschen mit ask_human, was er stattdessen will',
-          message: `0 von ${checks.length} Kriterien übernommen: der Mensch hat "${antwort.answer}" `
-            + 'geklickt; nichts wurde geändert — frage mit ask_human, was er stattdessen will'
-        });
-      }
+      // Jede Fassung wird mitgeschrieben. Grund, gemessen am Agentenlauf vom
+      // 1. September 2026: set_intent lief fuenfmal, jedes Mal direkt nachdem
+      // validate durchgefallen war. Beim fuenften Mal war das Kriterium
+      // contact_change verschwunden — genau das, an dem es viermal scheiterte.
+      // Danach meldete validate "passed: true", ohne dass der Massstab noch
+      // derselbe war. Wer seinen eigenen Massstab beliebig neu setzen darf,
+      // besteht immer; sichtbar bleibt es nur, wenn es jemand mitzaehlt.
+      const vorher = store.roh().intent;
+      const fassungen = [...(vorher?.fassungen ?? []),
+        { arten: checks.map((c) => c.kind), anzahl: checks.length }];
+      store.aendere((z) => { z.intent = { checks, fassungen }; });
 
-      const bestaetigt = antwort.index === 0;
-      store.aendere((z) => { z.intent = { checks, bestaetigt }; });
+      const entfallen = vorher
+        ? [...new Set(vorher.checks.map((c) => c.kind))]
+          .filter((k) => !checks.some((c) => c.kind === k))
+        : [];
+
       return text(`${checks.length} Erfolgskriterien festgelegt: `
         + `${checks.map((c) => c.kind).join(', ')}.`
-        + (bestaetigt
-          ? ' Vom Menschen bestätigt.'
-          : ` Unbestätigt: nach ${BESTAETIGUNG_MAX_MS / 1000} Sekunden kam keine Antwort vom `
-            + 'Schirm. Die Kriterien gelten; frage bei Zweifeln mit ask_human nach.'));
+        + (fassungen.length > 1
+          ? ` Fassung ${fassungen.length} dieser Absicht.`
+            + (entfallen.length
+              ? ` ${entfallen.length} Kriterienart fällt weg: ${entfallen.join(', ')} — `
+                + 'validate weist das aus.'
+              : '')
+          : '')
+        + ' Sie stehen in jeder validate-Antwort; ändern kannst du sie mit einem '
+        + 'erneuten set_intent.');
     },
 
     async set_duration(args) {
@@ -932,6 +920,7 @@ ${zeilen}`,
           ? `\n${geklemmt.length} Winkel liegen außerhalb der gemessenen Gelenkgrenzen und `
             + `werden beim Lösen geklemmt: ${geklemmt.join('; ')}`
           : '')
+        + wirkung(store.roh(), a.frame, ports)
         + '\nRücknehmbar mit undo.');
     },
 
@@ -966,10 +955,27 @@ ${zeilen}`,
      * herauskommt, nicht an dem, was gesetzt wurde.
      */
     async measure(args) {
-      const a = pruefeObjekt('measure', 'Argumente', args, 'übergib {frame, fragen}');
+      const a = pruefeObjekt('measure', 'Argumente', args, 'übergib {frames, fragen}');
       const z0 = store.roh();
       brauchtLaenge('measure', z0.frameCount);
-      pruefeFrame('measure', 'frame', a.frame, z0.frameCount);
+
+      // Ein Frame oder mehrere. Beides geht: `frame` ist die Kurzform.
+      //
+      // Warum mehrere: im Agentenlauf vom 1. September 2026 brauchte der
+      // Agent den Hoehenverlauf des Schwerpunkts ueber die Flugphase und
+      // musste dafuer vier Aufrufe machen — Frame 36, 40, 44, 48, jeder mit
+      // vollem Kopf und jeder mit einem eigenen Loeserlauf. Vier Aufrufe fuer
+      // vier Zahlen. Der Loeser laeuft jetzt einmal fuer alle Frames.
+      const zielFrames = Array.isArray(a.frames)
+        ? pruefeListe('measure', 'frames', a.frames, 1, MESS_FRAMES_MAX,
+          `Frames, 1 bis ${MESS_FRAMES_MAX} Stück`)
+        : [a.frame];
+      if (zielFrames.length === 1 && !Array.isArray(a.frames)) {
+        pruefeFrame('measure', 'frame', a.frame, z0.frameCount);
+      } else {
+        zielFrames.forEach((n, i) => pruefeFrame('measure', `frames[${i}]`, n, z0.frameCount));
+      }
+
       const fragen = pruefeListe('measure', 'fragen', a.fragen, 1, 20,
         'jede Frage ist ein Objekt mit art und den Körperteilen, die die Art braucht');
       if (!ports.solver) {
@@ -978,15 +984,16 @@ ${zeilen}`,
 
       const { frames } = ports.solver.loese(alsTimeline(z0));
       const holeFrame = (n) => (frames || []).find((x) => x.frame === n);
-      const f = holeFrame(a.frame);
-      if (!f) {
-        throw new WerkzeugMeldung({
-          tool: 'measure', param: 'frame', value: a.frame,
-          range: `ein gelöster Frame von 0 bis ${(frames || []).length - 1}`,
-          next: 'setze die Länge mit set_duration und Haltungen mit set_pose',
-          message: `Frame ${a.frame} wurde nicht gelöst: der Löser lieferte `
-            + `${(frames || []).length} Frames`
-        });
+      for (const n of zielFrames) {
+        if (!holeFrame(n)) {
+          throw new WerkzeugMeldung({
+            tool: 'measure', param: 'frame', value: n,
+            range: `ein gelöster Frame von 0 bis ${(frames || []).length - 1}`,
+            next: 'setze die Länge mit set_duration und Haltungen mit set_pose',
+            message: `Frame ${n} wurde nicht gelöst: der Löser lieferte `
+              + `${(frames || []).length} Frames`
+          });
+        }
       }
 
       // Rollenname -> Weltposition. "com" ist der Schwerpunkt.
@@ -1023,7 +1030,7 @@ ${zeilen}`,
       const skalar = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
       const rund = (x) => +x.toFixed(4);
 
-      const ergebnisse = fragen.map((frage, i) => {
+      const messeFrame = (f, frameNr) => fragen.map((frage, i) => {
         pruefeObjekt('measure', `fragen[${i}]`, frage, 'jede Frage ist ein Objekt mit art');
         const art = frage.art;
         const name = frage.name || `${art}(${[frage.a, frage.b, frage.c].filter(Boolean).join(', ')})`;
@@ -1089,7 +1096,7 @@ ${zeilen}`,
             pruefeFrame('measure', `fragen[${i}].bisFrame`, frage.bisFrame, z0.frameCount);
             const f2 = holeFrame(frage.bisFrame);
             const pa2 = brauchePunkt(f2, frage.a, 'a', i);
-            const dt = Math.abs(frage.bisFrame - a.frame) / (z0.fps || 30);
+            const dt = Math.abs(frage.bisFrame - frameNr) / (z0.fps || 30);
             if (dt <= 0) {
               return { name, art, wert_m_pro_s: null,
                 bedeutet: 'Tempo nicht messbar: bisFrame ist derselbe Frame' };
@@ -1097,7 +1104,7 @@ ${zeilen}`,
             const weg = laenge(minus(pa2, pa));
             const v = +(weg / dt).toFixed(3);
             return { name, art, wert_m_pro_s: v, weg_m: rund(weg), dauer_s: +dt.toFixed(3),
-              bedeutet: `${frage.a} legt zwischen Frame ${a.frame} und ${frage.bisFrame} `
+              bedeutet: `${frage.a} legt zwischen Frame ${frameNr} und ${frage.bisFrame} `
                 + `${rund(weg)} m zurück, das sind ${v} m/s` };
           }
           default:
@@ -1110,13 +1117,20 @@ ${zeilen}`,
         }
       });
 
-      return json({
+      // Der Kopf steht einmal, nicht je Frame: Bodenhöhe und Blickrichtung
+      // ändern sich über die Timeline nicht.
+      const kopf = {
         quelle: 'gemessen an der gelösten Bewegung',
-        frame: a.frame,
         bodenhoehe_m: +boden.toFixed(5),
         blickrichtung: vorne,
-        messungen: ergebnisse,
-      });
+      };
+      if (zielFrames.length === 1) {
+        return json({ ...kopf, frame: zielFrames[0],
+          messungen: messeFrame(holeFrame(zielFrames[0]), zielFrames[0]) });
+      }
+      return json({ ...kopf,
+        frames: zielFrames,
+        messungen: zielFrames.map((n) => ({ frame: n, werte: messeFrame(holeFrame(n), n) })) });
     },
 
     /** Der Ueberblick ueber die eigenen Schluesselbilder. */
@@ -1403,9 +1417,39 @@ ${zeilen}`,
           + `(1 bis 20 Kriterien aus den ${INTENT_ARTEN.length} Arten: `
           + `${INTENT_ARTEN.join(', ')}).`
         : '';
-      const text = berichtTextKompakt(bericht, bilder)
+      // Wie oft der Massstab gewechselt hat. Ohne diese Zeile ist "bestanden"
+      // wertlos: im Agentenlauf vom 1. September 2026 lief set_intent fuenfmal,
+      // und beim letzten Mal fehlte genau das Kriterium, an dem die vier Laeufe
+      // davor gescheitert waren. Der Bericht sah danach sauber aus.
+      const fassungen = z0.intent?.fassungen ?? [];
+      const gewechselt = fassungen.length > 1
+        ? `\nAchtung: die Kriterien wurden ${fassungen.length - 1} mal neu gesetzt. `
+          + `Fassung 1 hatte ${fassungen[0].anzahl} Kriterien `
+          + `(${[...new Set(fassungen[0].arten)].join(', ')}), `
+          + `Fassung ${fassungen.length} hat ${fassungen[fassungen.length - 1].anzahl} `
+          + `(${[...new Set(fassungen[fassungen.length - 1].arten)].join(', ')}). `
+          + `${[...new Set(fassungen[0].arten)]
+            .filter((k) => !fassungen[fassungen.length - 1].arten.includes(k)).length} `
+          + 'Kriterienart aus Fassung 1 wird nicht mehr geprueft. '
+          + 'Ein Ergebnis gilt gegen den Massstab, mit dem es gemessen wurde.'
+        : '';
+
+      // Erst zusammenfassen, dann in Text gießen: die Kappungsstufen weiter
+      // unten sollen an einer Liste arbeiten, die schon keine Wiederholungen
+      // mehr enthält — sonst wirft sie echte Befunde weg, um Dubletten zu
+      // behalten.
+      const { bericht: gefasst, vorher: befundeVorher, nachher: befundeNachher }
+        = fasseIssuesZusammen(bericht);
+
+      const text = berichtTextKompakt(gefasst, bilder)
         + (warnung ? `\n(${warnung})` : '')
-        + ohneAbsicht;
+        + ohneAbsicht
+        + (befundeVorher > befundeNachher
+          ? `\n${befundeVorher} Einzelbefunde zu ${befundeNachher} zusammengefasst `
+            + '(gleiche Art am selben Körperteil über aufeinanderfolgende Frames). '
+            + 'von/bis nennen die Spanne, frame den größten Betrag.'
+          : '')
+        + gewechselt;
 
       return textMitBildern(text, bilder);
     },
@@ -1414,13 +1458,34 @@ ${zeilen}`,
       const a = pruefeObjekt('look', 'Argumente', args, 'übergib {frames, views}');
       const z0 = store.roh();
       brauchtLaenge('look', z0.frameCount);
-      pruefeListe('look', 'frames', a.frames, 1, 12,
+      pruefeListe('look', 'frames', a.frames, 1, KACHELN_MAX,
         'mehr Frames passen nicht in eine Antwort von 512 KB');
       a.frames.forEach((f, i) => pruefeFrame('look', `frames[${i}]`, f, z0.frameCount));
       pruefeListe('look', 'views', a.views, 1, ANSICHTEN.length,
         `erlaubt sind ${ANSICHTEN.join(', ')}`);
       a.views.forEach((v, i) => pruefeAuswahl('look', `views[${i}]`, v, ANSICHTEN,
         'die Ansichten sind im Charakter-Bezugssystem, nicht in dem der Bühne'));
+
+      // Nicht die Frames allein entscheiden, sondern ihr Produkt mit den
+      // Ansichten: gerendert wird eine Kachel je Paar. Im Agentenlauf vom
+      // 1. September 2026 blieb der Aufruf mit 10 Frames und 2 Ansichten
+      // INNERHALB des Schemas und flog trotzdem mit 654 KB raus — nach dem
+      // Rendern. Das Schema versprach etwas, das die Antwortgrenze nie
+      // einhalten konnte. Jetzt wird VOR dem Rendern abgewiesen, mit Zahlen.
+      const kacheln = a.frames.length * a.views.length;
+      if (kacheln > KACHELN_MAX) {
+        throw new WerkzeugMeldung({
+          tool: 'look', param: 'frames × views', value: kacheln,
+          range: `höchstens ${KACHELN_MAX} Bilder je Aufruf`,
+          next: `nimm ${Math.max(1, Math.floor(KACHELN_MAX / a.views.length))} Frames `
+            + `bei ${a.views.length} Ansichten, oder weniger Ansichten`,
+          message: `${a.frames.length} Frames × ${a.views.length} Ansichten sind ${kacheln} `
+            + `Bilder; ${KACHELN_MAX} passen in eine Antwort von 512 KB `
+            + `(gemessen: rund ${KACHEL_KB} KB je Bild). `
+            + `Nimm ${Math.max(1, Math.floor(KACHELN_MAX / a.views.length))} Frames `
+            + `bei ${a.views.length} Ansichten.`
+        });
+      }
 
       if (!ports.renderer) {
         throw nichtAngeschlossen('look', 'AP9 (Bildstreifen)', 'Der Bildstreifen');
@@ -1473,6 +1538,52 @@ ${zeilen}`,
     },
 
     // --- 16  Export ---------------------------------------------------------
+
+    /** Nagelt einen Fuss fest. Der Loeser haelt ihn (halteAnker in loeser.js). */
+    async hold_foot(args) {
+      const a = pruefeObjekt('hold_foot', 'Argumente', args, 'uebergib {foot, von, bis}');
+      const z0 = store.roh();
+      brauchtLaenge('hold_foot', z0.frameCount);
+      pruefeFrame('hold_foot', 'von', a.von, z0.frameCount);
+      pruefeFrame('hold_foot', 'bis', a.bis, z0.frameCount);
+
+      const rollen = (ports.rig && ports.rig.rig().roles) || {};
+      const fuesse = Object.keys(rollen).filter((r) => /^foot_[lr]$/.test(r));
+      pruefeAuswahl('hold_foot', 'foot', a.foot, fuesse.length ? fuesse : ['foot_l', 'foot_r'],
+        'die Fussrollen stehen in describe_rig');
+
+      if (a.bis <= a.von) {
+        throw new WerkzeugMeldung({
+          tool: 'hold_foot', param: 'bis', value: a.bis,
+          range: `groesser als von (${a.von}) und hoechstens ${z0.frameCount - 1}`,
+          next: 'setze bis auf einen spaeteren Frame als von',
+          message: `bis ${a.bis} liegt nicht nach von ${a.von}: ein Anker braucht mindestens 2 Frames`
+        });
+      }
+
+      if (a.remove === true) {
+        const vorher = (z0.anchors || []).length;
+        store.aendere((z) => {
+          z.anchors = (z.anchors || []).filter((x) =>
+            !(x.foot === a.foot && x.von >= a.von && x.bis <= a.bis));
+        });
+        const nachher = (store.roh().anchors || []).length;
+        return text(`${vorher - nachher} Anker fuer ${a.foot} in Frames ${a.von}-${a.bis} entfernt; `
+          + `${nachher} bleiben.`);
+      }
+
+      store.aendere((z) => {
+        z.anchors = [...(z.anchors || []), { foot: a.foot, von: a.von, bis: a.bis }];
+      });
+
+      const alle = store.roh().anchors;
+      return text(`${a.foot} steht ab jetzt in den Frames ${a.von} bis ${a.bis} fest `
+        + `(${a.bis - a.von + 1} Frames). Der Loeser rechnet die Beinkette dafuer; `
+        + 'die Wurzel bleibt, wo du sie gesetzt hast. '
+        + `${alle.length} Anker insgesamt: ${alle.map((x) => `${x.foot} ${x.von}-${x.bis}`).join(', ')}.`
+        + '\nRuecknehmbar mit undo.'
+        + wirkung(store.roh(), a.von, ports));
+    },
 
     async export_clip() {
       const z0 = store.roh();
@@ -1568,6 +1679,157 @@ function antwortBytes(bilder) {
     if (typeof b?.data === 'string') summe += b.data.length;
   }
   return summe;
+}
+
+/**
+ * Was diese Haltung tatsächlich bewirkt hat — die Antwort auf „und jetzt?".
+ *
+ * Gemessen an zwei Agentenläufen am 1. September 2026: set_pose quittierte nur
+ * („11 Gelenke, 13 Winkel gesetzt"). Der Agent sah die Wirkung erst beim
+ * nächsten validate — nach zwölf gesetzten Haltungen. Dann warf er alle zwölf
+ * weg und baute neu. Frame 8, 19 und 26 wurden je viermal gesetzt, 21 von 25
+ * Frames mehrfach. Ein Block kostete ihn 213 Sekunden Rechnen im Kopf, weil er
+ * aus Gelenkwinkeln auf Weltpositionen schließen musste — die Rechnung, die der
+ * Löser ohnehin macht.
+ *
+ * Hier steht deshalb nach jeder Haltung, was der Löser daraus gemacht hat:
+ * wo die Füße stehen, ob sie den Boden berühren, und ob der Standfuß gegenüber
+ * dem vorigen Schlüsselbild wandert. Drei Zeilen statt drei Minuten Kopfrechnen.
+ *
+ * Fällt der Löser aus, bleibt die Zeile leer: eine Haltung zu setzen darf nicht
+ * daran scheitern, dass die Wirkung nicht gemessen werden kann.
+ */
+function wirkung(z, frame, ports) {
+  if (!ports.solver || !ports.rig) return '';
+  try {
+    const { frames } = ports.solver.loese(alsTimeline(z));
+    const hier = (frames || []).find((f) => f.frame === frame);
+    if (!hier) return '';
+
+    const rollen = (ports.rig.rig().roles) || {};
+    const boden = (ports.rig.world().groundY) ?? 0;
+    const punkt = (f, rolle) => {
+      const bone = rollen[rolle] && rollen[rolle].bone;
+      return bone ? (f.positions && f.positions[bone]) ?? null : null;
+    };
+
+    const zeilen = [];
+
+    // Ob die Figur den Boden beruehrt, sagt der Loeser selbst (frame.contact,
+    // gemessen an den Sohlenpunkten). Die Hoehe des FUSSKNOCHENS taugt dafuer
+    // nicht: er sitzt am Xbot 8,8 cm ueber der Sohle, und eine Figur, die
+    // sauber steht, meldete damit "8,8 cm ueber dem Boden".
+    zeilen.push(hier.contact === 'flug' ? 'kein Bodenkontakt (Flugphase)' : 'Bodenkontakt');
+
+    // Wandert ein Fuss gegenueber dem vorigen Schluesselbild, obwohl beide
+    // Frames Bodenkontakt haben? Genau das meldet validate spaeter als
+    // "rutschen" — nur eben erst nach zwoelf gesetzten Haltungen.
+    const vorher = gesetzteFrames(z).filter((f) => f < frame).pop();
+    if (vorher !== undefined) {
+      const davor = (frames || []).find((f) => f.frame === vorher);
+      if (davor && davor.contact !== 'flug' && hier.contact !== 'flug') {
+        for (const fuss of ['foot_l', 'foot_r']) {
+          const a = punkt(davor, fuss);
+          const b = punkt(hier, fuss);
+          if (!a || !b) continue;
+          const weg = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+          if (weg > 0.03) {
+            zeilen.push(`${fuss} wandert ${zahl(weg * 100)} cm seit Frame ${vorher}, `
+              + 'obwohl der Boden berührt wird — das meldet validate als Rutschen');
+          }
+        }
+      }
+    }
+
+    const com = hier.com;
+    if (com) zeilen.push(`Schwerpunkt ${zahl(com[1] - boden)} m über dem Boden`);
+
+    return zeilen.length ? `\nWirkung: ${zeilen.join('. ')}.` : '';
+  } catch {
+    // Der Löser kam nicht durch. Die Haltung steht trotzdem.
+    return '';
+  }
+}
+
+/**
+ * Fasst gleichartige Befunde über zusammenhängende Frames zu einem zusammen.
+ *
+ * Gemessen am Agentenlauf vom 1. September 2026: die Bodenprüfung meldete
+ *
+ *     Frame 52: RightToeBase steckt 2,3 cm im Boden
+ *     Frame 53: RightToeBase steckt 2,8 cm im Boden
+ *     Frame 54: RightToeBase steckt 3,1 cm im Boden
+ *     Frame 55: RightToeBase steckt 3,0 cm im Boden
+ *
+ * Das ist EIN Befund über vier Frames, nicht vier Befunde. Über den ganzen
+ * Bericht ergaben sich so 43 Bodenmeldungen bei 37 betroffenen Frames — eine
+ * Antwort von 33 bis 49 KB, fünfmal gerufen.
+ *
+ * Zusammengefasst wird nur, was dieselbe Art am selben Körperteil in
+ * lückenlos aufeinanderfolgenden Frames meldet. Der größte Betrag bleibt
+ * stehen, mit dem Frame, in dem er auftrat: die Zahl, nach der gehandelt wird,
+ * geht nicht verloren.
+ *
+ * @param {object} bericht  Prüfbericht mit physics/style
+ * @returns {{bericht: object, vorher: number, nachher: number}}
+ */
+export function fasseIssuesZusammen(bericht) {
+  const aus = structuredClone(bericht);
+  let vorher = 0;
+  let nachher = 0;
+
+  for (const bereich of ['physics', 'style']) {
+    const liste = aus[bereich] && aus[bereich].issues;
+    if (!Array.isArray(liste) || liste.length === 0) continue;
+    vorher += liste.length;
+
+    // Nach Art und Körperteil trennen, dann nach Frame sortieren.
+    const gruppen = new Map();
+    const einzeln = [];
+    for (const i of liste) {
+      if (!Number.isInteger(i.frame)) { einzeln.push(i); continue; }
+      const k = `${i.kind} ${i.part ?? ''}`;
+      if (!gruppen.has(k)) gruppen.set(k, []);
+      gruppen.get(k).push(i);
+    }
+
+    const neu = [...einzeln];
+    for (const eintraege of gruppen.values()) {
+      eintraege.sort((a, b) => a.frame - b.frame);
+      let lauf = [eintraege[0]];
+      const schliesse = () => {
+        if (lauf.length === 1) { neu.push(lauf[0]); return; }
+        const groesster = lauf.reduce((m, x) =>
+          (Math.abs(x.value ?? 0) > Math.abs(m.value ?? 0) ? x : m), lauf[0]);
+        const von = lauf[0].frame;
+        const bis = lauf[lauf.length - 1].frame;
+        neu.push({
+          ...groesster,
+          frame: groesster.frame,
+          von,
+          bis,
+          frames: lauf.length,
+          message: `${groesster.message} — durchgehend in Frames ${von} bis ${bis} `
+            + `(${lauf.length} Frames), größter Betrag bei Frame ${groesster.frame}`,
+        });
+      };
+      for (let n = 1; n < eintraege.length; n += 1) {
+        if (eintraege[n].frame === lauf[lauf.length - 1].frame + 1) lauf.push(eintraege[n]);
+        else { schliesse(); lauf = [eintraege[n]]; }
+      }
+      schliesse();
+    }
+
+    neu.sort((a, b) => (a.frame ?? 0) - (b.frame ?? 0));
+    aus[bereich].issues = neu;
+    nachher += neu.length;
+  }
+
+  if (vorher > nachher) {
+    aus.issuesZusammengefasst = `${vorher} Einzelbefunde zu ${nachher} zusammengefasst: `
+      + 'gleiche Art am selben Körperteil über aufeinanderfolgende Frames ist ein Befund.';
+  }
+  return { bericht: aus, vorher, nachher };
 }
 
 /** Kürzt die issue-Listen von physics und style auf `max` Einträge je Liste

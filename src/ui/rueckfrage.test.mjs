@@ -38,21 +38,42 @@ test('Rückfrage: Werkzeug wartet, Klick liefert die Antwort im selben Aufruf', 
   assert.match(antwort.content[0].text, /Möglichkeit 2 von 2/);
 });
 
-test('Rückfrage: set_intent wartet auf die Bestätigung des Menschen (plan.md 6.7)', async () => {
+test('set_intent fragt den Menschen NICHT — es setzt und antwortet sofort', async () => {
+  // Die Pflichtbestaetigung ist ausgebaut. Sie zeigte dem Menschen rohes JSON
+  // ("- airtime: {\"kind\":\"airtime\",\"minSek\":0.3}") und kam bei jedem
+  // Aufruf: im Agentenlauf vom 1. September 2026 fuenfmal, je 15 Sekunden
+  // Wartezeit. Eine Frage, die niemand ohne Kenntnis der Werkzeugschicht
+  // beantworten kann, ist keine Mitbestimmung, sondern eine Sperre.
   const schicht = await createToolLayer({});
-  const aufruf = schicht.rufe('set_intent', {
+  const antwort = await schicht.rufe('set_intent', {
     checks: [{ kind: 'rotation', part: 'pelvis', axis: 'x', minDeg: 350, maxDeg: 370, from: 12, to: 44 }]
   });
 
-  await warteAufFrage(schicht);
-  schicht.ask.antworte(0);                       // "Ja, so bauen"
-  const antwort = await aufruf;
-
   assert.ok(!antwort.isError, antwort.content[0].text);
   assert.equal(schicht.store.lies().intent.checks.length, 1);
+  assert.equal(schicht.ask.stand().wartet, false, 'keine Frage haengt auf dem Schirm');
+  assert.doesNotMatch(antwort.content[0].text, /bestätigt|Bestätigung/,
+    'die Antwort spricht nicht mehr von einer Bestaetigung');
 });
 
-test('Rückfrage, Negativfall: Abbruch während der Wartezeit lässt die Timeline unberührt', async () => {
+test('set_intent, Negativfall: eine offene ask_human-Frage blockiert es nicht', async () => {
+  // Vorher teilten sich beide denselben Broker, der immer nur EINE Frage
+  // zulaesst. Eine haengende Frage machte set_intent unbenutzbar.
+  const schicht = await createToolLayer({});
+  const offen = schicht.rufe('ask_human', { question: 'Welcher Fuß?', options: ['links', 'rechts'] });
+  await warteAufFrage(schicht);
+
+  const antwort = await schicht.rufe('set_intent', {
+    checks: [{ kind: 'airtime', minSek: 0.6, maxSek: 1.0 }]
+  });
+  assert.ok(!antwort.isError, antwort.content[0].text);
+  assert.equal(schicht.store.lies().intent.checks.length, 1);
+
+  schicht.ask.antworte(0);
+  await offen;
+});
+
+test('set_intent, Negativfall: ein unvollstaendiges Kriterium laesst alles unberührt', async () => {
   const schicht = await createToolLayer({});
   await schicht.rufe('set_duration', { frameCount: 90 });
   await schicht.rufe('add_phase', { verb: 'crouch', from: 0, to: 12, params: { depth: 0.35 } });
@@ -60,16 +81,11 @@ test('Rückfrage, Negativfall: Abbruch während der Wartezeit lässt die Timelin
   const vorher = fingerabdruck(schicht.store.lies());
   const tiefeVorher = schicht.store.tiefe();
 
-  const aufruf = schicht.rufe('set_intent', {
-    checks: [{ kind: 'airtime', minSek: 0.6, maxSek: 1.0 }]
-  });
-  await warteAufFrage(schicht);
-  schicht.ask.abbrechen('der Mensch hat abgebrochen');
+  // travel ohne richtung: pruefeKriterien muss das vor dem Speichern fangen.
+  const antwort = await schicht.rufe('set_intent', { checks: [{ kind: 'travel', part: 'com' }] });
 
-  const antwort = await aufruf;
   assert.ok(antwort.isError, 'der Aufruf endet als Fehler, nicht stillschweigend');
   assert.match(antwort.content[0].text, /\d/, 'die Meldung nennt eine Zahl');
-
   assert.equal(fingerabdruck(schicht.store.lies()), vorher, 'Timeline bitgleich wie vorher');
   assert.equal(schicht.store.tiefe(), tiefeVorher, 'kein Schritt auf dem Undo-Stapel');
   assert.equal(schicht.store.lies().intent, null, 'keine halbe Absicht gespeichert');
@@ -131,19 +147,16 @@ test('Rückfrage: erschöpftes Budget meldet mit Zahlen statt zu hängen', async
   assert.match(zweiter.content[0].text, /1 von 1 Fragen/);
 });
 
-test('Rückfrage: Budget 0 schaltet ask_human ab, die Pflichtbestätigung läuft weiter', async () => {
+test('Rückfrage: Budget 0 schaltet ask_human ab, set_intent läuft weiter', async () => {
   const schicht = await createToolLayer({ budget: 0 });
 
   const abgelehnt = await schicht.rufe('ask_human', { question: 'Geht das?', options: ['a', 'b'] });
   assert.ok(abgelehnt.isError);
   assert.match(abgelehnt.content[0].text, /0 Fragen/);
 
-  // plan.md 6.7 nennt die drei Momente "kein Notausgang" — die Bestaetigung
-  // der Absicht muss auch bei Budget 0 gehen.
-  const aufruf = schicht.rufe('set_intent', { checks: [{ kind: 'travel', part: 'com', richtung: [0, 0, 1], minHoehe: 1.0 }] });
-  await warteAufFrage(schicht);
-  schicht.ask.antworte(0);
-  const antwort = await aufruf;
+  // set_intent haengt nicht mehr am Fragebudget: es fragt niemanden.
+  const antwort = await schicht.rufe('set_intent',
+    { checks: [{ kind: 'travel', part: 'com', richtung: [0, 0, 1], minHoehe: 1.0 }] });
   assert.ok(!antwort.isError, antwort.content[0].text);
 });
 
