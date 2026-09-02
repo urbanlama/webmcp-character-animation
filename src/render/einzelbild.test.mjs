@@ -23,8 +23,8 @@ import assert from 'node:assert';
 
 import * as strip from './strip.js';
 import { loadGLB } from '../scene/load.js';
-import { measureRigProfile } from '../rig/measure.js';
 import { XBOT_PFAD, alsArrayBuffer } from '../scene/testdaten.mjs';
+import { xbotProfil } from '../rig/xbot-profil.mjs';
 
 /** Toleranz beim Vergleich zweier Richtungsvektoren: 1e-9 liegt weit unter
  *  jedem Rundungsfehler der Winkelrechnung und weit über der Auslöschung. */
@@ -34,14 +34,10 @@ const RICHTUNG_TOLERANZ = 1e-9;
  *  Ein halber Pixel: darunter ist die Mitte nicht mehr darstellbar. */
 const MITTE_TOLERANZ_PX = 0.5;
 
-let profilEinmal = null;
-
-async function gemessenesProfil() {
-  if (!profilEinmal) {
-    const gltf = await loadGLB(alsArrayBuffer(XBOT_PFAD));
-    profilEinmal = measureRigProfile(gltf, { fileName: 'Xbot.glb' });
-  }
-  return structuredClone(profilEinmal);
+// Profil aus dem geteilten Cache (src/rig/xbot-profil.mjs): einmal gemessen,
+// prozessuebergreifend geteilt, jeder Aufrufer bekommt eine eigene Kopie.
+function gemessenesProfil() {
+  return xbotProfil({ fileName: 'Xbot.glb' });
 }
 
 /** Ein Frame aus dem geladenen Modell, wahlweise starr versetzt. */

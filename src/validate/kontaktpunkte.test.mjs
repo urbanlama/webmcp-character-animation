@@ -23,10 +23,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { loadGLB } from '../scene/load.js';
-import { measureRigProfile } from '../rig/measure.js';
 import { erfasseBind, baueSkeleton } from '../solver/kinematik.js';
 import { loeseBewegung } from '../solver/loeser.js';
 import { pruefePhysik } from './physics.js';
+import { xbotProfil } from '../rig/xbot-profil.mjs';
 
 const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
 const FPS = 30;
@@ -35,15 +35,24 @@ const FPS = 30;
 const ABSENKUNG = 0.05;
 
 async function aufbau() {
-  const puff = readFileSync(XBOT);
-  const gltf = await loadGLB(puff.buffer.slice(puff.byteOffset, puff.byteOffset + puff.byteLength));
-  const profil = measureRigProfile(gltf);
+  // Profil des UNVERAENDERTEN Xbot aus dem geteilten Cache
+  // (src/rig/xbot-profil.mjs): einmal gemessen, prozessuebergreifend
+  // geteilt, jeder Aufrufer bekommt eine eigene Kopie. Die Kopie haelt die
+  // Isolation zwischen den Tests.
+  const profil = await xbotProfil();
+  const gltf = await ladeModell();
   const bind = erfasseBind(gltf.scene);
   const skel = baueSkeleton(profil, bind);
   // Standhöhe der Wurzel = ihre Höhe in der Bind-Pose. Gemessen, nicht
   // getippt: eine Zahl wie 1,04 wäre für ein anderes Modell falsch.
   const standHoehe = bind.find((b) => b.id === profil.roles.pelvis.bone).pos[1];
   return { profil, skel, standHoehe };
+}
+
+
+async function ladeModell() {
+  const puff = readFileSync(XBOT);
+  return loadGLB(puff.buffer.slice(puff.byteOffset, puff.byteOffset + puff.byteLength));
 }
 
 /**

@@ -14,18 +14,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { loadGLB } from '../scene/load.js';
-import { XBOT_PFAD, alsArrayBuffer } from '../scene/testdaten.mjs';
-import { measureRigProfile } from '../rig/measure.js';
 import { erfasseBind, baueSkeleton, vLen, vSub, qRot } from './kinematik.js';
 import { vermesseAusgangslage, startZustand, phaseStand, phaseSwingArms } from './verben.js';
 import { pruefeStil } from '../validate/style.js';
+import { ladeXbot, xbotProfil } from '../rig/xbot-profil.mjs';
 
 const FPS = 30;
 
 // ── Rig einmal laden; alle Tests lösen gegen dasselbe Skelett ───────────────
-const gltf = await loadGLB(alsArrayBuffer(XBOT_PFAD));
-const PROFIL = measureRigProfile(gltf);
+// Profil aus dem geteilten Cache (src/rig/xbot-profil.mjs): das unveraenderte
+// Xbot-Profil wird einmal gemessen, nicht in jeder Testdatei neu.
+const gltf = await ladeXbot();
+const PROFIL = await xbotProfil();
 const SKEL = baueSkeleton(PROFIL, erfasseBind(gltf.scene));
 const H = SKEL.height;                       // gemessene Körperhöhe, Meter
 const VORGANG = vermesseAusgangslage(SKEL);

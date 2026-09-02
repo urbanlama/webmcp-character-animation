@@ -250,12 +250,38 @@ export function baueValidationReport({ profile, timeline, intent, stil, strip } 
   // ── 1. Die drei Prüfschichten aufrufen ─────────────────────────────────────
   const physics = pruefePhysik(profile, frames, timeline.fps);
 
-  if (!Array.isArray(intent) || intent.length === 0) {
-    fehler(`intent = ${Array.isArray(intent) ? intent.length : typeof intent}: erwartet `
-      + `nicht-leeres Array von Absichtskriterien — ohne Kriterien kann die Absichtsschicht `
-      + `nichts messen (0 Kriterien übergeben)`);
-  }
-  const intentErgebnis = pruefeAbsicht(profile, timeline, intent);
+  // Fehlt die Absicht, wird IHRE Schicht übersprungen — nicht der Bericht
+  // verworfen.
+  //
+  // Vorher stand hier ein `fehler(...)`, und `validate` ohne vorher gesetzte
+  // Absicht endete in einer Fehlerantwort. Der Haken: die Physikprüfung läuft
+  // eine Zeile darüber vollständig durch, ihr Ergebnis liegt fertig vor — und
+  // wurde mitsamt dem Bericht weggeworfen. Ein Agent, der nur wissen will, ob
+  // seine Bewegung physikalisch trägt, bekam nichts und musste erst eine
+  // Absicht formulieren, die er an dieser Stelle gar nicht prüfen wollte.
+  //
+  // Am 2. September 2026 gegen die laufende Seite nachgestellt:
+  //
+  //   Werkzeug "validate" ist abgestürzt, statt zu antworten:
+  //   Bericht abgelehnt: intent = 0: erwartet nicht-leeres Array …
+  //
+  // Die Absicht ist eine ZUSÄTZLICHE Schicht (plan.md 3.2). Fehlt sie, fehlt
+  // ihr Ergebnis, nicht der ganze Bericht; dass sie fehlt, steht als Satz im
+  // Bericht statt als Absturz davor. `passed` bleibt dabei ehrlich: eine
+  // Schicht, die nichts geprüft hat, kann nichts durchfallen lassen — und der
+  // Satz nennt den Grund, damit niemand das grüne Feld als bestandene
+  // Absichtsprüfung liest.
+  const ohneAbsicht = !Array.isArray(intent) || intent.length === 0;
+  const intentErgebnis = ohneAbsicht
+    ? {
+      passed: true,
+      checks: [],
+      uebersprungen: 'keine Absicht gesetzt (0 Kriterien): die Absichtsschicht hat nichts '
+        + 'geprüft — Physik und Stil unten gelten trotzdem. Mit set_intent kommen die '
+        + 'Absichtskriterien dazu (Drehung, Flugzeit, Strecke, Kontaktwechsel, Abstand, '
+        + 'Höhe, Tempo).',
+    }
+    : pruefeAbsicht(profile, timeline, intent);
 
   const style = pruefeStil(profile, frames, timeline.fps, stil ?? {});
 

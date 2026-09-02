@@ -19,12 +19,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 
-import { loadGLB } from '../scene/load.js';
-import { XBOT_PFAD, alsArrayBuffer } from '../scene/testdaten.mjs';
-import { measureRigProfile } from '../rig/measure.js';
 import { erfasseBind, baueSkeleton, sohlenWelt, qRot, vLen, vSub } from './kinematik.js';
 import { bindPose, poseZuFk } from './ik.js';
 import { loeseBewegung } from './loeser.js';
+import { ladeXbot, xbotProfil } from '../rig/xbot-profil.mjs';
 import {
   vermesseAusgangslage, pruefeReichweite, sohlenAnker,
   ANKER_GRENZE_ANTEIL, COM_ZIEL_ANTEIL,
@@ -34,8 +32,10 @@ const FPS = 30;
 const G = 9.81;
 
 // ── Rig einmal laden; alle Tests lösen gegen dasselbe Skelett ───────────────
-const gltf = await loadGLB(alsArrayBuffer(XBOT_PFAD));
-const PROFIL = measureRigProfile(gltf);
+// Profil aus dem geteilten Cache (src/rig/xbot-profil.mjs): das unveraenderte
+// Xbot-Profil wird einmal gemessen, nicht in jeder Testdatei neu.
+const gltf = await ladeXbot();
+const PROFIL = await xbotProfil();
 const SKEL = baueSkeleton(PROFIL, erfasseBind(gltf.scene));
 const H = SKEL.height;                       // gemessene Körperhöhe, Meter
 const VORGANG = vermesseAusgangslage(SKEL);  // u. a. die haltbare Hocktiefe

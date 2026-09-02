@@ -38,9 +38,9 @@ import * as THREE from 'three';
 
 import * as strip from './strip.js';
 import { loadGLB } from '../scene/load.js';
-import { measureRigProfile } from '../rig/measure.js';
 import { XBOT_PFAD, alsArrayBuffer } from '../scene/testdaten.mjs';
 import { validateValidationReport } from '../contracts/validation-report.js';
+import { xbotProfil } from '../rig/xbot-profil.mjs';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BENANNTE VERFAHRENSGRENZEN DIESES TESTS (Verfahren, keine Körpermaße)
@@ -69,16 +69,11 @@ const GRENZ_GROSS_ANTEIL = 0.10;
 // Messbare Testgrundlage — das Profil kommt aus dem Modell
 // ─────────────────────────────────────────────────────────────────────────────
 
-let profilEinmal = null;
-
-/** Vermessenes RigProfile von Xbot.glb; eine Messung für alle Tests (teuer,
- *  unveränderlich). Wer es verändert, bekommt eine Kopie. */
-async function gemessenesProfil() {
-  if (!profilEinmal) {
-    const gltf = await loadGLB(alsArrayBuffer(XBOT_PFAD));
-    profilEinmal = measureRigProfile(gltf, { fileName: 'Xbot.glb' });
-  }
-  return structuredClone(profilEinmal);
+/** Vermessenes RigProfile von Xbot.glb aus dem geteilten Cache
+ *  (src/rig/xbot-profil.mjs): eine Messung für alle Tests und alle
+ *  Testdateien (teuer, unveränderlich). Wer es verändert, bekommt eine Kopie. */
+function gemessenesProfil() {
+  return xbotProfil({ fileName: 'Xbot.glb' });
 }
 
 /** Frisch geladenes Skelett, damit Pose-Änderungen kein anderes Modell treffen. */

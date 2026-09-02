@@ -24,7 +24,7 @@ import { PFLICHTROLLEN, priorisiereFragen, offenerRest } from './rollen-priorisi
 import { ANTWORT_MAX_BYTES, AUFRUF_MAX_MS } from './registry.js';
 import { pruefeKriterien } from '../validate/intent.js';
 import { folgeFrames, FOLGE_BILDER, FOLGE_SKALA } from '../render/bildfolge.js';
-import { pruefePhysik } from '../validate/physics.js';
+import { pruefePhysik, fussLiegtAuf } from '../validate/physics.js';
 
 /**
  * Verfahrensparameter: welcher Koerperbereich von welchem Verb betroffen ist.
@@ -282,13 +282,44 @@ export function rigTabelle(bericht) {
     const spalten = kanaele.map((k) => {
       const d = dof[k];
       const grenze = Array.isArray(d.limit) ? `${d.limit[0]}..${d.limit[1]}` : '?..?';
-      if (d.richtung && !legende.has(k)) legende.set(k, d.richtung);
+      // Je Kanalname ALLE verschiedenen Richtungstexte sammeln, mit den
+      // Gelenken, für die sie gelten. Vorher stand hier `!legende.has(k)`:
+      // von `swing` überlebte der Text des ERSTEN Gelenks, das den Kanal hat.
+      // Der Agent las „+ schwingt den linken Arm nach vorn" und hatte über
+      // arm_r kein Wort — er nahm Spiegelung an (bei Mixamo-Rigs oft so),
+      // baute den ganzen Anlauf mit parallel schwingenden Armen und brauchte
+      // 23 Aufrufe, um es zu reparieren (Reibungsbericht Lauf 7, 1.3).
+      // Tatsächlich steht die Antwort in der Vermessung: arm_l.swing hat
+      // Vorzeichen −1, arm_r.swing +1 — die Achsen sind gespiegelt, DAMIT
+      // dasselbe Vorzeichen an beiden Seiten dasselbe tut.
+      if (d.richtung) {
+        if (!legende.has(k)) legende.set(k, new Map());
+        const je = legende.get(k);
+        if (!je.has(d.richtung)) je.set(d.richtung, []);
+        je.get(d.richtung).push(name);
+      }
       return `${k} ${grenze}`;
     });
     zeilen.push(`${name.padEnd(breite)}  ${spalten.join('   ')}`);
   }
 
-  const legendeZeilen = [...legende.entries()].map(([k, t]) => `  ${k}: ${t}`);
+  // Die Richtungstexte aus der Vermessung beginnen mit ihrem eigenen
+  // Kanalnamen ("swing: + schwingt ..."). In der Legende steht er schon davor;
+  // zweimal gelesen wird daraus "swing: swing: + ...".
+  const ohnePraefix = (k, text) => (text.startsWith(`${k}: `) ? text.slice(k.length + 2) : text);
+  const legendeZeilen = [];
+  for (const [k, je] of legende) {
+    if (je.size === 1) {
+      legendeZeilen.push(`  ${k}: ${ohnePraefix(k, [...je.keys()][0])}`);
+      continue;
+    }
+    // Mehrere Fassungen: jede mit ihren Gelenken, damit keine Seite geraten
+    // werden muss.
+    legendeZeilen.push(`  ${k}:`);
+    for (const [text, gelenkNamen] of je) {
+      legendeZeilen.push(`    ${gelenkNamen.join(', ')}: ${ohnePraefix(k, text)}`);
+    }
+  }
 
   const rollen = [];
   const unsicher = [];
@@ -1977,21 +2008,35 @@ function wirkung(z, frame, ports) {
     // gleichermassen „Bodenkontakt" — der Agent konnte nicht korrigieren.
     zeilen.push(...bodenzeile(hier));
 
-    // Wandert ein Fuss gegenueber dem vorigen Schluesselbild, obwohl beide
-    // Frames Bodenkontakt haben? Genau das meldet validate spaeter als
+    // Wandert ein Fuss gegenueber dem vorigen Schluesselbild, obwohl DIESER
+    // FUSS in beiden Frames aufliegt? Genau das meldet validate spaeter als
     // "rutschen" — nur eben erst nach zwoelf gesetzten Haltungen.
+    //
+    // Gefragt wird nach dem einzelnen Fuss, nicht nach der Kontaktphase der
+    // Figur. Vorher stand hier `davor.contact !== 'flug' && hier.contact !==
+    // 'flug'` und danach wurden BEIDE Fuesse geprueft. Beim Gehen steht immer
+    // einer — der Schwungfuss galt damit als aufliegend, und sein Schritt als
+    // Rutschen. In Lauf 7 hiess das „foot_l wandert 144 cm, obwohl der Boden
+    // berührt wird" fuer einen Fuss, der die ganze Spanne in der Luft war; der
+    // Agent hat mehrfach nach schleifenden Fuessen gesucht, die nicht
+    // schliffen. fussLiegtAuf ist dieselbe Antwort, die die Rutschpruefung in
+    // physics.js benutzt.
     const vorher = gesetzteFrames(z).filter((f) => f < frame).pop();
     if (vorher !== undefined) {
       const davor = (frames || []).find((f) => f.frame === vorher);
-      if (davor && davor.contact !== 'flug' && hier.contact !== 'flug') {
+      const profil = ports.rig.profil();
+      if (davor && profil) {
         for (const fuss of ['foot_l', 'foot_r']) {
+          const bone = rollen[fuss] && rollen[fuss].bone;
+          if (!bone) continue;
+          if (!fussLiegtAuf(profil, davor, bone) || !fussLiegtAuf(profil, hier, bone)) continue;
           const a = punkt(davor, fuss);
           const b = punkt(hier, fuss);
           if (!a || !b) continue;
           const weg = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
           if (weg > 0.03) {
-            zeilen.push(`${fuss} wandert ${zahl(weg * 100)} cm seit Frame ${vorher}, `
-              + 'obwohl der Boden berührt wird — das meldet validate als Rutschen');
+            zeilen.push(`${fuss} liegt in Frame ${vorher} und ${frame} auf, wandert dabei aber `
+              + `${zahl(weg * 100)} cm — das meldet validate als Rutschen`);
           }
         }
       }

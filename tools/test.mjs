@@ -5,6 +5,9 @@
 //   node tools/test.mjs --nur-node   nur die rechnende Haelfte, ohne Browser
 //   node tools/test.mjs --nur-browser  nur die drei Browserlaeufe
 //
+//   TEST_PARALLEL=n                  gleichzeitige Dateien in Phase 1
+//                                    (zum Nachmessen, siehe NODE_PARALLEL)
+//
 // WARUM ZWEI PHASEN
 //
 // `node --test` verteilt Testdateien auf einen Worker je logischem Prozessor —
@@ -26,6 +29,53 @@
 // beide Haelften getrennt zusammen 13 s brauchen. Deshalb: erst die rechnenden
 // Tests parallel, danach die Browserlaeufe einzeln — nie mehr als 1 Chromium
 // gleichzeitig.
+//
+// Fortgeschrieben am 02.09.2026, nach dem Cache-Umbau der Vermessungs-Tests
+// (measure.test.mjs und die solver/validate-Dateien messen das unveraenderte
+// Xbot-Profil nur noch einmal je Datei statt bis zu 11-mal): Phase 1 41,7 s,
+// Phase 2 einzeln 10,3 s + 30,4 s + 22,6 s, gesamt 105,0 s.
+//
+// Fortgeschrieben am 02.09.2026 abends, nach dem PROZESSUEBERGREIFENDEN
+// Profil-Cache (src/rig/xbot-profil.mjs). 29 Testdateien brauchten dasselbe
+// Profil des unveraenderten Xbot; `node --test` gibt jeder Datei einen eigenen
+// Prozess, ein Cache im Modul half also nur innerhalb einer Datei. Das Profil
+// liegt jetzt v8-serialisiert im tmpdir, der Schluessel deckt die Importkette
+// ab measure.js, die Xbot.glb und die Optionen ab. Alle Zeiten auf 12
+// logischen Prozessoren, 517 Tests gruen:
+//
+//   Phase 1, Node                       41,7 s → 26,3 s
+//   Phase 2, src/render/strip.test.mjs  10,3 s →  8,4 s
+//   Phase 2, tests/e2e/durchlauf.browser.test.mjs      24,0 s
+//   Phase 2, tools/browser-test.mjs                    22,7 s
+//   gesamt                             105,0 s → 81,4 s
+//
+// Die beiden letzten Browserdateien sind unveraendert; ihre Abweichung gegen
+// die Zeile darueber ist Messbedingung, nicht Ersparnis.
+//
+// Kalter gegen warmer Cache, Phase 1: 27,2 s gegen 26,3 s. Der Aufschlag
+// bleibt klein, weil waehrend der einen Messung die anderen Worker
+// weiterlaufen. Wer measure.js, detect.js, kollision.js oder die Xbot.glb
+// aendert, zahlt genau diese eine Sekunde — der Schluessel bemerkt es.
+//
+// Der Rest ist echte Arbeit: die Gelenkgrenzmessung (~2 s, jetzt einmal statt
+// 29-mal, bewusst) und drei SwiftShader-Browserlaeufe. Ein Lauf mit zwei
+// Agenten gleichzeitig auf einer Maschine verdoppelt grob die Zeiten.
+//
+// GEPRUEFT UND VERWORFEN: die Seite je Testdatei nur EINMAL booten und ueber
+// mehrere Tests hinweg wiederverwenden. Klingt nach dem groessten Hebel in
+// Phase 2 und ist das Gegenteil. index.html rendert dauerhaft weiter
+// (requestAnimationFrame, index.html Zeile 1238); eine Seite, die offen bleibt,
+// rechnet mit SwiftShader auf der CPU gegen den gerade laufenden Test. Am
+// selben Code gemessen, nur der Wiederverwendung an- und abgeschaltet:
+//
+//                                    Seiten geteilt   Seite je Test
+//   src/render/strip.test.mjs               7,8 s          8,3 s
+//   tests/e2e/durchlauf.browser.test.mjs   31,2 s         24,7 s
+//   tools/browser-test.mjs                 53,3 s         23,6 s
+//   Phase 2 gesamt                         92,3 s         56,6 s
+//
+// Wer eine Seite offen halten will, muss vorher ihre Renderschleife anhalten —
+// sonst kostet der gesparte Boot ein Vielfaches dessen, was er einbringt.
 //
 // SwiftShader bleibt: die Pixelvergleiche in strip.test.mjs brauchen ein
 // deterministisches Bild, das eine echte GPU nicht garantiert. Der Preis ist
@@ -53,8 +103,20 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * Mehr Worker als ein Drittel der logischen Prozessoren machen den Lauf also
  * nicht schneller, sondern langsamer: die Browserdateien und die rechnenden
  * Tests nehmen sich gegenseitig die Kerne weg. 4 laesst die Maschine waehrend
- * des Laufs zugleich bedienbar. Wird der Wert angepasst, erneut messen und die
- * Zahlen hier fortschreiben.
+ * des Laufs zugleich bedienbar.
+ *
+ * Nach dem prozessuebergreifenden Profil-Cache nachgemessen (die alte Zahl
+ * stammt aus der Zeit, in der jede Testdatei ~2 s Gelenkgrenzmessung trug —
+ * der Verdacht war, dass ohne diese Last mehr Worker lohnen). Phase 1 allein,
+ * warm, je ein Lauf:
+ *
+ *    4              26,1 s
+ *    6              26,7 s
+ *
+ * Kein Unterschied ausserhalb des Rauschens. Es bleibt bei 4, jetzt aus dem
+ * zweiten Grund: die Maschine bleibt bedienbar, und schneller wird es ohnehin
+ * nicht. TEST_PARALLEL=n setzt den Wert fuer eine Nachmessung. Wird er
+ * geaendert, erneut messen und die Zahlen hier fortschreiben.
  *
  * EHRLICH DAZU: Die Zeit kommt aus dieser Zahl, nicht aus der Phasentrennung —
  * der zweiphasige Lauf liegt mit 21,5 s im selben Bereich wie ein einphasiger
@@ -62,7 +124,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * mehr als 1 Chromium, also keine Testdatei mehr, die je nach Maschinenlast
  * ein anderes Ergebnis liefert.
  */
-const NODE_PARALLEL = Math.max(2, Math.floor(availableParallelism() / 3));
+const NODE_PARALLEL = Number(process.env.TEST_PARALLEL) > 0
+  ? Number(process.env.TEST_PARALLEL)
+  : Math.max(2, Math.floor(availableParallelism() / 3));
 
 /** Erkennt eine Testdatei, die ein eigenes Chromium startet. Automatisch statt
  *  gepflegter Liste: ein neuer Browsertest landet ohne Zutun in Phase 2. */

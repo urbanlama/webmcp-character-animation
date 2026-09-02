@@ -20,9 +20,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { loadGLB } from '../scene/load.js';
-import { measureRigProfile } from '../rig/measure.js';
 import { erfasseBind, baueSkeleton } from './kinematik.js';
 import { loeseBewegung } from './loeser.js';
+import { xbotProfil } from '../rig/xbot-profil.mjs';
 
 /**
  * Feldnamen, die stellePose (src/render/strip.js) als Knochenverzeichnis liest.
@@ -41,7 +41,7 @@ function istKnochenverzeichnis(v) {
 test('Frame-Felder: kein reserviertes Feld traegt etwas anderes als Knochen', async () => {
   const puff = readFileSync('spikes/test-b-motion/assets/Xbot.glb');
   const gltf = await loadGLB(puff.buffer.slice(puff.byteOffset, puff.byteOffset + puff.byteLength));
-  const profil = measureRigProfile(gltf);
+  const profil = await xbotProfil();
   const skel = baueSkeleton(profil, erfasseBind(gltf.scene));
 
   const { frames } = loeseBewegung(profil, skel, {

@@ -200,6 +200,14 @@ export function createRegistry({ modelContext = null, aufrufMaxMs = AUFRUF_MAX_M
         description: def.description,
         inputSchema: def.inputSchema,
         sichtbar,
+        // WebMCP-Kennzeichnung: `readOnlyHint: true` heisst „dieses Werkzeug
+        // schaut nur, es aendert nichts". Der Agent muss dann nicht raten, ob
+        // ein Aufruf seine Bewegung veraendert, und kann gefahrlos nachsehen.
+        // Empfohlen in der Chrome/W3C-Guidance zu WebMCP; ohne die Angabe
+        // sehen ein `look` und ein `delete_pose` fuer ihn gleich aus.
+        // Gesetzt wird sie im Katalog, nicht hier — hier wird sie nur
+        // durchgereicht, damit sie beim Browser ankommt.
+        ...(def.annotations ? { annotations: def.annotations } : {}),
         execute: (args) => ausfuehre(def, args)
       };
       werkzeuge.set(def.name, eintrag);
@@ -212,11 +220,19 @@ export function createRegistry({ modelContext = null, aufrufMaxMs = AUFRUF_MAX_M
       return eintrag;
     },
 
-    /** Was der Agent sieht: Name, Beschreibung, Schema. Ohne execute. */
+    /** Was der Agent sieht: Name, Beschreibung, Schema, Kennzeichnung.
+     *  Ohne execute.
+     *
+     *  `annotations` gehoert dazu: darin steht readOnlyHint, also ob ein
+     *  Werkzeug nur nachsieht oder die Bewegung veraendert. Fehlt die Angabe
+     *  hier, kommt sie beim Agenten nie an — dann sehen `look` und
+     *  `delete_pose` fuer ihn gleich aus. */
     getTools() {
       return [...werkzeuge.values()]
         .filter((w) => w.sichtbar !== false)
-        .map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+        .map(({ name, description, inputSchema, annotations }) => (annotations
+          ? { name, description, inputSchema, annotations }
+          : { name, description, inputSchema }));
     },
 
     anzahl() {

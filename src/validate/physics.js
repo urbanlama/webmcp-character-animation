@@ -261,6 +261,53 @@ function pruefachsen(a1, a2, b1, b2, A, B, rA, rB) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Liegt DIESER Fuß in diesem Frame auf dem Boden auf?
+ *
+ * Gemessen an den Sohlenpunkten des Fußes, nicht an der Kontaktphase der
+ * Figur: beim Gehen steht immer ein Fuß, und wer die figurweite Phase fragt,
+ * hält auch den Schwungfuß für aufliegend. Genau das meldete `set_pose` dem
+ * Agenten in Lauf 7 — „foot_l wandert 144 cm, obwohl der Boden berührt wird",
+ * für einen Fuß, der die ganze Spanne in der Luft war.
+ *
+ * Dieselbe Antwort, die die Rutsch- und Balanceprüfung unten benutzt; hier
+ * herausgezogen, damit die Sofortmeldung in der Werkzeugschicht nicht ein
+ * zweites, gröberes Kriterium erfindet.
+ *
+ * Ohne Sohlenverzeichnis im Frame fällt die Antwort auf den Fußknochen zurück
+ * — er sitzt höher als die Sohle, deshalb kommt die Sohlentoleranz obendrauf.
+ *
+ * @param {object} profile RigProfile (world.height, world.groundY, soles)
+ * @param {object} frame   gelöster Frame (solePositions oder positions)
+ * @param {string} bone    Fußknochen, z. B. profile.roles.foot_l.bone
+ * @returns {boolean}
+ */
+export function fussLiegtAuf(profile, frame, bone) {
+  if (!profile?.world || !frame || !bone) return false;
+  const height = profile.world.height;
+  const groundY = profile.world.groundY ?? 0;
+  const auflageSchwelle = height * AUFLAGE_SCHWELLE_ANTEIL;
+  const pts = frame.solePositions;
+  if (pts && typeof pts === 'object') {
+    const sohlen = (profile.soles ?? []).filter((s) => s.bone === bone);
+    if (sohlen.length > 0) {
+      let gesehen = false;
+      for (const s of sohlen) {
+        const q = pts[s.id];
+        if (!Array.isArray(q) || !Number.isFinite(q[1])) continue;
+        gesehen = true;
+        if (q[1] - groundY < auflageSchwelle) return true;
+      }
+      if (gesehen) return false;
+    }
+  }
+  const soleTolerance = profile.params?.soleTolerance ?? KONTAKT_SCHWELLE_ANTEIL;
+  const p = (frame.positions ?? frame.bones ?? {})[bone];
+  const y = Array.isArray(p) ? p[1] : p?.[1];
+  if (!Number.isFinite(y)) return false;
+  return (y - groundY) < auflageSchwelle + height * soleTolerance;
+}
+
+/**
  * pruefePhysik(profile, frames, fps) -> { passed: false|true, issues, ausgelassen }
  * issues: [] falls alles in Ordnung. Fehlerfrei ist kein Erfolg — eine
  * bewegungslose Animation besteht alle fünf Prüfungen (plan.md 3.2); die

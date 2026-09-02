@@ -224,6 +224,11 @@ export const EASE = {
  * schwingt zwischen den Frames durch, und die zweite Differenz verstaerkt das
  * bei 30 fps um den Faktor 900.
  *
+ * WORAUF die Parabel liegt, entscheidet der Aufrufer. Auf die Wurzelhoehe
+ * gelegt stimmt sie nur bei gehaltener Flugpose; gemessen wird der
+ * Schwerpunkt. Deshalb ruft wurfSchwerpunktbahn() sie mit den SCHWERPUNKTEN
+ * der beiden Schluesselbilder und zieht den Posenabstand wieder ab.
+ *
  * @param {number} y0  Hoehe am ersten Schluesselbild, Meter
  * @param {number} y1  Hoehe am zweiten, Meter
  * @param {number} T   Dauer dazwischen, Sekunden
@@ -687,21 +692,51 @@ function wendeOverridesAn(ctx, z, tl, frames, bericht) {
   }
 
   // ── Durchgang 2: die Höhe — Boden, gesetzt oder angehoben ─────────────────
-  const schluessel = hoehenSchluessel(skel, tl.overrides, wurzelkurven.get('y'), entwuerfe);
+  const schluessel = hoehenSchluessel(skel, tl.overrides, wurzelkurven.get('y'), entwuerfe, tl.fps);
+  // Frames, deren Bodenwert die Figur unter die gesetzte Bahn gezogen hätte:
+  // der Agent erfährt es, statt es im Bild zu suchen (siehe hoehenSchluessel).
+  for (const v of schluessel.verworfen ?? []) {
+    bericht.lucken.push({
+      meldung: `Frame ${v.frame} hat Gelenke, aber keine Höhe: die gesetzte Bahn liegt dort bei `
+        + `${v.gesetzt.toFixed(3)} m, am Boden stünde die Figur bei ${v.bodenwert.toFixed(3)} m. `
+        + `Die gesetzte Bahn gilt — soll die Figur hier stehen, setze die Höhe ausdrücklich `
+        + `(set_pose mit root.pos).`,
+    });
+  }
   const bilanz = { boden: [], gesetzt: [] };
   let geschrieben = 0;
+  // Wurfstrecken auf den Schwerpunkt legen. Zwei Bahnen, weil waehleHoehe für
+  // Frames aus einem Flug-Verb nur die ausdrücklich gesetzten Schlüssel gelten
+  // lässt — die Korrektur muss auf derselben Schlüsselmenge rechnen wie die
+  // Kurve, die sie ersetzt.
+  const wurfbahn = wurfSchwerpunktbahn(skel, schluessel, entwuerfe, tl.fps);
+  const wurfbahnFlug = wurfSchwerpunktbahn(
+    skel, schluessel.filter((s) => s.explizit), entwuerfe, tl.fps,
+  );
   for (const e of entwuerfe) {
     const f = e.frame.frame;
     const wahl = waehleHoehe(schluessel, f, e.verbFlug, tl.fps);
     const pose = e.pose;
-    if (wahl.quelle === 'kurve') pose.wpos[1] = wahl.y;
+    if (wahl.quelle === 'kurve') {
+      const ausWurf = (e.verbFlug ? wurfbahnFlug : wurfbahn).get(f);
+      pose.wpos[1] = ausWurf ?? wahl.y;
+    }
     let kn = poseZuFk(skel, pose);
-    const { abstand, teil } = bodenabstand(skel, kn);
     if (wahl.quelle === 'boden') {
       // Tiefsten Punkt auf die Bodenebene — hinauf wie hinab, je nachdem, ob
       // die Beinkette kürzer (Hocke) oder länger (Zehenstand) wurde.
+      const { abstand, teil } = bodenabstand(skel, kn);
       pose.wpos[1] -= abstand;
       kn = poseZuFk(skel, pose);
+      e.frame.hoehe = { quelle: 'boden', absenkung_m: +abstand.toFixed(4), teil };
+      bilanz.boden.push({ frame: f, absenkung: abstand });
+    } else if (wahl.quelle === 'kurve' && wahl.ausBoden) {
+      // Überblendet zwischen zwei BODEN-Schlüsseln: die Höhe kommt weiterhin
+      // vom Boden, nur nicht mehr in jedem Frame neu gemessen. Der Frame
+      // bleibt darum ein Boden-Frame — daran hängt, dass die IK das Becken
+      // senken darf (wurzelFrei 'y') und dass die Rückmeldung von einer
+      // Absenkung spricht statt von einer gesetzten Höhe.
+      const { abstand, teil } = bodenabstand(skel, kn);
       e.frame.hoehe = { quelle: 'boden', absenkung_m: +abstand.toFixed(4), teil };
       bilanz.boden.push({ frame: f, absenkung: abstand });
     } else if (wahl.quelle === 'kurve') {
@@ -781,11 +816,42 @@ export function bodenabstand(skel, kn) {
  * Höhe (steht), Frame 12 mit 1,5 m und ease wurf ergibt die Parabel vom
  * Boden zum Scheitel.
  *
+ * EIN BODEN-SCHLÜSSEL GILT NUR, WENN ER DIE FIGUR NICHT UNTER EINE BEREITS
+ * GESETZTE FLUGBAHN ZIEHT.
+ *
+ * Gemessen am Agentenlauf vom 2. September 2026 (Lauf 8): der Agent besserte
+ * mit `set_joint` zwei Ellbogenwinkel auf Frame 55 und 61 nach — mitten im
+ * Salto. `set_joint` legt dort ein Override an; das Override hat Gelenke, also
+ * wurde daraus ein Boden-Schlüssel, und die Figur klappte in einem Frame vom
+ * Scheitel auf den Boden:
+ *
+ *   Frame 54   Becken 1,407 m
+ *   Frame 55   Becken 0,046 m   ← Boden-Schlüssel aus einer Ellbogenkorrektur
+ *   Frame 58   Becken 1,754 m
+ *
+ * Die Ballistikprüfung meldete 1721 m/s²; nach dem Löschen der beiden
+ * Overrides 5 m/s². Aus Sicht des Agenten hat eine Armkorrektur die Figur
+ * zweimal pro Salto auf den Boden geworfen, ohne dass eine Antwort das gesagt
+ * hätte.
+ *
+ * Deshalb: liegt der Frame zwischen gesetzten Höhen und behauptet der
+ * Bodenwert eine Höhe mehr als die Bodentoleranz UNTER der gesetzten Bahn,
+ * wird er kein Schlüssel — der Agent hat den Verlauf dort schon bestimmt, ein
+ * Gelenknachtrag darf ihn nicht kippen. Umgekehrt (Bodenwert über der Bahn)
+ * bleibt der Schlüssel: dort steckte die Figur sonst im Boden.
+ *
  * @returns {Array<{frame, grad, ease, explizit}>} aufsteigend nach Frame
  */
-function hoehenSchluessel(skel, overrides, yKurve, entwuerfe) {
+function hoehenSchluessel(skel, overrides, yKurve, entwuerfe, fps) {
   const explizit = new Map((yKurve ?? []).map((s) => [s.frame, s]));
+  // Die gesetzten Höhen als eigene Kurve — an ihr wird jeder Boden-Schlüssel
+  // gemessen, bevor er gilt.
+  const gesetzteKurve = [...explizit.values()]
+    .map((s) => ({ frame: s.frame, grad: s.grad, ease: s.ease ?? 'smooth' }))
+    .sort((a, b) => a.frame - b.frame);
+  const einbruchTol = skel.height * BODEN_TOLERANZ_ANTEIL;
   const liste = [];
+  const verworfen = [];
   for (const [key, ov] of Object.entries(overrides ?? {})) {
     const f = Number(key);
     if (!Number.isInteger(f) || !ov) continue;
@@ -801,9 +867,16 @@ function hoehenSchluessel(skel, overrides, yKurve, entwuerfe) {
     if (!e) continue;
     const kn = poseZuFk(skel, e.pose);
     const { abstand } = bodenabstand(skel, kn);
-    liste.push({ frame: f, grad: e.pose.wpos[1] - abstand, ease, explizit: false });
+    const bodenwert = e.pose.wpos[1] - abstand;
+    const gesetzt = kurvenWert(gesetzteKurve, f, { hoehenachse: true, fps });
+    if (gesetzt !== null && bodenwert < gesetzt - einbruchTol) {
+      verworfen.push({ frame: f, bodenwert, gesetzt });
+      continue;
+    }
+    liste.push({ frame: f, grad: bodenwert, ease, explizit: false });
   }
   liste.sort((a, b) => a.frame - b.frame);
+  liste.verworfen = verworfen;
   return liste;
 }
 
@@ -821,6 +894,34 @@ function hoehenSchluessel(skel, overrides, yKurve, entwuerfe) {
  * Nach dem letzten gesetzten Schlüssel gilt wieder der Boden — so wie die
  * Gelenkkurven dort auf die Ausgangslage zurückfallen. Die Höhe hält nicht
  * länger als die Haltung, zu der sie gehört.
+ *
+ * ZWISCHEN ZWEI SCHLÜSSELBILDERN WIRD ÜBERBLENDET, AUCH BEI BODEN-SCHLÜSSELN.
+ *
+ * Vorher galt zwischen zwei Boden-Schlüsseln `boden`, also: in jedem Frame den
+ * tiefsten Punkt der interpolierten Haltung neu auf die Bodenebene setzen. Das
+ * überträgt jede Zwischenstellung der Beine unmittelbar auf die Wurzelhöhe —
+ * und zwischen zwei Schrittposen läuft die Interpolation durch eine Stellung,
+ * in der beide Beine gestreckt nach unten zeigen. Die Figur ist dort
+ * „länger", wird tiefer gestellt und schnellt am nächsten Schlüsselbild
+ * zurück.
+ *
+ * Gemessen am Anlauf des Agentenlaufs vom 2. September 2026, Frames 14–19:
+ *
+ *   f15 (Schlüsselbild)   Absenkung  7,7 cm
+ *   f16                              9,0 cm
+ *   f17                             11,9 cm
+ *   f18                             17,3 cm     ← gestreckte Zwischenstellung
+ *   f19 (Schlüsselbild)              7,1 cm     ← 10,3 cm Sprung in einem Frame
+ *
+ * Bei 30 fps sind das 3 m/s nach oben, ohne dass ein Schritt stattfindet. Über
+ * die ganze Bewegung: 21 solcher Sprünge, 17 davon an einem Schlüsselbild.
+ * Ältere Läufe hatten null davon — dort setzte der Agent die Höhe selbst, und
+ * eine gesetzte Höhe wird überblendet.
+ *
+ * Deshalb gilt die Kurve auch zwischen Boden-Schlüsseln: an den
+ * Schlüsselbildern steht die Figur exakt auf dem Boden (der Schlüssel trägt
+ * genau diesen Wert), dazwischen wird überblendet wie bei jedem anderen Kanal
+ * auch. Was dabei einsinkt, hebt bodenfreiheit() an (Rang 2, plan.md 6.4).
  */
 function waehleHoehe(schluessel, f, verbFlug, fps) {
   const kurve = (liste) => ({ quelle: 'kurve', y: kurvenWert(liste, f, { hoehenachse: true, fps }) });
@@ -835,12 +936,90 @@ function waehleHoehe(schluessel, f, verbFlug, fps) {
     if (s.frame <= f) davor = s;
     if (s.frame >= f && !danach) danach = s;
   }
+  // Auf einem Boden-Schlüssel selbst gilt der gemessene Boden: dort steht die
+  // Haltung, und ihr tiefster Punkt gehört exakt auf die Bodenebene.
   if (davor && davor.frame === f) return davor.explizit ? kurve(schluessel) : { quelle: 'boden' };
+  // Dazwischen wird überblendet — auch von Boden-Schlüssel zu Boden-Schlüssel.
+  //
+  // `ausBoden` merkt sich, WOHER die überblendete Höhe kommt: liegt zwischen
+  // zwei Boden-Schlüsseln, hat der Agent hier keine Höhe gewollt, sondern der
+  // Boden sie bestimmt. Der Frame bleibt deshalb ein Boden-Frame — sonst
+  // verlöre die IK die Erlaubnis, das Becken zu senken (wurzelFrei 'y' in
+  // halteAnker), und ein haltbarer Fußanker risse ohne Not ab.
   if (davor && danach) {
-    if (!davor.explizit && !danach.explizit) return { quelle: 'boden' };
-    return kurve(schluessel);
+    const w = kurve(schluessel);
+    w.ausBoden = !davor.explizit && !danach.explizit;
+    return w;
   }
   return { quelle: 'boden' };
+}
+
+/**
+ * Die Wurzelhöhen einer `wurf`-Strecke, so gelegt, dass der SCHWERPUNKT der
+ * Wurfparabel folgt.
+ *
+ * `wurfHoehe()` legt die Parabel auf die Wurzel. Gemessen wird aber der
+ * Schwerpunkt (src/validate/physics.js, Prüfung 5) — und der hängt nur dann
+ * starr an der Wurzel, wenn sich die Pose im Flug nicht ändert. Sobald sie es
+ * tut (Tuck im Salto, Schwungbein im Laufschritt), wandert er dagegen, und die
+ * Prüfung meldet eine Beschleunigung, die die Bewegung nicht hat.
+ *
+ * Gemessen in Agentenlauf 7 vom 2. September 2026 (Session f64b54b5): 63 m/s²
+ * im Salto, 50 bis 104 m/s² in gewöhnlichen Laufschritten. Der Agent hat den
+ * Abstand zur Sollparabel dreimal von Hand nachgemessen und die Wurzelhöhen
+ * nachgezogen — rund ein Viertel seiner Laufzeit, ohne die Prüfung je zu
+ * bestehen. Eine Steuergröße, mit der er sie hätte treffen können, gab es nicht.
+ *
+ * Die Rechnung braucht keine Iteration: eine Wurzelverschiebung nimmt den
+ * Schwerpunkt eins zu eins mit. Der Abstand `com − wpos[1]` hängt allein an der
+ * Pose (die Drehung läuft um einen Pivot im Bind-Raum, die Wurzelverschiebung
+ * kommt erst danach dazu). Also einmal je Frame messen, Parabel durch die beiden
+ * Schwerpunkte der Schlüsselbilder legen, Abstand abziehen.
+ *
+ * Die gesetzten Schlüsselbilder bleiben dabei WURZELHÖHEN und werden exakt
+ * getroffen: an den Enden ist der abgezogene Abstand derselbe, mit dem die
+ * Parabel gebaut wurde. Bei gehaltener Pose kommt Frame für Frame heraus, was
+ * `wurfHoehe()` schon immer geliefert hat.
+ *
+ * @param {object} skel        Skelett
+ * @param {Array}  schluessel  Höhenschlüssel (aus hoehenSchluessel), aufsteigend
+ * @param {Array}  entwuerfe   Posen aus Durchgang 1
+ * @param {number} fps         Framerate
+ * @returns {Map<number, number>} Frame → Wurzelhöhe in Metern; Frames ohne
+ *          Eintrag behalten die gewöhnliche Höhenkurve
+ */
+function wurfSchwerpunktbahn(skel, schluessel, entwuerfe, fps) {
+  const bahn = new Map();
+  if (!(fps > 0) || schluessel.length < 2) return bahn;
+
+  // Abstand Schwerpunkt − Wurzelhöhe, je Frame einmal gemessen.
+  const gemessen = new Map();
+  const abstand = (f) => {
+    if (gemessen.has(f)) return gemessen.get(f);
+    const e = entwuerfe.find((x) => x.frame.frame === f);
+    const wert = e ? schwerpunkt(skel, poseZuFk(skel, e.pose)).com[1] - e.pose.wpos[1] : null;
+    gemessen.set(f, wert);
+    return wert;
+  };
+
+  for (let i = 0; i + 1 < schluessel.length; i++) {
+    const a = schluessel[i], b = schluessel[i + 1];
+    if (a.ease !== 'wurf') continue;
+    const relA = abstand(a.frame), relB = abstand(b.frame);
+    // Ohne Pose an einem Ende ist der Schwerpunkt dort unbekannt: dann bleibt
+    // es bei der alten Bahn auf der Wurzel, statt eine Höhe zu raten.
+    if (relA === null || relB === null) continue;
+    const T = (b.frame - a.frame) / fps;
+    const com0 = a.grad + relA, com1 = b.grad + relB;
+    for (const e of entwuerfe) {
+      const f = e.frame.frame;
+      if (f < a.frame || f > b.frame) continue;
+      const relF = abstand(f);
+      if (relF === null) continue;
+      bahn.set(f, wurfHoehe(com0, com1, T, (f - a.frame) / fps) - relF);
+    }
+  }
+  return bahn;
 }
 
 /** Bilanz der Höhenentscheidung in den Bericht: Zahlen, kein „Bodenkontakt". */
@@ -1010,6 +1189,9 @@ function halteAnker(ctx, tl, frames, bericht) {
   // ── Je Frame EIN Lauf über alle aktiven Anker ───────────────────────────
   const alleFrames = new Map();
   for (const x of aktive) for (const f of x.inSpanne) alleFrames.set(f.frame, f);
+  // Wie weit das Becken in einem Ankerframe gegenüber seiner Bodenhöhe
+  // verschoben wurde — Grundlage für das Ausblenden hinter der Spanne.
+  const beckenversatz = new Map();
 
   for (const f of [...alleFrames.values()].sort((p, q) => p.frame - q.frame)) {
     const hier = aktive.filter((x) => f.frame >= x.a.von && f.frame <= x.a.bis);
@@ -1085,6 +1267,9 @@ function halteAnker(ctx, tl, frames, bericht) {
       // Das Becken ist gesunken (oder gestiegen): die Absenkung im Frame
       // zählt das mit, damit die Rückmeldung die ganze Zahl nennt.
       f.hoehe.absenkung_m = +(f.hoehe.absenkung_m + (yVorher - treffer.erg.pose.wpos[1])).toFixed(4);
+      // Für das Ausblenden hinter der Spanne: um wie viel dieser Frame
+      // gegenüber seiner Bodenhöhe angehoben oder gesenkt wurde.
+      beckenversatz.set(f.frame, treffer.erg.pose.wpos[1] - yVorher);
     }
 
     for (const x of hier) {
@@ -1106,8 +1291,55 @@ function halteAnker(ctx, tl, frames, bericht) {
       });
     }
   }
+
+  meldeAnkerabriss(skel, frames, alleFrames, beckenversatz, bericht);
   return aktive;
 }
+
+/**
+ * BENANNTER VERFAHRENSPARAMETER: ab welchem Beckensprung am Ende einer
+ * Ankerspanne gemeldet wird — Anteil der Körperhöhe.
+ *
+ * 2 % sind am Xbot 3,6 cm in einem Frame, bei 30 fps gut 1 m/s. Darunter geht
+ * ein Übergang in der Bewegung unter; darüber sieht man ihn.
+ */
+export const ANKERABRISS_ANTEIL = 0.02;
+
+/**
+ * Springt das Becken am Ende einer Ankerspanne? Dann sagen, um wie viel.
+ *
+ * Während ein Fuß verankert ist, senkt oder hebt die IK das Becken, damit der
+ * Fuß stehen bleibt. Im ersten Frame nach der Spanne hält niemand mehr etwas,
+ * und die Figur steht wieder auf ihrer Bodenhöhe — der Unterschied fällt in
+ * einem einzigen Frame an.
+ *
+ * Gemessen am Agentenlauf vom 2. September 2026: Anker `foot_r 11–18`, größter
+ * Ruck der ganzen Bewegung auf Frame 19 mit 16,2 cm. Dieselbe Bewegung ohne
+ * Anker gerechnet: größter Ruck 7,9 cm. Der Agent hat das im Bild gesucht und
+ * nicht gefunden, weil nichts es ihm gesagt hat.
+ *
+ * Der Löser gleicht das NICHT aus. Das Becken nach der Spanne weiter gesenkt
+ * zu halten wäre eine erfundene Haltung, und ausgleichen hieße die Vorgabe
+ * umschreiben (AGENTS.md: der Löser korrigiert, er erfindet nicht). Was der
+ * Agent braucht, ist die Zahl: dann verlängert er die Spanne, setzt die
+ * Zwischenhaltung anders oder nimmt den Sprung bewusst in Kauf.
+ */
+function meldeAnkerabriss(skel, frames, ankerFrames, beckenversatz, bericht) {
+  if (beckenversatz.size === 0) return;
+  const schwelle = skel.height * ANKERABRISS_ANTEIL;
+  for (const [nr, versatz] of beckenversatz) {
+    if (ankerFrames.has(nr + 1)) continue;            // Spanne läuft weiter
+    const danach = frames.find((f) => f.frame === nr + 1);
+    if (!danach) continue;                            // Spanne endet am Ende der Timeline
+    if (Math.abs(versatz) < schwelle) continue;
+    bericht.hinweise.push(`Anker endet auf Frame ${nr}: das Becken stand dort `
+      + `${(Math.abs(versatz) * 100).toFixed(1).replace('.', ',')} cm `
+      + `${versatz < 0 ? 'tiefer' : 'höher'} als ohne Anker, und auf Frame ${nr + 1} `
+      + `fällt das in einem Frame weg. Soll der Übergang weich sein, verlängere die `
+      + `Ankerspanne oder setze auf Frame ${nr + 1} eine Haltung, die die Höhe trägt.`);
+  }
+}
+
 
 /**
  * Bericht je Anker — gemessen am ENDSTAND der Frames, also nach bodenfreiheit().

@@ -20,14 +20,15 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 
 import { loadGLB } from '../scene/load.js';
-import { XBOT_PFAD, alsArrayBuffer } from '../scene/testdaten.mjs';
-import { measureRigProfile } from '../rig/measure.js';
 import { erfasseBind, baueSkeleton } from '../solver/kinematik.js';
 import { loeseBewegung } from '../solver/loeser.js';
 import { exportiereClip, pruefeExport } from './gltf.js';
+import { ladeXbot, xbotProfil } from '../rig/xbot-profil.mjs';
 
-const gltf = await loadGLB(alsArrayBuffer(XBOT_PFAD));
-const PROFIL = measureRigProfile(gltf);
+// Profil aus dem geteilten Cache (src/rig/xbot-profil.mjs): das unveraenderte
+// Xbot-Profil wird einmal gemessen, nicht in jeder Testdatei neu.
+const gltf = await ladeXbot();
+const PROFIL = await xbotProfil();
 const SKEL = baueSkeleton(PROFIL, erfasseBind(gltf.scene));
 const H = SKEL.height;
 

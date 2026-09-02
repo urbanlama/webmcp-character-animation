@@ -116,14 +116,16 @@ const leer = { type: 'object', properties: {}, required: [] };
 export const KATALOG = [
   {
     name: 'describe_world',
-    description: 'SCHRITT 1 - hier anfangen. Sagt, wie die Welt liegt: welche Achse oben ist, wo vorne ist, '
+    annotations: { readOnlyHint: true },
+    description: 'Sagt, wie die Welt liegt: welche Achse oben ist, wo vorne ist, '
       + 'auf welcher Hoehe der Boden liegt, wie gross die Figur ist. Enthaelt ausserdem eine '
       + 'Kurzanleitung, wie in dieser Seite gearbeitet wird. Braucht ein geladenes Modell.',
     inputSchema: leer
   },
   {
     name: 'describe_rig',
-    description: 'SCHRITT 2 - die Gelenkliste. Nennt jedes vermessene Gelenk mit seinen Kanaelen, deren '
+    annotations: { readOnlyHint: true },
+    description: 'Die Gelenkliste. Nennt jedes vermessene Gelenk mit seinen Kanaelen, deren '
       + 'Grenzwerten in Grad und der Richtung, in die ein positiver Wert wirkt. DIE KANALNAMEN SIND '
       + 'JE GELENK VERSCHIEDEN und kommen aus der Vermessung: die Schulter hat andere als das Knie. '
       + 'Ohne diesen Aufruf sind set_pose und set_joint Raten. Nennt ausserdem die Rollen (foot_l, '
@@ -141,6 +143,7 @@ export const KATALOG = [
   },
   {
     name: 'describe_body',
+    annotations: { readOnlyHint: true },
     description: 'Das gemessene Koerperprofil: Segmente mit Radius in Metern und Masse in Kilogramm, '
       + 'Fusssohlenpunkte, Ruheabstaende zwischen Koerperteilen. Fuer Reichweiten und '
       + 'Standflaechen. Zum blossen Setzen von Haltungen nicht noetig.',
@@ -148,6 +151,7 @@ export const KATALOG = [
   },
   {
     name: 'probe_joint',
+    annotations: { readOnlyHint: true },
     description: 'Probiert einen einzelnen Gelenkkanal aus: beugt ihn um den angegebenen Winkel und liefert '
       + 'Vorher und Nachher als Bild. Zum Nachsehen, in welche Richtung ein Kanal wirkt, wenn die '
       + 'Angabe aus describe_rig nicht reicht. Ohne channel wird der erste gemessene Kanal des '
@@ -259,7 +263,7 @@ export const KATALOG = [
   },
   {
     name: 'set_duration',
-    description: 'SCHRITT 3 - legt fest, wie lang die Bewegung ist, in Frames. Muss vor jedem Setzen von '
+    description: 'Legt fest, wie lang die Bewegung ist, in Frames. Muss vor jedem Setzen von '
       + 'Haltungen oder Phasen kommen; ohne Laenge weisen die anderen Werkzeuge ab. Die Framerate '
       + 'steht in der Antwort. Ändert NICHTS an bestehenden Haltungen — für einen sauberen Neuanfang '
       + 'vor der nächsten Bewegung gibt es clear_motion.',
@@ -349,7 +353,10 @@ export const KATALOG = [
       + 'Nachbesserungen an einer Haltung, die schon steht. Eine ganze Haltung setzt man mit '
       + 'set_pose, nicht mit vielen Aufrufen hiervon. Gelenk- und Kanalnamen kommen aus '
       + 'describe_rig; Werte ausserhalb der gemessenen Gelenkgrenze werden beim Loesen geklemmt und '
-      + 'gemeldet.',
+      + 'gemeldet. Auf einem Frame OHNE Haltung entsteht dabei ein neues Schluesselbild - es traegt '
+      + 'nur diesen einen Kanal und keine Hoehe. Zwischen zwei gesetzten Hoehen (Sprung, Salto) '
+      + 'gilt dort weiter die gesetzte Bahn; steht die Figur an dieser Stelle am Boden, setze die '
+      + 'Hoehe mit set_pose ausdruecklich.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -432,9 +439,14 @@ export const KATALOG = [
           type: 'string',
           enum: EASE_ARTEN,
           description: `Übergang zum nächsten gesetzten Frame. `
-            + `"wurf" ist der freie Fall: die Höhe folgt exakt der Wurfparabel. `
-            + `Nimm ihn für die Flugphase — dann genügen zwei Schlüsselbilder für den `
-            + `ganzen Flug, und die Ballistikprüfung ist still. Sonst einer von `
+            + `"wurf" ist der freie Fall: der SCHWERPUNKT folgt exakt der Wurfparabel - also `
+            + `genau die Groesse, die die Ballistikpruefung misst. Auch wenn sich die Pose im `
+            + `Flug aendert (Salto, Hocke, Schwungbein), wandert der Schwerpunkt dann nicht `
+            + `gegenueber der Bahn: der Loeser rechnet die Wurzelhoehe je Frame dazu. Die `
+            + `y-Werte, die du an den Schluesselbildern setzt, bleiben WURZELHOEHEN und werden `
+            + `genau getroffen. Nimm ihn fuer die Flugphase - dann genuegen zwei `
+            + `Schluesselbilder fuer den ganzen Flug, und die Ballistikpruefung ist still. `
+            + `Sonst einer von `
             + `${EASE_ARTEN.length}: ${EASE_ARTEN.join(', ')}; ohne Angabe ${EASE_STANDARD}`
         }
       },
@@ -443,6 +455,7 @@ export const KATALOG = [
   },
   {
     name: 'measure',
+    annotations: { readOnlyHint: true },
     description: 'DEIN MESSGERAET - du richtest es selbst aus. Statt fertiger Urteile bekommst '
       + 'du sieben Grundmessungen, die du beliebig kombinierst, um zu pruefen, ob eine Haltung '
       + 'stimmt. Beispiel Hocke: steht das Knie vor dem Zeh (abstand_vorne knee_l/toe_l), '
@@ -503,6 +516,7 @@ export const KATALOG = [
   },
   {
     name: 'list_poses',
+    annotations: { readOnlyHint: true },
     description: 'Zeigt alle gesetzten Haltungen mit ihrem Frame, der Zahl der Gelenke und ob '
       + 'eine Wurzelbewegung dabei ist. Der Ueberblick ueber die eigene Arbeit: ohne ihn weisst '
       + 'du nicht, was du schon gesetzt hast, und kannst nichts umsortieren.',
@@ -538,6 +552,7 @@ export const KATALOG = [
   },
   {
     name: 'describe_pose',
+    annotations: { readOnlyHint: true },
     description: 'Sagt in Zahlen, wie die Figur in einem Frame steht: Weltpositionen der Koerperteile in '
       + 'Metern, Schwerpunkt, Bodenkontakt, bodenabstand_m (tiefster Punkt ueber dem Boden, 0 = steht, '
       + 'negativ = im Boden), wurzelhoehe (ob Boden, dein root.pos oder eine Anhebung die Hoehe bestimmt '
@@ -563,6 +578,7 @@ export const KATALOG = [
   },
   {
     name: 'validate',
+    annotations: { readOnlyHint: true },
     description: 'Prueft die gesamte Bewegung und meldet, was nicht stimmt: Bodendurchdringung, '
       + 'Selbstdurchdringung, verletzte Gelenkgrenzen, rutschende Fuesse, Gleichgewicht, Flugbahn - '
       + 'jeweils mit Frame und Betrag in Metern oder Grad. Dazu die mit set_intent gesetzten '
@@ -571,6 +587,7 @@ export const KATALOG = [
   },
     {
     name: 'trace',
+    annotations: { readOnlyHint: true },
     description: 'Zeigt den ABLAUF der Bewegung als Folge von drei GROSSEN Einzelbildern in '
       + 'einer Antwort - gleichmaessig ueber die Timeline verteilt, in derselben Kamera, wie '
       + 'ein Daumenkino zu lesen. Damit siehst du, ob eine Bewegung flieszt, ohne jeden Frame '
@@ -614,6 +631,7 @@ export const KATALOG = [
   },
 {
     name: 'look',
+    annotations: { readOnlyHint: true },
     description: 'Fotografiert EINEN Frame und liefert EIN grosses Bild, annotiert mit Bodengitter, '
       + 'Hoehenleiste, Schwerpunkt, Kontaktpunkten und Stuetzflaeche. Du richtest die Kamera '
       + 'selbst: Blickrichtung, Blickhoehe, worauf sie zielt und wie nah sie herangeht. Ohne '

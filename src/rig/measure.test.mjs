@@ -31,6 +31,7 @@ import { loadGLB, getBounds } from '../scene/load.js';
 import { XBOT_PFAD, alsArrayBuffer, REPO_ROOT, glbZerlegen, glbBauen } from '../scene/testdaten.mjs';
 import { validateRigProfile } from '../contracts/rig-profile.js';
 import { detectRig } from './detect.js';
+import { xbotProfil as geteiltesXbotProfil } from './xbot-profil.mjs';
 import {
   measureRigProfile,
   measureMasses,
@@ -56,6 +57,25 @@ import {
 /** Frisches Modell — jede Prüfung lädt ihre eigene Kopie, Abtastung verändert die Szene. */
 async function ladeXbot() {
   return loadGLB(alsArrayBuffer(XBOT_PFAD));
+}
+
+/**
+ * Profil des UNVERÄNDERTEN Xbot, aus dem geteilten Cache
+ * (src/rig/xbot-profil.mjs).
+ *
+ * Mehrere Prüfungen unten fragen dasselbe ab: measureRigProfile auf dem
+ * unveränderten Modell mit denselben Optionen liefert jedes Mal dieselben
+ * Zahlen (der "Kontrollfall"-Test unten belegt genau das, indem er FRISCH
+ * misst und gegen dieses Profil hält). Die Vermessung kostet am Xbot ~2 s —
+ * das 11-fach je Lauf und in 29 Testdateien zu rechnen ist keine zusätzliche
+ * Prüfung, nur dieselbe Prüfung elfmal. Der Cache hält die Isolation: der
+ * Aufrufer bekommt eine Kopie, die Vermessung restauriert ihre Bind-Pose
+ * selbst (restoreBind in measure.js). Prüfungen, die ein VERÄNDERTES Modell
+ * sehen wollen (Ballenstand, Overrides, umbenannte Knochen, fremde Rigs),
+ * rufen weiter selbst — mit Absicht.
+ */
+function xbotProfil() {
+  return geteiltesXbotProfil({ fileName: 'Xbot.glb' });
 }
 
 /** Skelett und alle gehäuteten Meshes der Szene. */
@@ -381,7 +401,7 @@ function segmenthuelle(gltf, segment) {
 
 test('Radien, Positivfall: gemessener Radius liegt an der Mesh-Hülle', async () => {
   const gltf = await ladeXbot();
-  const profil = measureRigProfile(gltf, { fileName: 'Xbot.glb' });
+  const profil = await xbotProfil();
   const huelle = huellenhochAchse(gltf.scene);
 
   assert.strictEqual(profil.segments.length, 15,
@@ -434,8 +454,7 @@ test('Radien, Positivfall: gemessener Radius liegt an der Mesh-Hülle', async ()
 });
 
 test('Radien, Negativfall: ein halbierter Radius wird von der Hüllenprüfung gemeldet', async () => {
-  const gltf = await ladeXbot();
-  const unveraendert = measureRigProfile(gltf, { fileName: 'Xbot.glb' });
+  const unveraendert = await xbotProfil();
 
   const gltf2 = await ladeXbot();
   const halbiert = measureRigProfile(gltf2, { fileName: 'Xbot.glb', radiusOverrides: { thigh_l: 0.5 } });
@@ -449,7 +468,7 @@ test('Radien, Negativfall: ein halbierter Radius wird von der Hüllenprüfung ge
 });
 
 test('Verfahrensparameter: gemeldetes Perzentil ist das benutzte', async () => {
-  const unveraendert = measureRigProfile(await ladeXbot(), { fileName: 'Xbot.glb' });
+  const unveraendert = await xbotProfil();
   const anderes = measureRigProfile(await ladeXbot(), { fileName: 'Xbot.glb', radiusPercentile: 0.5 });
 
   assert.strictEqual(anderes.params.radiusPercentile, 0.5,
@@ -521,8 +540,7 @@ test('Sohlen, Positivfall: erkannte Fläche deckt die Fußlänge und sitzt auf d
 });
 
 test('Sohlen, Negativfall: angehobene Ferse wird erkannt, nicht stillschweigend vermessen', async () => {
-  const flach = await ladeXbot();
-  const flachProfil = measureRigProfile(flach, { fileName: 'Xbot.glb' });
+  const flachProfil = await xbotProfil();
 
   // Der Ballenstand ist eine verstellte Pose. Die Erkennung liest die
   // Blickrichtung darin nicht mehr eindeutig; sie meldet die Fußrolle nur mit
@@ -859,7 +877,7 @@ test('Twist, Negativfall: Twist wird nicht stillschweigend als gemessen ausgegeb
 
 test('Vertrag, Positivfall: das vermessene RigProfile besteht validateRigProfile', async () => {
   const gltf = await ladeXbot();
-  const profil = measureRigProfile(gltf, { fileName: 'Xbot.glb' });
+  const profil = await xbotProfil();
   const befund = validateRigProfile(profil);
 
   assert.strictEqual(befund.ok, true,
@@ -891,7 +909,7 @@ test('Vertrag, Positivfall: das vermessene RigProfile besteht validateRigProfile
 });
 
 test('Vertrag, Negativfall: ein kaputtes Profil wird mit Feldnamen abgelehnt', async () => {
-  const profil = measureRigProfile(await ladeXbot(), { fileName: 'Xbot.glb' });
+  const profil = await xbotProfil();
   assert.strictEqual(validateRigProfile(profil).ok, true, 'Ausgangspanel muss gültig sein');
 
   const ohneFuss = structuredClone(profil);
@@ -980,8 +998,7 @@ function ohneTexturen(puffern) {
 }
 
 test('Rollen, Positivfall: umbenannte Knochen ändern kein einziges Maß', async () => {
-  const originalGltf = await ladeXbot();
-  const original = measureRigProfile(originalGltf, { fileName: 'Xbot.glb' });
+  const original = await xbotProfil();
 
   const anonym = await ladeXbot();
   const uebersetzung = umbenennen(anonym);
@@ -1098,7 +1115,7 @@ test('Rollen, mittlere Zone: eine unsichere Pflichtrolle wird gemessen und zur B
     `die Warnung nennt die gemessene Konfidenz nicht: "${meldung[0]}"`);
 
   // Gegenprobe: eine sichere Rolle wird nicht markiert und erzeugt keine Warnung.
-  const sicher = measureRigProfile(await ladeXbot(), { fileName: 'Xbot.glb' });
+  const sicher = await xbotProfil();
   assert.strictEqual(sicher.roles.foot_l.confirm, undefined,
     `Rolle mit Konfidenz ${sicher.roles.foot_l.confidence} ist als bestätigungsbedürftig markiert, obwohl sie sicher ist`);
   assert.strictEqual(sicher.warnings.length, 0,
@@ -1148,7 +1165,7 @@ test('Rollen, mittlere Zone: die Antwort des Menschen ersetzt die unsichere Zuor
 const gesamtMasse = (profil) => +profil.segments.reduce((a, s) => a + s.mass, 0).toFixed(4);
 
 test('Bestätigung, Positivfall: eine abweichende Beckenrolle misst das Profil neu', async () => {
-  const ohne = measureRigProfile(await ladeXbot(), { fileName: 'Xbot.glb' });
+  const ohne = await xbotProfil();
   const falschesBecken = ohne.roles.pelvis.bone === 'mixamorigHips' ? 'mixamorigSpine' : 'mixamorigHips';
 
   const korrigiert = measureRigProfile(await ladeXbot(), {
@@ -1178,7 +1195,7 @@ test('Bestätigung, Positivfall: eine abweichende Beckenrolle misst das Profil n
 test('Bestätigung, Positivfall: Fuß-Korrektur zieht Sohle, Gelenk und Masse nach', async () => {
   const gltfErkannt = await ladeXbot();
   const zehLinks = detectRig(gltfErkannt).roles.toe_l.bone;
-  const ohne = measureRigProfile(await ladeXbot(), { fileName: 'Xbot.glb' });
+  const ohne = await xbotProfil();
 
   const korrigiert = measureRigProfile(await ladeXbot(), {
     fileName: 'Xbot.glb',
@@ -1226,7 +1243,7 @@ test('Bestätigung, Kontrollfall: dieselbe Zuordnung bestätigt misst exakt dass
   // Mensch wählt den Vorschlag) darf kein anderes Profil geben — sonst wäre
   // die Neumessung kein Messen, sondern eine zweite Zufallszahl.
   const gltf = await ladeXbot();
-  const ohne = measureRigProfile(gltf, { fileName: 'Xbot.glb' });
+  const ohne = await xbotProfil();
   const antwort = {};
   for (const [rolle, v] of Object.entries(detectRig(await ladeXbot()).roles)) {
     antwort[rolle] = v.bone;

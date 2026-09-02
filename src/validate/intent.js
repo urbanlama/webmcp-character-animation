@@ -178,19 +178,75 @@ function messeDrehung(alle, frames, part, axis, from, to) {
   const pelvisBone = alle.pelvisBone;
   const punkt = (i) => frames[i].positions?.[part];
   const bezug = (i) => frames[i].positions?.[pelvisBone] ?? [0, 0, 0];
-  if (!punkt(from)) fehler(`Knochen ${JSON.stringify(part)} fehlt in Frame ${from} der gelösten Timeline`);
   // Relative Position zur Bezugsachse: 2D-Koordinaten in der zur Achse
   // senkrechten Ebene. Achse 'y' → x/z-Ebene, 'x' → y/z-Ebene, 'z' → x/y-Ebene.
   const ebene = axis === 'y' ? [0, 2] : axis === 'x' ? [1, 2] : [0, 1];
+
+  // Der Bezugsknochen selbst dreht sich nicht um sich selbst — jedenfalls
+  // nicht messbar an seiner Position. Genau ihn nennt aber, wer „der Körper
+  // dreht sich" prüfen will: `part: mixamorigHips`. Dann ist der Punkt mit dem
+  // Bezugspunkt identisch, jeder Frame fällt unten durch die Radiusprüfung,
+  // und heraus kamen bisher stillschweigend 0,0 Grad.
+  //
+  // Gemessen in Lauf 7 (2. September 2026): Kriterium `rotation, part:
+  // mixamorigHips, axis: x, maxDeg: -300` meldete 0,0 Grad, während die Figur
+  // im Bild nachweislich einen ganzen Salto drehte. Der Agent schloss daraus,
+  // seine Animation habe keine Drehung — der einzige Weg, einen Salto zu
+  // bauen (root.drehGrad.x), war zugleich der einzige Weg, den Salto-Check zu
+  // verfehlen.
+  //
+  // Beim Bezugsknochen wird deshalb die GANZKÖRPERDREHUNG gemessen: die
+  // Wurzelausrichtung frame.root.quat, angelegt an einen Referenzvektor
+  // senkrecht zur gefragten Achse. Dasselbe Summierverfahren wie unten, nur
+  // mit dem gedrehten Vektor statt einem Ortsvektor.
+  const istBezug = part === pelvisBone;
+  if (istBezug && !frames[from]?.root?.quat) {
+    fehler(`part ${JSON.stringify(part)} ist der Bezugsknochen: seine Drehung steckt in der `
+      + `Wurzelausrichtung, aber Frame ${from} hat kein root.quat — nenne ein Part, das sich um `
+      + `das Becken bewegt (Kopf, Brust, Fuß), oder löse die Timeline neu`);
+  }
+  if (!istBezug && !punkt(from)) {
+    fehler(`Knochen ${JSON.stringify(part)} fehlt in Frame ${from} der gelösten Timeline`);
+  }
+
+  /** v um das Einheitsquaternion q gedreht (v' = q·v·q*), ohne Fremdmodul. */
+  const drehe = (q, v) => {
+    const [x, y, z, w] = q;
+    const tx = 2 * (y * v[2] - z * v[1]);
+    const ty = 2 * (z * v[0] - x * v[2]);
+    const tz = 2 * (x * v[1] - y * v[0]);
+    return [
+      v[0] + w * tx + (y * tz - z * ty),
+      v[1] + w * ty + (z * tx - x * tz),
+      v[2] + w * tz + (x * ty - y * tx),
+    ];
+  };
+  // Referenzvektor senkrecht zur Drehachse: für x die y-Achse, sonst die
+  // x-Achse. Er liegt damit in der Messebene und trägt den vollen Winkel.
+  const referenz = axis === 'x' ? [0, 1, 0] : [1, 0, 0];
+
   let summe = 0;
   let letzter = null;
+  let gemessene = 0;
   for (let i = from; i <= to; i++) {
-    const p = punkt(i);
-    if (!p) fehler(`Knochen ${JSON.stringify(part)} fehlt in Frame ${i} der gelösten Timeline`);
-    const b = bezug(i);
-    const dx = p[ebene[0]] - b[ebene[0]], dy = p[ebene[1]] - b[ebene[1]];
+    let dx, dy;
+    if (istBezug) {
+      const q = frames[i]?.root?.quat;
+      if (!Array.isArray(q) || q.length !== 4) {
+        fehler(`Frame ${i} hat keine Wurzelausrichtung (root.quat) — die Ganzkörperdrehung `
+          + `ist dort nicht messbar`);
+      }
+      const v = drehe(q, referenz);
+      dx = v[ebene[0]]; dy = v[ebene[1]];
+    } else {
+      const p = punkt(i);
+      if (!p) fehler(`Knochen ${JSON.stringify(part)} fehlt in Frame ${i} der gelösten Timeline`);
+      const b = bezug(i);
+      dx = p[ebene[0]] - b[ebene[0]]; dy = p[ebene[1]] - b[ebene[1]];
+    }
     const r = Math.hypot(dx, dy);
     if (r < 1e-9) continue;   // Punkt liegt auf der Achse: keine Winkelaussage
+    gemessene += 1;
     const winkel = Math.atan2(dy, dx);
     if (letzter !== null) {
       let d = winkel - letzter;
@@ -199,6 +255,14 @@ function messeDrehung(alle, frames, part, axis, from, to) {
       summe += d;
     }
     letzter = winkel;
+  }
+  // Kein einziger auswertbarer Frame heißt NICHT „null Grad Drehung". Ohne
+  // diese Unterscheidung liest der Agent eine Falschmessung als Befund.
+  if (gemessene < 2) {
+    fehler(`Drehung von ${JSON.stringify(part)} um die ${axis}-Achse ist nicht messbar: `
+      + `${gemessene} von ${to - from + 1} Frames liefern einen Abstand zur Achse. `
+      + `Das Part liegt auf der Drehachse — nimm ein Part, das sich um sie bewegt `
+      + `(Kopf oder Fuß statt Becken)`);
   }
   return summe * 180 / Math.PI;
 }

@@ -23,10 +23,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { loadGLB } from '../scene/load.js';
-import { measureRigProfile } from '../rig/measure.js';
 import { erfasseBind, baueSkeleton } from '../solver/kinematik.js';
 import { loeseBewegung } from '../solver/loeser.js';
 import { pruefePhysik } from './physics.js';
+import { xbotProfil } from '../rig/xbot-profil.mjs';
 
 const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
 
@@ -42,12 +42,21 @@ const TIMELINE = {
 };
 
 async function aufbau() {
-  const puff = readFileSync(XBOT);
-  const gltf = await loadGLB(puff.buffer.slice(puff.byteOffset, puff.byteOffset + puff.byteLength));
-  const profil = measureRigProfile(gltf);
-  const skel = baueSkeleton(profil, erfasseBind(gltf.scene));
+  // Profil des UNVERAENDERTEN Xbot aus dem geteilten Cache
+  // (src/rig/xbot-profil.mjs): einmal gemessen, prozessuebergreifend
+  // geteilt, jeder Aufrufer bekommt eine eigene Kopie. Veraenderte Modelle
+  // (Overrides, fremde Posen) messen weiter selbst. Die Kopie haelt die
+  // Isolation zwischen den Tests.
+  const profil = await xbotProfil();
+  const skel = baueSkeleton(profil, erfasseBind((await ladeModell()).scene));
   const { frames } = loeseBewegung(profil, skel, TIMELINE);
   return { profil, frames };
+}
+
+
+async function ladeModell() {
+  const puff = readFileSync(XBOT);
+  return loadGLB(puff.buffer.slice(puff.byteOffset, puff.byteOffset + puff.byteLength));
 }
 
 function bodenTeile(profil, frames) {

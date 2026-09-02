@@ -16,20 +16,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
-import { loadGLB } from '../scene/load.js';
-import { measureRigProfile } from '../rig/measure.js';
 import { KATALOG, KATALOG_SICHTBAR, KISTE } from './catalog.js';
 import { createToolLayer } from './index.js';
+// Profil des UNVERAENDERTEN Xbot aus dem geteilten Cache: einmal gemessen,
+// prozessuebergreifend geteilt, jeder Aufrufer bekommt eine eigene Kopie.
+import { xbotProfil } from '../rig/xbot-profil.mjs';
 
-const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
 
-async function xbotProfil() {
-  const puff = readFileSync(XBOT);
-  const gltf = await loadGLB(puff.buffer.slice(puff.byteOffset, puff.byteOffset + puff.byteLength));
-  return measureRigProfile(gltf);
-}
 
 test('Rollen: am Xbot ist keine Pflichtrolle unsicher', async () => {
   const profil = await xbotProfil();

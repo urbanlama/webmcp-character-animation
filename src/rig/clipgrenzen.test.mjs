@@ -21,7 +21,8 @@ import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { loadGLB, measureRigProfile, clipSpannen, REFERENZ_CLIPS } from './measure.js';
+import { loadGLB, clipSpannen, REFERENZ_CLIPS } from './measure.js';
+import { xbotProfil } from './xbot-profil.mjs';
 
 const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
 
@@ -32,7 +33,7 @@ let spannen = null;
 before(async () => {
   const buf = readFileSync(XBOT);
   gltf = await loadGLB(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
-  profil = measureRigProfile(gltf);
+  profil = await xbotProfil();
   spannen = clipSpannen(gltf);
 }, { timeout: 600000 });
 

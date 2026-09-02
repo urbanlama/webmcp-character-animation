@@ -49,11 +49,14 @@ function umgebung(zusatz = {}) {
 const lauf = await durchlauf(umgebung());
 const schritt = (id) => lauf.schritte.find((s) => s.id === id);
 
-// Das gemessene Profil, um daraus gezielt kaputte Übergaben zu bauen.
+// Das gemessene Profil, um daraus gezielt kaputte Übergaben zu bauen. Es ist
+// dasselbe unveränderte Xbot-Profil, das der geteilte Cache vorhält
+// (src/rig/xbot-profil.mjs) — der Durchlauf oben misst weiterhin selbst, hier
+// wird nur ein Datensatz zum Kaputtmachen gebraucht.
 const { loadGLB } = await import(umgebung().moduleUrl('src/scene/load.js'));
-const { measureRigProfile } = await import(umgebung().moduleUrl('src/rig/measure.js'));
+const { xbotProfil } = await import(umgebung().moduleUrl('src/rig/xbot-profil.mjs'));
 const gltf = await loadGLB(new Uint8Array(readFileSync(XBOT)));
-const profil = measureRigProfile(gltf, { fileName: 'Xbot.glb' });
+const profil = await xbotProfil({ fileName: 'Xbot.glb' });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1 · Durchlauf

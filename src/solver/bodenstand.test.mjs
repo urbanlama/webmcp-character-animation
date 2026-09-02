@@ -22,19 +22,27 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { loadGLB } from '../scene/load.js';
-import { measureRigProfile } from '../rig/measure.js';
 import { erfasseBind, baueSkeleton } from './kinematik.js';
 import { loeseBewegung } from './loeser.js';
 import { BODEN_TOLERANZ_ANTEIL } from '../validate/physics.js';
+import { xbotProfil } from '../rig/xbot-profil.mjs';
 
 const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
 
 async function aufbau() {
-  const puff = readFileSync(XBOT);
-  const gltf = await loadGLB(puff.buffer.slice(puff.byteOffset, puff.byteOffset + puff.byteLength));
-  const profil = measureRigProfile(gltf);
-  const skel = baueSkeleton(profil, erfasseBind(gltf.scene));
+  // Profil des UNVERAENDERTEN Xbot aus dem geteilten Cache
+  // (src/rig/xbot-profil.mjs): einmal gemessen, prozessuebergreifend
+  // geteilt, jeder Aufrufer bekommt eine eigene Kopie. Die Kopie haelt die
+  // Isolation zwischen den Tests.
+  const profil = await xbotProfil();
+  const skel = baueSkeleton(profil, erfasseBind((await ladeModell()).scene));
   return { profil, skel };
+}
+
+
+async function ladeModell() {
+  const puff = readFileSync(XBOT);
+  return loadGLB(puff.buffer.slice(puff.byteOffset, puff.byteOffset + puff.byteLength));
 }
 
 const HOCKE = { knee_l: { bend: 60 }, knee_r: { bend: 60 }, hip_l: { flex: 50 }, hip_r: { flex: 50 } };

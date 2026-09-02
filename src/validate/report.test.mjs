@@ -181,19 +181,48 @@ test('Phasen: die Timeline ergibt die drei Blöcke Kontakt/Flug/Kontakt', () => 
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('Negativfall: fehlt eine Schicht, wird der Bericht mit dem Feldnamen abgelehnt', () => {
-  // Konkret: ohne intent bricht der Zusammenbau mit dem Feldnamen ab.
-  const ohneIntent = BASIS();
-  delete ohneIntent.intent;
-  assert.throws(() => baueValidationReport(ohneIntent), /intent = /);
-  // Ohne Absichtskriterien (leeres Array) ebenfalls — die Absichtsschicht
-  // nimmt keine leere Kriterienliste an.
-  const leereIntent = BASIS();
-  leereIntent.intent = [];
-  assert.throws(() => baueValidationReport(leereIntent), /intent = 0/);
-  // Und ohne strip wird gar kein Bericht zusammengebaut:
+  // Ohne strip wird gar kein Bericht zusammengebaut — ein Bericht ohne Bild
+  // geht nicht raus (plan.md 5.3).
   const ohneStrip = BASIS();
   delete ohneStrip.strip;
   assert.throws(() => baueValidationReport(ohneStrip), /strip = /);
+
+  // Ohne timeline.solved.frames ebenso: ohne gelöste Posen gibt es nichts zu
+  // prüfen und nichts zu zeichnen.
+  const ohneFrames = BASIS();
+  ohneFrames.timeline = { ...ohneFrames.timeline, solved: { frames: [] } };
+  assert.throws(() => baueValidationReport(ohneFrames), /frames = 0/);
+});
+
+test('Ohne Absichtskriterien entfällt die Absichtsschicht, nicht der Bericht', () => {
+  // Umgedreht am 2. September 2026. Vorher warf der Zusammenbau bei einem
+  // leeren Kriterien-Array — obwohl die Physikprüfung eine Zeile zuvor
+  // vollständig gelaufen war. In handlers.js steht seit Längerem die
+  // Gegenabsicht ("Ohne gesetzte Kriterien prueft validate trotzdem"), sie
+  // lief aber ins Leere: der Attrappen-Validator der Werkzeugtests wirft
+  // nicht, der echte schon. An der laufenden Seite gemessen kam deshalb
+  // „Werkzeug validate ist abgestürzt, statt zu antworten".
+  //
+  // Jetzt: Physik und Stil stehen im Bericht, die Absichtsschicht nennt den
+  // Grund ihres Ausfalls.
+  // Leeres Array und ganz fehlendes Feld sind für den Agenten dasselbe:
+  // „keine Absicht gesetzt". Beide Wege müssen denselben Bericht liefern.
+  const leer = BASIS();
+  leer.intent = [];
+  const fehlt = BASIS();
+  delete fehlt.intent;
+
+  for (const [name, eingabe] of [['leeres Array', leer], ['Feld fehlt ganz', fehlt]]) {
+    const bericht = baueValidationReport(eingabe);
+    assert.deepEqual(bericht.intent.checks, [], `${name}: ohne Kriterien wird nichts geprüft`);
+    assert.match(bericht.intent.uebersprungen, /keine Absicht gesetzt/,
+      `${name}: der Bericht muss den Ausfall benennen: ${JSON.stringify(bericht.intent)}`);
+    assert.match(bericht.intent.uebersprungen, /set_intent/,
+      `${name}: und sagen, womit die Schicht dazukommt`);
+    assert.ok(bericht.physics, `${name}: die Physikschicht steht im Bericht`);
+    assert.ok(Array.isArray(bericht.images) && bericht.images.length > 0,
+      `${name}: und der Bildverweis fehlt nicht (plan.md 5.3)`);
+  }
 });
 
 test('Negativfall: ein Bericht mit fehlender Schicht wird vom Schema abgelehnt', () => {

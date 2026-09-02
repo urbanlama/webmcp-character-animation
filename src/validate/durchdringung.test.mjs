@@ -24,10 +24,10 @@ import { readFileSync } from 'node:fs';
 import * as THREE from 'three';
 
 import { loadGLB } from '../scene/load.js';
-import { measureRigProfile } from '../rig/measure.js';
 import { erfasseBind, baueSkeleton } from '../solver/kinematik.js';
 import { loeseBewegung } from '../solver/loeser.js';
 import { pruefePhysik } from './physics.js';
+import { xbotProfil } from '../rig/xbot-profil.mjs';
 
 const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
 const FPS = 30;
@@ -37,15 +37,25 @@ const FPS = 30;
 const ARM_HAENGEND  = { arm_l: { lift: -85, twist: 75 } };
 
 async function aufbau() {
-  const puff = readFileSync(XBOT);
-  const gltf = await loadGLB(puff.buffer.slice(puff.byteOffset, puff.byteOffset + puff.byteLength));
-  const profil = measureRigProfile(gltf);
+  // Profil des UNVERAENDERTEN Xbot aus dem geteilten Cache
+  // (src/rig/xbot-profil.mjs): einmal gemessen, prozessuebergreifend
+  // geteilt, jeder Aufrufer bekommt eine eigene Kopie. Veraenderte Modelle
+  // (Overrides, fremde Posen) messen weiter selbst. Die Kopie haelt die
+  // Isolation zwischen den Tests.
+  const profil = await xbotProfil();
+  const gltf = await ladeModell();
   const bind = erfasseBind(gltf.scene);
   return {
     profil,
     skel: baueSkeleton(profil, bind),
     standHoehe: bind.find((b) => b.id === profil.roles.pelvis.bone).pos[1],
   };
+}
+
+
+async function ladeModell() {
+  const puff = readFileSync(XBOT);
+  return loadGLB(puff.buffer.slice(puff.byteOffset, puff.byteOffset + puff.byteLength));
 }
 
 function halte(profil, skel, joints, standHoehe) {
@@ -180,7 +190,7 @@ test('Durchdringung: der normal hängende Arm ist kein Fehler', async () => {
 test('Kalibrierung: die vier Entwicklungsclips bleiben ohne Durchdringungsmeldung', async () => {
   const buffer = readFileSync(XBOT);
   const gltf = await loadGLB(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
-  const profil = measureRigProfile(gltf);
+  const profil = await xbotProfil();
   for (const name of ['idle', 'walk', 'agree', 'sad_pose']) {
     const clip = gltf.animations.find((x) => x.name === name);
     assert.ok(clip, `Entwicklungsclip ${name} fehlt im Xbot`);
