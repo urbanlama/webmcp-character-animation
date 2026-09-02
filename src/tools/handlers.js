@@ -1046,6 +1046,9 @@ export function baueWerkzeuge({ store, ask, ports }) {
         const o = z.overrides[String(a.frame)] || (z.overrides[String(a.frame)] = {});
         o.joints = {};
         o.ease = ease;
+        // Marke: dieses Schlüsselbild ist die ganze Haltung — nicht genannte
+        // Kanäle stehen hier in der Ruhelage (verankereKurven, loeser.js).
+        o.haltung = true;
         if (wurzel) o.root = wurzel; else delete o.root;
         for (const { gelenk, kanal, grad } of geprueft) {
           const g = o.joints[gelenk] || (o.joints[gelenk] = {});
@@ -1873,8 +1876,22 @@ export function baueWerkzeuge({ store, ask, ports }) {
             !(gewaehlt.includes(x.foot) && x.von >= a.von && x.bis <= a.bis));
         });
         const nachher = (store.roh().anchors || []).length;
+        // Entfernt wird nur, was GANZ in der genannten Spanne liegt. Ein Anker,
+        // der darueber hinausragt, bleibt stehen — und der Agent bekam dafuer
+        // dieselbe Antwort wie fuer "es gab nichts zu entfernen": „0 Anker
+        // entfernt". Er hat dann geraten. Ragt einer hinaus, sagt die Antwort
+        // es jetzt mit seiner Spanne und nennt den Weg dahin.
+        const ragtRaus = (store.roh().anchors || []).filter((x) =>
+          gewaehlt.includes(x.foot) && x.von <= a.bis && x.bis >= a.von);
+        const hinweis = ragtRaus.length
+          ? ` ${ragtRaus.length} Anker beruehren deine Spanne, ragen aber darueber hinaus und bleiben `
+            + `deshalb stehen (${ragtRaus.map((x) => `${x.foot} ${x.von}-${x.bis}`).join(', ')}): `
+            + 'remove greift nur, wenn die genannte Spanne den Anker ganz umschliesst. '
+            + 'Willst du einen davon aendern, ruf hold_foot ohne remove mit der neuen Spanne — '
+            + 'sie ersetzt ihn, und der Fuss bleibt an seinem Ort.'
+          : '';
         return text(`${vorher - nachher} Anker fuer ${gewaehlt.join(' und ')} in Frames ${a.von}-${a.bis} entfernt; `
-          + `${nachher} bleiben.`);
+          + `${nachher} bleiben.${hinweis}`);
       }
 
       // Eine Spanne aendern war frueher zwei Aufrufe: remove, dann neu setzen.

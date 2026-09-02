@@ -387,7 +387,10 @@ export const KATALOG = [
       + 'hebt sie an (Sprung, Flug); unter den Boden geht es nie, zu tief Gesetztes wird angehoben '
       + 'und gemeldet. Die Antwort sagt dir mit Zahl, ob sie steht, schwebt oder angehoben wurde. '
       + 'Danach mit look ansehen und mit describe_pose nachmessen. Die '
-      + 'angegebenen Gelenke ERSETZEN die Haltung dieses Frames. Gelenk- und Kanalnamen kommen aus '
+      + 'angegebenen Gelenke ERSETZEN die Haltung dieses Frames, und das Schluesselbild ist die '
+      + 'GANZE Haltung: jeder Kanal, den du hier nicht nennst, steht auf diesem Frame in der '
+      + 'Ruhelage (0). Willst du einen Winkel behalten, nenne ihn wieder. set_joint dagegen ist ein '
+      + 'Nachtrag und laesst die uebrigen Kanaele in Ruhe. Gelenk- und Kanalnamen kommen aus '
       + 'describe_rig und sind je Gelenk verschieden.',
     inputSchema: {
       type: 'object',

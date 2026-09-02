@@ -33,7 +33,7 @@
 
 import { validateRigProfile } from '../contracts/rig-profile.js';
 import { validateTimeline } from '../contracts/timeline.js';
-import { schwerpunkt, sohlenWelt } from './kinematik.js';
+import { schwerpunkt, sohlenWelt, vAdd, vSub, vScale, qRot, qconj } from './kinematik.js';
 import { G, KONTAKT_SCHWELLE_ANTEIL, BODEN_TOLERANZ_ANTEIL } from '../validate/physics.js';
 import { poseZuFk, kopierePose, optimiere, ANKER_TOLERANZ_ANTEIL } from './ik.js';
 import {
@@ -345,7 +345,7 @@ export function verankereKurven(kurven, overrides, basiswert, endeFrame) {
     .map(([key, ov]) => ({ frame: Number(key), ov }))
     .filter((a) => Number.isInteger(a.frame)
       && a.ov && a.ov.joints && Object.keys(a.ov.joints).length > 0)
-    .map((a) => ({ frame: a.frame, ease: EASE[a.ov.ease] ? a.ov.ease : 'smooth' }))
+    .map((a) => ({ frame: a.frame, ease: EASE[a.ov.ease] ? a.ov.ease : 'smooth', haltung: a.ov.haltung === true }))
     .sort((a, b) => a.frame - b.frame);
   const ende = Number.isInteger(endeFrame) && endeFrame >= 0 ? endeFrame : null;
 
@@ -360,6 +360,25 @@ export function verankereKurven(kurven, overrides, basiswert, endeFrame) {
     const basis = typeof roh === 'number' && Number.isFinite(roh) ? roh : 0;
 
     let getan = false;
+
+    // HALTUNGS-SCHLÜSSELBILDER (set_pose, `haltung: true`): ein solches
+    // Schlüsselbild ist die GANZE Haltung. Ein Kanal, den es nicht nennt,
+    // steht dort in der Ruhelage — so wie ein Animator ein Schlüsselbild
+    // liest. Ein Nachtrag per set_joint (ohne die Marke) lässt die übrigen
+    // Kanäle in Ruhe.
+    //
+    // Lauf 10 vom 2. September 2026: toes_l.bend 35 auf Frame 36 gesetzt
+    // (Absprung), in keinem der acht späteren Schlüsselbilder genannt — der
+    // Kanal blieb bis Frame 95 auf 35°, die Zehenspitze stand die ganze
+    // Landung über 6 cm im Boden. Der Agent hatte das nie gewollt und
+    // konnte es nicht sehen.
+    const eigene = new Set(liste.map((s) => s.frame));
+    for (const h of anker) {
+      if (!h.haltung || eigene.has(h.frame)) continue;
+      liste.push({ frame: h.frame, grad: basis, ease: h.ease });
+      getan = true;
+    }
+    liste.sort((a, b) => a.frame - b.frame);
 
     // VORNE: einblenden. Vor seinem ersten Schluesselbild gab es den Kanal
     // nicht, also kommt er aus der Ruhelage. Ohne diese Stuetzstelle springt er
@@ -793,6 +812,28 @@ function wendeOverridesAn(ctx, z, tl, frames, bericht) {
  *
  * @returns {{abstand: number, teil: string}} Abstand und der tiefste Punkt
  */
+/** Die vorderen Sohlenpunkte, umgerechnet auf den Zehenknochen (erstes Kind
+ *  des Fußknochens): [{id, zehe, local}]. Einmal je Skelett aus der Bind-Pose
+ *  gerechnet; ohne Zehenknochen leer. */
+function zehenSohlen(skel) {
+  if (skel._zehenSohlen) return skel._zehenSohlen;
+  const out = [];
+  for (const s of skel.soles ?? []) {
+    if (!/front/.test(s.id)) continue;
+    const fuss = skel.byId.get(s.bone);
+    const zehe = fuss?.kinder?.[0];
+    const z = zehe ? skel.byId.get(zehe) : null;
+    if (!fuss || !z || !fuss.wQuat || !z.wQuat) continue;
+    // Weltpunkt in der Bind-Pose (wie sohlenWelt), dann in den Zehenknochen.
+    const stabF = fuss.weltmassstab ?? 1, stabZ = z.weltmassstab ?? 1;
+    const welt = vAdd(fuss.wPos, vScale(qRot(fuss.wQuat, s.local), stabF));
+    const local = vScale(qRot(qconj(z.wQuat), vSub(welt, z.wPos)), 1 / stabZ);
+    out.push({ id: s.id, zehe, local });
+  }
+  skel._zehenSohlen = out;
+  return out;
+}
+
 export function bodenabstand(skel, kn) {
   const boden = skel.groundY ?? 0;
   const haut = Array.isArray(skel.profile?.skinnedBones) && skel.profile.skinnedBones.length > 0
@@ -802,6 +843,21 @@ export function bodenabstand(skel, kn) {
   let teil = null;
   for (const s of sohlenWelt(skel, kn)) {
     if (s.pos[1] < tiefste) { tiefste = s.pos[1]; teil = s.id; }
+  }
+  // Die vorderen Sohlenpunkte liegen an der Zehenspitze, hängen im Profil
+  // aber starr am Fußknochen: beugt der Agent die Zehen, gehen sie nicht
+  // mit. Lauf 10 vom 2. September 2026: toes_l.bend 35, Zehenspitze 6 cm im
+  // Boden, Sohlen melden 0 cm. Für die Bodenstellung werden die vorderen
+  // Punkte deshalb zusätzlich am ZEHENknochen mitgeführt (Bind-Versatz zum
+  // Zehenknochen, einmal je Skelett gerechnet). Nur hier — Profil, IK und
+  // Physik rechnen weiter mit dem Fußknochen, sonst passen ihre Ableitungen
+  // nicht mehr zusammen (ik.js hat dieselbe Sohlenrechnung).
+  for (const z of zehenSohlen(skel)) {
+    const zb = kn.get(z.zehe);
+    if (!zb) continue;
+    const stab = skel.byId.get(z.zehe)?.weltmassstab ?? 1;
+    const y = vAdd(zb.pos, vScale(qRot(zb.quat, z.local), stab))[1];
+    if (y < tiefste) { tiefste = y; teil = `${z.id}/zehe`; }
   }
   for (const [id, b] of kn) {
     if (haut && !haut.has(id)) continue;
@@ -1161,6 +1217,17 @@ function messeKontakt(skel, kn) {
  *
  * @returns {object[]} die aufgelösten Anker mit Messwerten je Frame, für berichteAnker
  */
+/** Welche Beinkanäle die Anker-IK bewegen darf und was das Zehenziel hält
+ *  ('voll' Ort, 'hoehe' nur Höhe, 'keine' kein Zehenziel). */
+/** Frames, über die die IK-Korrektur eines Ankers vor und hinter seiner
+ *  Spanne ausläuft (4 Frames = 0,13 s bei 30 fps). */
+export const ANKER_AUSBLENDEN = 4;
+
+export const ANKER_KETTE = {
+  kanal: /^(hip_[lr]\.(flex|spread)|knee_[lr]\.bend|ankle_[lr]\.point)$/,
+  zehe: 'voll',
+};
+
 function halteAnker(ctx, tl, frames, bericht) {
   const { skel } = ctx;
   const anker = Array.isArray(tl.anchors) ? tl.anchors : [];
@@ -1196,8 +1263,25 @@ function halteAnker(ctx, tl, frames, bericht) {
     // darf die Vorgabe nicht umschreiben (AGENTS.md, "Der Löser korrigiert,
     // der Validator prüft die Nachbedingung").
     const seite = a.foot.endsWith('_l') ? '_l' : '_r';
+    // IK-Kanäle sind NUR die Beugekette in der Schrittebene plus Spreizen:
+    // hip.flex, hip.spread, knee.bend, ankle.point. Nie hip.twist, nie
+    // ankle.tilt — unabhängig davon, ob der Agent sie gesetzt hat.
+    //
+    // Vorher nahm Durchgang 1 alle Kanäle, die der Agent nie genannt hatte.
+    // In Lauf 10 (2. September 2026) hatte Claude flex, bend und point in
+    // jedem Schlüsselbild gesetzt; übrig blieben spread, twist und tilt —
+    // die IK hielt den Fuß, indem sie das Bein verdrehte und den Knöchel
+    // seitlich kippte: ankle_l.tilt −50° auf Frame 18, +27° auf Frame 19.
+    // Reichte das nicht, sprang Durchgang 2 mit allen Kanälen an, und die
+    // Lösung wechselte von Frame zu Frame zwischen beiden Welten:
+    // ankle_r.point +62° in einem Frame. Nachgerechnet am Lauf: 19 Sprünge
+    // über 15° je Frame mit Ankern, 3 ohne.
+    //
+    // Jetzt ein Durchgang mit fester Kette. Die gesetzten Werte sind die
+    // weiche Vorgabe (haltung); was davon abweicht, steht als "verbogen" im
+    // Bericht. Ein Fuß, der am Boden steht, verlangt genau diese Beugung.
     const beinKanaele = Object.keys(skel.dofs).filter(
-      (k) => /^(hip|knee|ankle)/.test(k) && k.split('.')[0].endsWith(seite));
+      (k) => k.split('.')[0].endsWith(seite) && ANKER_KETTE.kanal.test(k));
     const frei = beinKanaele.filter((k) => !vomAgenten.has(k));
     if (beinKanaele.length === 0) {
       bericht.lucken.push({ meldung: `Anker für „${a.foot}“: 0 Beingelenke gefunden` });
@@ -1288,11 +1372,22 @@ function halteAnker(ctx, tl, frames, bericht) {
       if (kanaele.length === 0) return null;
       const haltung = {};
       for (const k of kanaele) haltung[k] = f.loeserPose.dofs[k] ?? 0;
+      // Das Zehenziel hält nur die HÖHE der Zehe (Fuß bleibt flach). Seine
+      // Lage in der Ebene folgt der Fußstellung aus der Haltung: ohne twist
+      // und tilt in der Kette (siehe beinKanaele) könnte die IK sie ohnehin
+      // nur erzwingen, indem sie den Fußknochen vom Anker wegzieht — gemessen
+      // 1,8 bis 2,2 cm Versatz bei 22 cm Wurzelfahrt.
+      const knVor = ANKER_KETTE.zehe === 'hoehe' ? poseZuFk(skel, f.loeserPose) : null;
       const ziele = {
-        anker: hier.flatMap((x) => [
-          { knochen: x.knochen, soll: [...x.soll], id: x.a.foot },
-          ...(x.sollZehe ? [{ knochen: x.zehe, soll: [...x.sollZehe], id: `${x.a.foot}/zehe` }] : []),
-        ]),
+        anker: hier.flatMap((x) => {
+          if (!x.sollZehe || ANKER_KETTE.zehe === 'keine') return [{ knochen: x.knochen, soll: [...x.soll], id: x.a.foot }];
+          const zeheIst = knVor ? knVor.get(x.zehe)?.pos : null;
+          const sollZ = zeheIst ? [zeheIst[0], x.sollZehe[1], zeheIst[2]] : [...x.sollZehe];
+          return [
+            { knochen: x.knochen, soll: [...x.soll], id: x.a.foot },
+            { knochen: x.zehe, soll: sollZ, id: `${x.a.foot}/zehe` },
+          ];
+        }),
         com: null, boden: [], haltung,
       };
       // Kopie: optimiere() arbeitet auf der übergebenen Pose. Ohne sie
@@ -1310,19 +1405,23 @@ function halteAnker(ctx, tl, frames, bericht) {
     // gilt (ANKER_TOLERANZ_ANTEIL, ik.js). Vorher standen hier 2 % der
     // Körperhöhe (3,6 cm am Xbot) — Durchgang 2 sprang damit erst an, wenn
     // der Fuß fünfmal weiter weg war, als der Bericht „gehalten" nennt.
-    const toleranz = skel.height * ANKER_TOLERANZ_ANTEIL;
-    const eigeneFrei = [...new Set(hier.flatMap((x) => x.frei))];
+    // Ein Durchgang über die feste Kette (siehe beinKanaele oben). Der
+    // frühere zweite Durchgang ist weg: der Wechsel zwischen zwei
+    // Lösungswelten von Frame zu Frame war die Quelle der Knöchelsprünge.
     const eigeneAlle = [...new Set(hier.flatMap((x) => x.beinKanaele))];
-    let treffer = lauf(eigeneFrei);
-    let verbogen = false;
-    if (!treffer || treffer.rest > toleranz) {
-      const voll = lauf(eigeneAlle);
-      if (voll && (!treffer || voll.rest < treffer.rest)) {
-        treffer = voll;
-        verbogen = true;
-      }
-    }
+    const treffer = lauf(eigeneAlle);
     if (!treffer) continue;
+    // Verbogen heißt: ein vom Agenten GESETZTER Kanal der Kette weicht um
+    // mehr als ein Grad von seiner Vorgabe ab.
+    const verbogen = eigeneAlle.some((k) => vomAgenten.has(k)
+      && Math.abs((treffer.erg.pose.dofs[k] ?? 0) - (f.loeserPose.dofs[k] ?? 0)) > 1);
+    // Was die IK je Anker an seiner Kette und an der Wurzelhöhe geändert
+    // hat — Grundlage für das Ein- und Ausblenden an den Spannenrändern.
+    for (const x of hier) {
+      const d = {};
+      for (const k of x.beinKanaele) d[k] = (treffer.erg.pose.dofs[k] ?? 0) - (f.loeserPose.dofs[k] ?? 0);
+      (x.ikDelta ??= new Map()).set(f.frame, { dofs: d, y: treffer.erg.pose.wpos[1] - yVorher });
+    }
     ueberschreibeFrame(ctx, skel, f, treffer.erg.pose, treffer.kn);
     if (wurzelFrei && f.hoehe) {
       // Das Becken ist gesunken (oder gestiegen): die Absenkung im Frame
@@ -1353,6 +1452,45 @@ function halteAnker(ctx, tl, frames, bericht) {
     }
   }
 
+  // ── Ein- und Ausblenden an den Spannenrändern ─────────────────────────
+  //
+  // Innerhalb der Spanne biegt die IK Hüfte, Knie und Knöchel, damit der Fuß
+  // steht; einen Frame dahinter galt wieder die rohe Haltung. Lauf 10 vom
+  // 2. September 2026, nachgerechnet: ankle_r.point +62° auf Frame 16, dem
+  // ersten Frame nach dem Anker 9–15; sechs solcher Sprünge über 15° im
+  // Anlauf. Die Korrektur des Randframes läuft deshalb über ANKER_AUSBLENDEN
+  // Frames vor und hinter der Spanne aus — für die Kette wie für die
+  // Wurzelhöhe (nur, wo der Boden sie bestimmt).
+  //
+  // Je ANKER, nicht je Frame: die Spannen eines Laufs stoßen aneinander
+  // (foot_r 9–15, foot_l 16–22). Der Frame hinter dem rechten Anker ist vom
+  // linken belegt — die rechte Kette läuft trotzdem dort aus; nur die
+  // Wurzelhöhe bleibt, wo ein anderer Anker sie hält.
+  {
+    const byFrame = new Map(frames.map((f) => [f.frame, f]));
+    for (const x of aktive) {
+      if (!x.ikDelta) continue;
+      const eigene = new Set(x.inSpanne.map((f) => f.frame));
+      for (const [nr, delta] of x.ikDelta) {
+        for (const richtung of [1, -1]) {
+          if (eigene.has(nr + richtung)) continue;   // eigene Spanne läuft weiter
+          for (let j = 1; j <= ANKER_AUSBLENDEN; j++) {
+            const ziel = byFrame.get(nr + richtung * j);
+            if (!ziel || !ziel.loeserPose || eigene.has(ziel.frame)) break;
+            const w = 1 - j / (ANKER_AUSBLENDEN + 1);
+            const pose = kopierePose(ziel.loeserPose);
+            for (const [k, v] of Object.entries(delta.dofs)) {
+              const d = skel.dofs[k];
+              const wert = (pose.dofs[k] ?? 0) + v * w;
+              pose.dofs[k] = d ? Math.min(d.grenze[1], Math.max(d.grenze[0], wert)) : wert;
+            }
+            if (!alleFrames.has(ziel.frame) && ziel.hoehe?.quelle === 'boden') pose.wpos[1] += delta.y * w;
+            ueberschreibeFrame(ctx, skel, ziel, pose, poseZuFk(skel, pose));
+          }
+        }
+      }
+    }
+  }
   meldeAnkerabriss(skel, frames, alleFrames, beckenversatz, bericht);
   return aktive;
 }
