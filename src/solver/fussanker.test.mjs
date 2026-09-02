@@ -45,15 +45,26 @@ async function aufbau() {
  * Fuss haelt auf 0,04 mm — und 0,25 m, wo `knee_l.bend` an seiner Grenze 0°
  * steht und der Anker nicht mehr zu halten ist.
  *
+ * `hoehe` ist die gesetzte Wurzelhoehe auf Frame 20 (Frame 0 steht dann auf
+ * der Bind-Hoehe 1,04 m). `null` heisst: keine Hoehe gesetzt, die Figur steht
+ * auf dem Boden, und der Anker darf das Becken sinken lassen (Bodenstand seit
+ * dem Buehnenlauf vom 2. September 2026).
+ *
  * `joints` ist LEER, solange nichts anderes verlangt wird: nur dann ist die
  * Beinkette frei und der Loeser darf zeigen, was er kann. Wer hier Winkel
  * setzt, prueft Durchgang 2 von halteAnker (gesetzte Kanaele geben nach).
+ *
+ * SCHWUNGBEIN: ein gestrecktes freies Bein steht bei sinkendem Becken im
+ * Boden — dann hebt der Loeser die ganze Figur an (Rang 2 vor Rang 3), und
+ * der Anker ist verfehlt. Wer den Anker halten will, hebt das freie Bein.
  */
+const SCHWUNGBEIN = { hip_r: { flex: 25 }, knee_r: { bend: 45 } };
+
 function timeline(anchors, weite = 0.22, hoehe = 1.00, joints = {}) {
   return {
     fps: 30, frameCount: 40, phases: [],
     overrides: {
-      0: { joints, root: { pos: [0, 1.04, 0] }, ease: 'smooth' },
+      0: { joints, root: { pos: [0, hoehe === null ? null : 1.04, 0] }, ease: 'smooth' },
       20: { joints, root: { pos: [0, hoehe, weite] }, ease: 'smooth' },
     },
     anchors,
@@ -102,8 +113,12 @@ test('Fussanker: bei 22 cm Wurzelfahrt bleibt der Fuss stehen, ohne Konflikt', a
   const toleranz = skel.height * ANKER_TOLERANZ_ANTEIL;
   const knochen = skel.rollenKnochen.foot_l;
 
+  // Keine Hoehe gesetzt: das Becken sinkt, so weit das Standbein es braucht
+  // (am Xbot 3,4 cm). Das Schwungbein ist angehoben, sonst stuende es im
+  // Boden und die Figur wuerde angehoben — siehe Negativfall in
+  // bodenstand.test.mjs.
   const { frames, bericht } = loeseBewegung(profil, skel,
-    timeline([{ foot: 'foot_l', von: 0, bis: 20 }]));
+    timeline([{ foot: 'foot_l', von: 0, bis: 20 }], 0.22, null, SCHWUNGBEIN));
 
   const weg = fussweg(frames, knochen, 0, 20);
   assert.ok(weg < toleranz,
@@ -170,7 +185,7 @@ test('Fussanker: gesetzte Beinwinkel geben nach — und das steht mit Zahl im Be
   const toleranz = skel.height * ANKER_TOLERANZ_ANTEIL;
   const { frames, bericht } = loeseBewegung(profil, skel,
     timeline([{ foot: 'foot_l', von: 0, bis: 20 }], 0.22, 1.00,
-      { hip_l: { flex: 0 }, hip_r: { flex: 0 } }));
+      { hip_l: { flex: 0 }, ...SCHWUNGBEIN }));
 
   const weg = fussweg(frames, skel.rollenKnochen.foot_l, 0, 20);
   assert.ok(weg < toleranz,

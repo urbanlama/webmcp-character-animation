@@ -27,15 +27,15 @@
   "joints": {
     "hip_l": {
       "bone": "mixamorigLeftUpLeg",
-      "dof": { "flex": { "axis": "x", "sign": -1, "limit": [-30, 130] } },
-      "signSource": "gemessen",
-      "limitSource": "anatomisch"
+      "dof": { "flex": { "axis": "x", "sign": -1, "limit": [-30, 130],
+        "limitSource": { "min": "gemessen", "max": "anatomisch" } } },
+      "signSource": "gemessen"
     },
     "hip_r": {
       "bone": "mixamorigRightUpLeg",
-      "dof": { "flex": { "axis": "x", "sign": -1, "limit": [-30, 130] } },
-      "signSource": "gemessen",
-      "limitSource": "anatomisch"
+      "dof": { "flex": { "axis": "x", "sign": -1, "limit": [-30, 130],
+        "limitSource": { "min": "anatomisch", "max": "anatomisch" } } },
+      "signSource": "gemessen"
     }
   },
   "segments": [

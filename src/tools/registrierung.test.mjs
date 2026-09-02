@@ -257,7 +257,7 @@ test('Fehlerform, Zahl erhalten: jede Meldung der Stichprobe kommt über documen
       'set_joint', { frame: 10, joint: 'head', angleDeg: 5, channel: 'wobble' }],
     ['Zielpunkt mit zwei statt drei Werten', 'set_target', { frame: 10, part: 'com', pos: [0, 1] }],
     ['Winkel außerhalb des Prüfbereichs', 'probe_joint', { joint: 'hip_l', angleDeg: 200 }],
-    ['unbekannte Ansicht', 'look', { frames: [0, 10], views: ['isometrisch'] }],
+    ['unbekannte Bildweite', 'look', { frame: 0, weite: 'isometrisch' }],
     ['zu wenige Antwortmöglichkeiten', 'ask_human', { question: 'Weiter?', options: ['ja'] }],
     ['Absichtskriterium unbekannter Art', 'set_intent', { checks: [{ kind: 'stimmung' }] }]
   ];

@@ -35,6 +35,7 @@
 
 import * as THREE from 'three';
 import { validateRigProfile } from '../contracts/rig-profile.js';
+import { spurPunkte, spurMarken, SPUR_FARBEN } from './spur.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BENANNTE VERFAHRENSPARAMETER (keine Körpermaße — AGENTS.md, Regel 1)
@@ -147,6 +148,55 @@ export const STRIPE_ZEIT_LIMIT_MS = 2000;
  *  Der Grenztest (src/render/strip.test.mjs, Reihe Zeitgrenze) hält sie scharf. */
 export const STRIPE_ZIEL_MS = 2000;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// EINZELBILD (Werkzeug `look`) — Befunde vom 2.9.2026, Kapitel 1.1 bis 1.4
+//
+// Das Raster aus Frames × Ansichten hat dem Agenten genau das genommen, wofür er
+// hinsieht: Auflösung. Bei 6 Frames × 2 Ansichten war jede Figur fingernagelgroß,
+// die Schrift fiel auf 4 px. Ein Aufruf zeigt deshalb EINEN Frame in EINER
+// Blickrichtung, in voller Größe. Eine Abfolge macht der Agent aus mehreren
+// Aufrufen — die Kamera hängt an Weite und Körperhöhe, nicht am Frame, also
+// bleiben die Bilder untereinander vergleichbar.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Größe des Einzelbildes in Pixeln. Mehr als das Vierfache der Rasterpanel-
+ *  fläche (300 × 380) und mit rund 150 KB weit unter dem Antwortbudget — der
+ *  Grund, warum die Budgettreppe hier nie greifen muss. Die Höhe trägt die
+ *  stehende Figur, die Breite ihre Spannweite mit Luft. */
+export const BILD_BREITE_PX = 640;
+export const BILD_HOEHE_PX = 800;
+
+/** Wie viel das Bild in der Höhe zeigt, als Anteil der GEMESSENEN Körperhöhe.
+ *  Drei Stufen statt einer Zoomzahl: der Agent soll wählen, nicht rechnen.
+ *    ganz — die Figur ganz im Bild, mit Luft für erhobene Arme (wie SICHT_HOEHE_FAKTOR)
+ *    halb — Oberkörper oder ein Bein füllen das Bild
+ *    nah  — ein Gelenk mit seinen Nachbarn, für Durchdringung und Überbeugung */
+export const WEITE_ANTEILE = { verlauf: 2.4, ganz: 1.25, halb: 0.6, nah: 0.3 };
+/** Die Weiten, die `look` anbietet. `verlauf` steht nicht darin: es ist die
+ *  Sicht der Bewegungsspur, die den ganzen Bahnenbereich zeigt, und waere fuer
+ *  einen einzelnen Moment nur weit weg. */
+export const WEITEN = Object.keys(WEITE_ANTEILE).filter((w) => w !== 'verlauf');
+
+/** Blickrichtung, wenn der Aufrufer keine nennt: leicht schräg von vorn, leicht
+ *  von oben. Frontal deckt eine Seite die andere; schräg zeigt beide Beine und
+ *  beide Arme getrennt. Entspricht der alten Ansicht `quarter`, nur feiner. */
+export const RICHTUNG_STANDARD_GRAD = 30;
+export const HOEHE_STANDARD_GRAD = 10;
+
+/** Ab dieser Blickhöhe gilt das Bild als Draufsicht: die Bildhochachse zeigt dann
+ *  nach VORN statt nach oben, sonst dreht sich die Figur bei 90° unbestimmt (der
+ *  Blick liegt dort parallel zur Aufrichtung). Dieselbe Konvention wie die alte
+ *  Ansicht `top`: „von oben; vorn zeigt nach oben im Bild". */
+export const DRAUFSICHT_AB_GRAD = 60;
+
+/** Zeilenabstand des Fußblocks als Vielfaches der Schriftgröße, und sein Abstand
+ *  zur Panelkante in Pixeln. 1,4 ist der übliche Zeilenabstand für Fließtext;
+ *  darunter berühren sich Ober- und Unterlängen. Vorher standen die Etiketten auf
+ *  fest getippten Abständen (6, 17, 28, 39 px) — bei größerer Schrift druckten
+ *  sie übereinander (Befund 1.3). */
+export const FUSS_ZEILE_FAKTOR = 1.4;
+export const FUSS_RAND_PX = 6;
+
 /** Halbe Breite eines Maßstabsetiketts in Pixeln. Begrenzt, wie nah eine Zahl an
  *  den Panelrand rücken darf, ohne abgeschnitten zu werden: das längste Etikett
  *  ist „0,00 m" mit 6 Zeichen, ein Zeichen dieser Monospace-Größe ist höchstens
@@ -161,7 +211,9 @@ export const PFLICHT_ANNOTATIONEN = [
 
 /** Reihenfolge, in der die Gruppen übereinander gezeichnet werden. */
 const EBENEN_REIHENFOLGE = [
-  'bodengitter', 'stuetzflaeche', 'kontaktpunkte', 'achsenkreuz', 'schwerpunkt',
+  // Die Spur liegt direkt ueber dem Boden und UNTER allem anderen: sie ist der
+  // Hintergrund, vor dem die Figur des Referenzframes steht.
+  'bodengitter', 'spur', 'stuetzflaeche', 'kontaktpunkte', 'achsenkreuz', 'schwerpunkt',
 ];
 
 /** Harte, ungemischte Farbtöne: der Agent unterscheidet Gruppen nach Farbton. */
@@ -376,8 +428,76 @@ function kamerabasis(system, ansicht) {
   return { blick, X, Y, sag: r.sag };
 }
 
+/**
+ * Kamerabasis aus zwei Winkeln, statt aus einem der vier Ansichtsnamen.
+ *
+ * Der Agent hatte bis zum 2.9.2026 keine Kamera: vier feste Ansichten, kein
+ * eigener Winkel (Befund 1.4). Zwei Gradzahlen decken jeden Blick ab und sind
+ * für ihn nativer als ein Vokabular, das er sich merken muss:
+ *
+ *   richtungGrad   0 = von vorn, 90 = von links, 180 = von hinten, 270 = von rechts
+ *   hoeheGrad      0 = Augenhöhe, 90 = senkrecht von oben, negativ = von unten
+ *
+ * Die alten Namen bleiben als `ANSICHTEN` bestehen — `validate` rendert weiter
+ * seinen Streifen aus `front` und `side`.
+ *
+ * @returns {{blick:number[], X:number[], Y:number[], sag:string, richtungGrad:number, hoeheGrad:number}}
+ */
+export function kamerabasisAusWinkel(system, richtungGrad, hoeheGrad) {
+  if (!Number.isFinite(richtungGrad) || !Number.isFinite(hoeheGrad)) {
+    fehler(`Blickwinkel nicht rechenbar: richtung ${JSON.stringify(richtungGrad)}, `
+      + `hoehe ${JSON.stringify(hoeheGrad)} — erwartet zwei Zahlen in Grad`);
+  }
+  if (hoeheGrad < -HOEHE_GRENZE_GRAD || hoeheGrad > HOEHE_GRENZE_GRAD) {
+    fehler(`hoehe ${zahl(hoeheGrad, 1)}°: erlaubt sind -${HOEHE_GRENZE_GRAD}° bis `
+      + `${HOEHE_GRENZE_GRAD}° (0° Augenhöhe, 90° senkrecht von oben)`);
+  }
+  const r = richtungGrad * Math.PI / 180;
+  const h = hoeheGrad * Math.PI / 180;
+  // Wo das Auge steht, vom Ziel aus gesehen: um `richtung` um die Aufrichtung
+  // gedreht, dann um `hoehe` angehoben. Der Blick zeigt von dort zum Ziel.
+  const auge = add(
+    skalar(add(skalar(system.F, Math.cos(r)), skalar(system.L, Math.sin(r))), Math.cos(h)),
+    skalar(system.U, Math.sin(h)));
+  const blick = norm(neg(auge));
+  // Bei senkrechtem Blick von oben ist die Aufrichtung als Bildhochachse
+  // unbrauchbar (sie liegt parallel zum Blick). Dann zeigt vorn nach oben.
+  const draufsicht = Math.abs(hoeheGrad) >= DRAUFSICHT_AB_GRAD;
+  const auf = draufsicht ? system.F : system.U;
+  const X = norm(kreuz(blick, auf));
+  const Y = kreuz(X, blick);
+  return {
+    blick, X, Y, richtungGrad, hoeheGrad,
+    sag: sagAusWinkel(richtungGrad, hoeheGrad, draufsicht),
+  };
+}
+
+/** Erlaubter Bereich der Blickhöhe. 90° ist die Draufsicht; darüber hinaus wäre
+ *  der Blick wieder von der anderen Seite — dafür gibt es `richtung`. */
+export const HOEHE_GRENZE_GRAD = 90;
+
+/** Sagt in Worten, wovon die Kamera blickt — der Agent liest das in der Antwort
+ *  und weiß, welche Körperseite im Bild links liegt. */
+function sagAusWinkel(richtungGrad, hoeheGrad, draufsicht) {
+  const r = ((richtungGrad % 360) + 360) % 360;
+  const seite = r < 22.5 || r >= 337.5 ? 'von vorn'
+    : r < 67.5 ? 'schräg von vorn links'
+      : r < 112.5 ? 'von links auf die linke Körperseite'
+        : r < 157.5 ? 'schräg von hinten links'
+          : r < 202.5 ? 'von hinten'
+            : r < 247.5 ? 'schräg von hinten rechts'
+              : r < 292.5 ? 'von rechts auf die rechte Körperseite'
+                : 'schräg von vorn rechts';
+  const hoch = draufsicht ? (hoeheGrad > 0 ? ', steil von oben' : ', steil von unten')
+    : hoeheGrad > 5 ? ', leicht von oben'
+      : hoeheGrad < -5 ? ', leicht von unten' : ', auf Augenhöhe';
+  const wo = draufsicht && hoeheGrad > 0 ? '; vorn zeigt nach oben im Bild' : '';
+  return `${seite}${hoch} (richtung ${zahl(richtungGrad, 0)}°, hoehe `
+    + `${zahl(hoeheGrad, 0)}°)${wo}`;
+}
+
 /** Orthografische Projektion eines Weltpunkts ins Panel. */
-function projiziere(pan, p) {
+export function projiziere(pan, p) {
   const r = dot(sub(p, pan.ziel), pan.X);
   const h = dot(sub(p, pan.ziel), pan.Y);
   return [
@@ -417,6 +537,50 @@ function pruefeProfil(profile) {
     fehler('RigProfile enthält 0 Segmente: Schwerpunkt und Körperdicke sind dann nicht messbar');
   }
 }
+
+/**
+ * Prüft den Kameraauftrag eines Einzelbildes und füllt auf, was der Aufrufer
+ * nicht genannt hat. Vier Angaben, alle mit Voreinstellung — ein Aufruf ohne
+ * jede Angabe muss ein brauchbares Bild ergeben, sonst ist die Kamera eine
+ * Hürde statt eines Werkzeugs.
+ *
+ * Beide Schreibweisen werden angenommen: `richtung_grad` kommt so aus dem
+ * Werkzeugschema, `richtungGrad` aus dem Code.
+ */
+function pruefeKamera(kamera) {
+  if (typeof kamera !== 'object' || Array.isArray(kamera)) {
+    fehler(`kamera = ${JSON.stringify(kamera)}: erwartet ein Objekt mit richtung_grad, `
+      + `hoehe_grad, ziel und weite — alle vier sind freiwillig`);
+  }
+  const nimm = (a, b, standard) => {
+    const v = kamera[a] !== undefined ? kamera[a] : kamera[b];
+    return v === undefined || v === null ? standard : v;
+  };
+  const richtungGrad = nimm('richtungGrad', 'richtung_grad', RICHTUNG_STANDARD_GRAD);
+  const hoeheGrad = nimm('hoeheGrad', 'hoehe_grad', HOEHE_STANDARD_GRAD);
+  const ziel = nimm('ziel', 'ziel', ZIEL_FIGUR);
+  const weite = nimm('weite', 'weite', 'ganz');
+
+  for (const [name, wert] of [['richtung_grad', richtungGrad], ['hoehe_grad', hoeheGrad]]) {
+    if (!Number.isFinite(wert)) {
+      fehler(`${name} = ${JSON.stringify(wert)}: erwartet eine Zahl in Grad `
+        + `(richtung 0 = von vorn, 90 = von links; hoehe 0 = Augenhöhe, 90 = von oben)`);
+    }
+  }
+  if (typeof ziel !== 'string' || ziel === '') {
+    fehler(`ziel = ${JSON.stringify(ziel)}: erwartet einen Rollennamen aus describe_rig `
+      + `oder '${ZIEL_FIGUR}'`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(WEITE_ANTEILE, weite)) {
+    fehler(`weite '${weite}' ist unbekannt: erlaubt sind ${WEITEN.length} Stück — `
+      + WEITEN.map((w) => `${w} (${WEITE_ANTEILE[w]} × Körperhöhe)`).join(', '));
+  }
+  return { richtungGrad, hoeheGrad, ziel, weite };
+}
+
+/** Der Ansichtsname eines Einzelbildes. Es hat keine der vier festen Ansichten —
+ *  seine Blickrichtung steht als Zahlenpaar im Plan unter `kamera`. */
+export const EINZELBILD_ANSICHT = 'blick';
 
 function pruefeViews(views) {
   if (!Array.isArray(views) || views.length === 0) {
@@ -656,6 +820,69 @@ function bewegungsBereich(frames, system) {
 }
 
 /**
+ * Worauf die Einzelbildkamera zielt: der Schwerpunkt der Figur, oder ein
+ * benanntes Körperteil aus den gemessenen Rollen (describe_rig).
+ *
+ * GEMESSEN (AGENTS.md, Regel 1): der Punkt kommt aus den Weltpositionen des
+ * Frames, über die Rollenzuordnung des RigProfile — kein getippter Ort.
+ *
+ * @param {object} profile RigProfile
+ * @param {object} frame   geprüfter Frame (aus pruefeFrames)
+ * @param {string} ziel    'figur' oder ein Rollenname
+ * @returns {number[]} Weltpunkt
+ */
+function zielPunkt(profile, frame, ziel) {
+  if (ziel === ZIEL_FIGUR) return frame.com;
+
+  // Zwei Namensmengen führen zum Ziel, und beide gehören dazu:
+  //   joints — die Gelenknamen, mit denen der Agent die Pose SETZT (hip_l,
+  //            knee_l, arm_l). Das ist der Normalfall: er will das ansehen,
+  //            was er gerade verstellt hat.
+  //   roles  — die erkannten Rollen. Am Xbot sind das nur drei (pelvis,
+  //            foot_l, foot_r); ein Ziel, das nur sie kennt, könnte „zeig mir
+  //            das linke Knie" nicht beantworten (gemessen am 2.9.2026).
+  const gelenke = profile.joints && typeof profile.joints === 'object' ? profile.joints : {};
+  const rollen = profile.roles && typeof profile.roles === 'object' ? profile.roles : {};
+  const eintrag = Object.prototype.hasOwnProperty.call(gelenke, ziel) ? gelenke[ziel]
+    : (Object.prototype.hasOwnProperty.call(rollen, ziel) ? rollen[ziel] : null);
+
+  if (eintrag === null) {
+    const gNamen = Object.keys(gelenke);
+    const rNamen = Object.keys(rollen);
+    fehler(`ziel '${ziel}' ist an diesem Modell weder Gelenk noch Rolle. `
+      + `${gNamen.length} Gelenke: ${gNamen.join(', ')}. `
+      + `${rNamen.length} Rollen: ${rNamen.join(', ')}. `
+      + `Oder '${ZIEL_FIGUR}' für die ganze Figur. Beide Listen stehen in describe_rig.`);
+  }
+  const bone = eintrag.bone;
+  const p = frame.wo[bone];
+  if (!istPunkt(p)) {
+    fehler(`ziel '${ziel}' zeigt auf den Knochen '${bone}', der in Frame ${frame.index} keine `
+      + `Weltposition hat (${Object.keys(frame.wo).length} Knochen im Frame)`);
+  }
+  return p;
+}
+
+/** Der Zielname für „die ganze Figur" — dann zielt die Kamera auf den Schwerpunkt. */
+export const ZIEL_FIGUR = 'figur';
+
+/**
+ * Die Kamera eines Einzelbildes: Maßstab aus Weite und gemessener Körperhöhe,
+ * Ziel aus `ziel`. Bewusst NICHT über den Bewegungsbereich gerahmt wie
+ * panelKamera() — sonst zeigte jeder Aufruf einen anderen Maßstab und zwei
+ * Bilder derselben Bewegung wären nicht vergleichbar (Befund 1.4).
+ */
+function einzelbildKamera(profile, system, frame, kamera, panelHoehe) {
+  const sichtHoeheMeter = WEITE_ANTEILE[kamera.weite] * system.height;
+  return {
+    ziel: zielPunkt(profile, frame, kamera.ziel),
+    pxProMeter: panelHoehe / sichtHoeheMeter,
+    sichtHoeheMeter,
+  };
+}
+
+
+/**
  * Ein orthografisches Framing über ALLE übergebenen Punktfelder, in der
  * Bildebene der Ansicht (X = rechts ins Bild, Y = hoch ins Bild): je Richtung
  * der größte Bedarf der Felder plus Luft, der Maßstab danach so, dass der
@@ -717,6 +944,65 @@ function panelKamera(felder, basis, panelBreite, panelHoehe, luftMeter) {
 
 const linie = (g, a, b, farbe, breite, extra) => g.push({ art: 'linie', a, b, farbe, breite, ...extra });
 const punkt = (g, p, r, fuellung, extra) => g.push({ art: 'punkt', x: p[0], y: p[1], r, fuellung, ...extra });
+/**
+ * Ein Etikett am unteren Panelrand: Stützfläche, Kontakt, Schwerpunkt, Maßstab.
+ *
+ * Es bekommt hier NOCH KEINE Y-Position — die vergibt setzeFussStapel() am Ende,
+ * wenn feststeht, wie viele Zeilen zusammengekommen sind und wie groß die Schrift
+ * am Ende ist. Vorher standen diese Etiketten auf fest getippten Abständen
+ * (6, 17, 28, 39 px über der Kante); mit größerer Schrift druckten sie
+ * übereinander, und jede neue Zeile musste sich eine freie Zahl suchen
+ * (Befund 1.3 vom 2.9.2026).
+ */
+function fussZeile(pan, g, s, farbe, groesse) {
+  // Sparsam (Pruefbericht): die grafischen Marker bleiben — Schwerpunktkreuz,
+  // Sohlenpunkte, Stuetzflaeche geben eine Ebene, die Zahlen nicht geben. Ihre
+  // BESCHRIFTUNGEN entfallen: dieselben Werte stehen im Berichtstext, und im
+  // Bild landen sie quer ueber Rumpf und Beinen.
+  if (pan.sparsam) return null;
+  const p = {
+    art: 'text', x: pan.x + pan.breite - FUSS_RAND_PX, y: 0, text: s,
+    farbe, groesse, anker: 'rechts', kante: true,
+  };
+  g.push(p);
+  // Die Gruppe wird mitgefuehrt: setzeFussStapel legt spaeter einen dunklen
+  // Balken DIREKT VOR jede Zeile in dieselbe Gruppe. Ohne ihn laufen die
+  // Weltbeschriftungen des Bodengitters durch den Text — sie stehen an
+  // Weltpositionen, der Fussblock an der Panelkante, und bei kleiner Skala
+  // treffen sich beide (gemessen am Pruefbericht mit skala 0,72).
+  pan.fussZeilen.push({ p, g });
+  return p;
+}
+
+/** Vergibt die Y-Positionen des Fußblocks, von der Unterkante nach oben. Läuft
+ *  NACH der Schriftskalierung, damit der Zeilenabstand zur gerenderten Größe passt. */
+function setzeFussStapel(pan) {
+  let y = pan.y + pan.hoehe - FUSS_RAND_PX;
+  for (const { p, g } of pan.fussZeilen) {
+    p.y = y;
+    // Dunkler Balken DIREKT VOR die Zeile, in dieselbe Gruppe. Ohne ihn laufen
+    // die Weltbeschriftungen des Bodenmaßstabs durch die Zahlen — sie stehen an
+    // Weltpositionen, der Fußblock an der Panelkante, und bei kleiner Skala
+    // treffen sich beide. Die Zeile bleibt in IHRER Gruppe: der Abnahmetest
+    // „jede Pflichtgruppe besetzt" prüft sie dort.
+    const breite = Math.ceil(p.text.length * p.groesse * 0.58) + 6;
+    const hoch = Math.ceil(p.groesse * 1.25);
+    const idx = g.indexOf(p);
+    if (idx >= 0) {
+      g.splice(idx, 0, {
+        art: 'polygon',
+        punkte: [
+          [p.x - breite, y - hoch + 3], [p.x + 3, y - hoch + 3],
+          [p.x + 3, y + 4], [p.x - breite, y + 4],
+        ],
+        fuellung: FARBE.panel, rand: null, breite: 0, alpha: 0.82,
+      });
+    }
+    y -= Math.round(p.groesse * FUSS_ZEILE_FAKTOR);
+  }
+  delete pan.fussZeilen;
+}
+
 const text = (g, p, s, farbe, groesse, anker = 'links') =>
   g.push({ art: 'text', x: p[0], y: p[1], text: s, farbe, groesse, anker });
 
@@ -768,36 +1054,63 @@ function gitterWeltLinien(system, anker, schritt, reichweite) {
 function zeichneMassstab(pan, system, anker, schritt) {
   const g = pan.annotationen.bodengitter;
   const bodenPy = projiziere(pan, anker)[1];
-  const xR = pan.x + pan.breite - 12;
+  const x0 = pan.x + 12;
   const stufen = Math.max(1, Math.floor(pan.breite * 0.32 / (schritt * pan.pxProMeter) + 1e-9));
 
-  for (let k = 0; k <= stufen; k++) {
-    const x = xR - k * schritt * pan.pxProMeter;
+  // Die Leiste läuft vom Höhenlineal nach RECHTS, nicht von der rechten Kante
+  // nach links. Grund: unten rechts steht der Fußblock (Stützfläche, Kontakt,
+  // Schwerpunkt). Steht die Figur am Boden, liegt die Bodenlinie dort ebenfalls
+  // unten — und beide stritten um dieselbe Ecke, sichtbar als übereinander
+  // gedruckte Zeilen in tmp-look-1frame_2ansichten.png (Befund 1.3). Zwei
+  // Ecken, zwei Blöcke: Maßstab links, Zahlen zur Pose rechts.
+  // Fährt die Kamera nah heran, kann die Bodenebene ganz außerhalb des Bildes
+  // liegen. Dann hat eine Leiste auf der Bodenlinie keinen Ort — der Maßstab
+  // steht in dem Fall allein im Fußblock („1 Kasten = x m") und an der
+  // Höhenleiste, die weiter unten über den SICHTBAREN Bereich läuft.
+  const bodenImBild = bodenPy > pan.y + 26 && bodenPy < pan.y + pan.hoehe;
+
+  for (let k = 0; bodenImBild && k <= stufen; k++) {
+    const x = x0 + k * schritt * pan.pxProMeter;
     linie(g, [x, bodenPy], [x, bodenPy - (k % 2 === 0 ? 8 : 4)], FARBE.boden, 1);
     if (k % 2 === 0) {
-      // mittig, es sei denn, das Etikett würde über die rechte Panelkante laufen:
+      // mittig, es sei denn, das Etikett würde über die linke Panelkante laufen:
       // dort wird die Zahl abgeschnitten und der Maßstab ist unlesbar. Geprüft
       // wird mit ETIKETT_HALB_PX, weil die Ebene hier noch keine Font-Metriken
       // kennt — gemessen wird der Überlauf im Abnahmetest mit measureText().
-      const laeuftUeber = x + ETIKETT_HALB_PX > pan.x + pan.breite - 2;
+      const laeuftUeber = x - ETIKETT_HALB_PX < pan.x + 2;
       text(g, [x, bodenPy - 11], zahl(k * schritt, 2) + ' m', FARBE.textSchwach, 9,
-        laeuftUeber ? 'rechts' : 'mitte');
+        laeuftUeber ? 'links' : 'mitte');
     }
   }
-  linie(g, [xR, bodenPy], [xR - stufen * schritt * pan.pxProMeter, bodenPy], FARBE.boden, 1.5);
-  text(g, [xR, bodenPy - 23], `1 Kasten = ${zahl(schritt, 2)} m`, FARBE.text, 9, 'rechts');
-
-  const x0 = pan.x + 12;
-  for (let k = 1; k * schritt * pan.pxProMeter < bodenPy - (pan.y + 26); k++) {
-    const y = bodenPy - k * schritt * pan.pxProMeter;
-    linie(g, [x0, y], [x0 + (k % 2 === 0 ? 9 : 5), y], FARBE.boden, 1);
-    if (k % 2 === 0) text(g, [x0 + 12, y + 3], zahl(k * schritt, 2) + ' m', FARBE.textSchwach, 9);
+  if (bodenImBild) {
+    linie(g, [x0, bodenPy], [x0 + stufen * schritt * pan.pxProMeter, bodenPy], FARBE.boden, 1.5);
   }
-  linie(g, [x0, bodenPy], [x0, pan.y + 26], FARBE.boden, 1);
+  fussZeile(pan, g, `1 Kasten = ${zahl(schritt, 2)} m`, FARBE.text, 9);
+
+  // Höhenleiste am linken Rand: Marken über der Bodenebene, in Metern. Sie läuft
+  // über den SICHTBAREN Bereich, nicht ab dem Boden — sonst hätte ein Bild, das
+  // an ein Gelenk herangefahren ist, keine einzige Höhenmarke.
+  const obenPy = pan.y + 26;
+  const untenPy = pan.y + pan.hoehe;
+  const vonK = Math.max(1, Math.ceil((bodenPy - untenPy) / (schritt * pan.pxProMeter)));
+  const bisK = Math.floor((bodenPy - obenPy) / (schritt * pan.pxProMeter));
+  // Bei vielen Marken trägt jede zweite ihre Zahl, sonst wird die Leiste
+  // unleserlich. Sind nur wenige sichtbar — nah herangefahren —, bekommt jede
+  // eine: sonst stünde im Bild womöglich keine einzige Höhe.
+  const jede = bisK - vonK < HOEHENMARKEN_DICHT;
+  for (let k = vonK; k <= bisK; k++) {
+    const y = bodenPy - k * schritt * pan.pxProMeter;
+    const beschriftet = jede || k % 2 === 0;
+    linie(g, [x0, y], [x0 + (beschriftet ? 9 : 5), y], FARBE.boden, 1);
+    if (beschriftet) text(g, [x0 + 12, y + 3], zahl(k * schritt, 2) + ' m', FARBE.textSchwach, 9);
+  }
+  // Die senkrechte Leiste von der untersten sichtbaren Marke bis nach oben.
+  linie(g, [x0, Math.min(bodenPy, untenPy)], [x0, obenPy], FARBE.boden, 1);
 }
 
 /** Achsenkreuz im Bind-Anker: x = links, y = hoch, z = vorn; Richtungen gemessen. */
 function zeichneAchsenkreuz(pan, system, anker) {
+  if (pan.kompass) return zeichneKompass(pan, system);
   const g = pan.annotationen.achsenkreuz;
   const len = system.height * ACHSEN_LENTEIL;
   const ursprung = projiziere(pan, anker);
@@ -824,6 +1137,65 @@ function zeichneAchsenkreuz(pan, system, anker) {
     `Ursprung Bind-Pose, Boden ${zahl(system.groundY, 2)} m`, FARBE.textSchwach, 9,
     ursprung[0] + ETIKETT_HALB_PX * 4 > etikettKante ? 'rechts' : 'mitte');
 }
+
+/**
+ * Achsenkreuz als KOMPASS in der Bildecke — für das Einzelbild.
+ *
+ * Am Bind-Anker festgemacht taugt das Kreuz nur, solange der Anker im Bild
+ * liegt. Sobald die Kamera an ein Gelenk heranfährt, steht er meterweit
+ * daneben: gemessen lief das Etikett „z vorn" 155 px über die Bildkante. Der
+ * Kompass hängt deshalb an der Bildecke, nicht an der Welt. Er zeigt dasselbe —
+ * wohin x, y und z im Bild zeigen — und ist bei jedem Blickwinkel sichtbar.
+ */
+function zeichneKompass(pan, system) {
+  const g = pan.annotationen.achsenkreuz;
+  const len = Math.round(Math.min(pan.breite, pan.hoehe) * KOMPASS_LENTEIL);
+  // Der Maßstab am Boden schreibt seine Meterzahlen ebenfalls in die untere
+  // linke Ecke. Der Kompass rückt um eine Zeilenhöhe nach oben, sonst laufen
+  // „z vorn" und „0,00 m" ineinander (gemessen am Prüfbericht mit skala 0,72).
+  const ursprung = [pan.x + KOMPASS_RAND_PX + len,
+    pan.y + pan.hoehe - KOMPASS_RAND_PX - len - KOMPASS_UEBER_MASSSTAB_PX];
+  const achsen = [
+    { richtung: system.L, beschriftung: 'x links', farbe: FARBE.achseX },
+    { richtung: system.U, beschriftung: 'y hoch', farbe: FARBE.achseY },
+    { richtung: system.F, beschriftung: 'z vorn', farbe: FARBE.achseZ },
+  ];
+  for (const a of achsen) {
+    // Nur die Richtung wird projiziert, nicht ein Weltpunkt: die Achse zeigt,
+    // wie die Kamera steht, und ist im Bild immer gleich lang.
+    const bild = [dot(a.richtung, pan.X), dot(a.richtung, pan.Y)];
+    const ende = [ursprung[0] + bild[0] * len, ursprung[1] - bild[1] * len];
+    linie(g, ursprung, ende, a.farbe, 2);
+    punkt(g, ende, 2.5, a.farbe);
+    // Zeigt die Achse fast genau auf den Betrachter zu, ist ihre Bildlänge
+    // nahe null — das Etikett stünde dann auf dem Ursprung. Es rückt dann nach
+    // außen, in die Richtung, in die die Achse noch zeigt.
+    const bildLaenge = Math.hypot(bild[0], bild[1]);
+    const versatz = bildLaenge < KOMPASS_MIN_ANTEIL ? KOMPASS_RAND_PX : 4;
+    text(g, [ende[0] + versatz, ende[1] - 4], a.beschriftung, a.farbe, 9);
+  }
+  punkt(g, ursprung, 2, FARBE.textSchwach);
+}
+
+/** Ab so vielen sichtbaren Höhenmarken trägt nur noch jede zweite ihre Zahl.
+ *  Darunter wird jede beschriftet — bei einer Nahaufnahme sind nur zwei oder
+ *  drei im Bild, und ohne Zahl ist eine Marke wertlos. */
+export const HOEHENMARKEN_DICHT = 4;
+
+/** Länge einer Kompassachse als Anteil der kürzeren Bildseite, und sein Abstand
+ *  zur Bildecke. 0,07 von 640 px sind 45 px — groß genug, um die Richtung
+ *  abzulesen, klein genug, um die Figur nicht zu verdecken. */
+export const KOMPASS_LENTEIL = 0.07;
+export const KOMPASS_RAND_PX = 14;
+
+/** Wie weit der Kompass über den Bodenmaßstab steigt. Eine Zeilenhöhe der
+ *  9-px-Beschriftung plus Rand: darunter stehen die Meterzahlen der
+ *  Maßstabsleiste, und beide teilten sich sonst dieselbe Ecke. */
+export const KOMPASS_UEBER_MASSSTAB_PX = 16;
+
+/** Unter dieser Bildlänge (Anteil der vollen Achsenlänge) zeigt eine Achse fast
+ *  auf den Betrachter zu; ihr Etikett bekommt dann mehr Abstand. */
+export const KOMPASS_MIN_ANTEIL = 0.3;
 
 /** Der Körper: mit Szene die dünnen Knochenlinien über dem Mesh, ohne Szene die
  *  gemessenen Segmentradien als Kapseln. Gehört nicht zu den fünf Pflichtgruppen. */
@@ -863,8 +1235,8 @@ function zeichneSchwerpunkt(pan, system, frame) {
   const hoeheMeter = frame.com[1] - system.groundY;
   const anteil = 100 * hoeheMeter / system.height;
   // Die Zahl steht unten rechts im Fußblock; direkt am Marker läge sie auf dem Körper.
-  text(g, [pan.x + pan.breite - 6, pan.y + pan.hoehe - 17],
-    `SP ${zahl(hoeheMeter, 2)} m (${zahl(anteil, 0)} % Höhe)`, FARBE.schwerpunkt, 9, 'rechts');
+  fussZeile(pan, g, `SP ${zahl(hoeheMeter, 2)} m (${zahl(anteil, 0)} % Höhe)`,
+    FARBE.schwerpunkt, 9);
 }
 
 /** Stützfläche: konvexe Hülle der Sohlenpunkte mit Bodenkontakt, in der Bodenebene. */
@@ -873,9 +1245,8 @@ function zeichneStuetzflaeche(pan, system, frame) {
   const amBoden = frame.kontakt;
 
   if (amBoden.length === 0) {
-    text(g, [pan.x + pan.breite - 6, pan.y + pan.hoehe - 6],
-      `kein Bodenkontakt ${amBoden.length}/${frame.sohlen.length} Sohlen`,
-      FARBE.stuetzflaeche, 10, 'rechts');
+    fussZeile(pan, g, `kein Bodenkontakt ${amBoden.length}/${frame.sohlen.length} Sohlen`,
+      FARBE.stuetzflaeche, 10);
     return;
   }
 
@@ -900,10 +1271,56 @@ function zeichneStuetzflaeche(pan, system, frame) {
   // Die Eckenzahl der Hülle bleibt hier weg: sie ist die für den Agenten
   // unverfänglichste der vier Angaben und dieses Etikett muss in das schmalste
   // Panel passen, das die Budgettreppe liefert (12 Frames × 4 Ansichten).
-  text(g, [pan.x + pan.breite - 6, pan.y + pan.hoehe - 6],
-    `Stützfläche ${amBoden.length}/${frame.sohlen.length} Sohlen, `
+  fussZeile(pan, g, `Stützfläche ${amBoden.length}/${frame.sohlen.length} Sohlen, `
     + `${zahl(breite, 2)}×${zahl(tiefe, 2)} m, ${zahl(polygonFlaeche(huelle), 3)} m²`,
-    FARBE.stuetzflaeche, 9, 'rechts');
+    FARBE.stuetzflaeche, 9);
+}
+
+/**
+ * Bewegungsspur: die Bahn der Endeffektoren ueber die ganze Timeline.
+ *
+ * Gezeichnet wird UNTER dem Koerper, damit die Figur des Referenzframes lesbar
+ * bleibt und die Bahnen sie nicht durchkreuzen. Die Linie traegt die Form, die
+ * Punkte das Timing: je Frame einer, eng heisst langsam, weit heisst schnell.
+ */
+function zeichneSpur(pan, profile, frames) {
+  const g = pan.annotationen.spur;
+  const rollen = {};
+  for (const [name, r] of Object.entries(profile.roles ?? {})) {
+    if (r && typeof r.bone === 'string') rollen[name] = r.bone;
+  }
+  // Fallback auf die Gelenktabelle: `roles` fuehrt am Xbot nur drei Namen,
+  // die Haende haengen an den Gelenken (docs/buehne-befunde, Kapitel 2.1).
+  for (const [name, j] of Object.entries(profile.joints ?? {})) {
+    if (!rollen[name] && j && typeof j.bone === 'string') rollen[name] = j.bone;
+  }
+  // Das Rig fuehrt kein Handgelenk (docs/buehne-befunde, Punkt 2.1) — die
+  // Haende haengen als SEGMENT dran. Ohne diesen Griff fehlten genau die zwei
+  // Bahnen, die eine Bewegung am staerksten zeichnen.
+  for (const seg of profile.segments ?? []) {
+    if (!rollen[seg.id] && typeof seg.from === 'string') rollen[seg.id] = seg.from;
+  }
+
+  const bahnen = spurPunkte(frames, rollen);
+  for (const bahn of bahnen) {
+    const farbe = SPUR_FARBEN[bahn.rolle] ?? FARBE.text;
+    const bild = bahn.punkte.map((p) => ({ ...p, px: projiziere(pan, p.welt) }));
+    for (let i = 1; i < bild.length; i++) {
+      linie(g, bild[i - 1].px, bild[i].px, farbe, 1.6);
+    }
+    const marken = spurMarken(bild.map((p) => p.frame));
+    for (const p of bild) {
+      const markiert = marken.has(p.frame);
+      punkt(g, p.px, markiert ? 3.2 : 1.8, farbe);
+      if (markiert) {
+        text(g, [p.px[0] + 5, p.px[1] - 4], String(p.frame), farbe, 8);
+      }
+    }
+    // Der Name der Bahn steht an ihrem ENDE — dort, wo die Bewegung aufhoert,
+    // und nicht mitten im Knaeuel des Anfangs.
+    const letzter = bild[bild.length - 1];
+    text(g, [letzter.px[0] + 6, letzter.px[1] + 9], bahn.rolle, farbe, 9);
+  }
 }
 
 /** Kontaktpunkte: alle gemessenen Sohlenpunkte; belastete gefüllt, freie hohl. */
@@ -916,8 +1333,14 @@ function zeichneKontaktpunkte(pan, system, frame) {
       punkt(g, p, r, FARBE.kontakt);
       // Beschriftungen abwechselnd über und unter dem Punkt: in der Draufsicht
       // liegen acht Sohlenpunkte dicht beieinander.
-      text(g, [p[0] + r + 2, p[1] + (i % 2 === 0 ? -4 : 9)],
-        s.id.replace(/^sole_/, ''), FARBE.kontakt, 8);
+      // Der Name des Sohlenpunkts entfaellt im sparsamen Modus: acht Etiketten
+      // draengen sich unter den Fuessen und ueberlagern einander. Dass ein
+      // Punkt gefuellt ist, sagt bereits, dass er den Boden beruehrt — welcher
+      // von acht es war, steht bei Bedarf im Bericht.
+      if (!pan.sparsam) {
+        text(g, [p[0] + r + 2, p[1] + (i % 2 === 0 ? -4 : 9)],
+          s.id.replace(/^sole_/, ''), FARBE.kontakt, 8);
+      }
     } else {
       punkt(g, p, r, null, { rand: FARBE.kontakt, breite: 1, alpha: 0.6 });
     }
@@ -925,22 +1348,24 @@ function zeichneKontaktpunkte(pan, system, frame) {
   const verankert = frame.verankert
     ? frame.sohlen.filter((s) => frame.verankert.includes(s.id) && s.amBoden).length
     : null;
-  text(g, [pan.x + pan.breite - 6, pan.y + pan.hoehe - 28],
-    `Kontakt ${frame.kontakt.length}/${frame.sohlen.length}`
-    + (verankert === null ? '' : `, verankert ${verankert}`), FARBE.kontakt, 9, 'rechts');
+  fussZeile(pan, g, `Kontakt ${frame.kontakt.length}/${frame.sohlen.length}`
+    + (verankert === null ? '' : `, verankert ${verankert}`), FARBE.kontakt, 9);
 
   if (frame.sohlenOhneAusrichtung > 0) {
-    text(g, [pan.x + pan.breite - 6, pan.y + pan.hoehe - 39],
-      `${frame.sohlenOhneAusrichtung} Sohlen auf dem Gelenk (ohne Ausrichtung)`,
-      FARBE.kontakt, 9, 'rechts');
+    fussZeile(pan, g, `${frame.sohlenOhneAusrichtung} Sohlen auf dem Gelenk (ohne Ausrichtung)`,
+      FARBE.kontakt, 9);
   }
 }
 
 /** Kopfzeile jedes Panels: Ansicht, Frame, Phase und die gemessene Körperhöhe. */
-function zeichneBeschriftung(pan, system, frame, schritt) {
+function zeichneBeschriftung(pan, system, frame, schritt, sparsam = false) {
   const g = pan.beschriftung;
+  // Sparsam: nur die Frame-Nummer. „blick" ist der Ansichtsname des freien
+  // Blicks und sagt nichts; die Phase und die Körperhöhe stehen im Bericht.
   text(g, [pan.x + 6, pan.y + 13],
-    `${pan.ansicht} · Frame ${frame.index} · ${frame.phase}`, FARBE.text, 11);
+    sparsam ? `Frame ${frame.index}`
+      : `${pan.ansicht} · Frame ${frame.index} · ${frame.phase}`, FARBE.text, 11);
+  if (sparsam) return;
   text(g, [pan.x + pan.breite - 6, pan.y + 13],
     `Körperhöhe ${zahl(system.height, 2)} m`, FARBE.textSchwach, 9, 'rechts');
 }
@@ -964,11 +1389,21 @@ function zeichneBeschriftung(pan, system, frame, schritt) {
 export function planeStreifen(opts) {
   const { profile } = opts;
   pruefeProfil(profile);
-  const views = opts.views === undefined ? ['front', 'side'] : opts.views;
-  pruefeViews(views);
+  // Zwei Betriebsarten aus einer Planebene: das Einzelbild für `look` (eine
+  // Kamera, ein Frame, volle Größe) und der Rasterstreifen für `validate`
+  // (mehrere Frames × benannte Ansichten, vergleichbar gerahmt).
+  const kamera = opts.kamera === undefined || opts.kamera === null
+    ? null : pruefeKamera(opts.kamera);
+  const views = kamera ? [EINZELBILD_ANSICHT]
+    : (opts.views === undefined ? ['front', 'side'] : opts.views);
+  if (!kamera) pruefeViews(views);
 
   const system = charakterSystem(profile);
   const aufgestellt = pruefeFrames(profile, system, opts.frames, opts);
+  if (kamera && aufgestellt.length !== 1) {
+    fehler(`${aufgestellt.length} Frames für ein Einzelbild: genau 1 — ein Aufruf zeigt einen `
+      + `Frame in voller Größe. Für eine Abfolge rufe mehrmals auf, die Kamera bleibt gleich.`);
+  }
 
   const mitMesh = opts.scene !== undefined && opts.scene !== null;
   const anzahlPanels = aufgestellt.length * views.length;
@@ -1007,8 +1442,12 @@ export function planeStreifen(opts) {
   }
 
   const skala = Number.isFinite(opts.skala) && opts.skala > 0 ? opts.skala : 1;
-  const panelBreite = Math.max(40, Math.round(PANEL_BREITE_PX * skala));
-  const panelHoehe = Math.max(40, Math.round(PANEL_HOEHE_PX * skala));
+  const sparsam = opts.sparsam === true;
+  const mitSpur = Array.isArray(opts.spurFrames) && opts.spurFrames.length > 1;
+  const grundBreite = kamera ? BILD_BREITE_PX : PANEL_BREITE_PX;
+  const grundHoehe = kamera ? BILD_HOEHE_PX : PANEL_HOEHE_PX;
+  const panelBreite = Math.max(40, Math.round(grundBreite * skala));
+  const panelHoehe = Math.max(40, Math.round(grundHoehe * skala));
 
   // ── Rahmung über die BEWEGUNG, nicht über die Bind-Pose ───────────────────
   //
@@ -1032,20 +1471,39 @@ export function planeStreifen(opts) {
   // der Blickrichtung ab (ein Sprung ist von der Seite höher als von vorn
   // breit). Verglichen wird Frame gegen Frame INNERHALB einer Zeile — dafür
   // ist die Kamera dort identisch.
-  const rahmenBereich = bewegungsBereich(aufgestellt, system);
-
   const anker = bindAnker(profile, system);
   const schritt = glatterSchritt(system.height / GITTER_TEILUNG);
   const luft = system.height * RAHMEN_LUFT_ANTEIL;
-  // Je Ansicht EINE Kamera über den ganzen Bewegungsbereich plus Bind-Anker —
-  // alle Panels der Zeile nutzen sie gemeinsam, sonst ist Frame gegen Frame
-  // nicht vergleichbar (plan.md 6.8). Der Anker gehört mit hinein: an ihm
-  // hängen Achsenkreuz und Maßstabsbalken, beide müssen sichtbar bleiben.
+
+  // Je Ansicht EINE Kamerabasis und EINE Rahmung; alle Panels der Zeile nutzen
+  // sie gemeinsam.
+  //
+  //   Einzelbild — Basis aus den zwei Blickwinkeln, Maßstab aus Weite und
+  //                gemessener Körperhöhe, Ziel aus `ziel`. Vom Frame hängt nur
+  //                der Zielpunkt ab, nicht der Maßstab: zwei Aufrufe derselben
+  //                Weite zeigen dieselbe Vergrößerung und sind vergleichbar.
+  //   Streifen   — wie bisher über den gemessenen Bewegungsbereich plus
+  //                Bind-Anker gerahmt (plan.md 6.8). Der Anker gehört mit
+  //                hinein: an ihm hängt das Achsenkreuz.
+  const basen = new Map(views.map((v) => [v,
+    kamera ? kamerabasisAusWinkel(system, kamera.richtungGrad, kamera.hoeheGrad)
+      : kamerabasis(system, v)]));
   const kameras = new Map();
-  for (const ansicht of views) {
-    kameras.set(ansicht, panelKamera(
-      [rahmenBereich, { min: anker, max: anker }], kamerabasis(system, ansicht),
-      panelBreite, panelHoehe, luft));
+  if (kamera) {
+    kameras.set(EINZELBILD_ANSICHT,
+      einzelbildKamera(profile, system, aufgestellt[0], kamera, panelHoehe));
+  } else {
+    // Bei einer Spur muss die Kamera die BAHNEN rahmen, nicht nur die Figur des
+    // gezeigten Frames. Sonst laufen Fuss- und Handbahnen aus dem Bild und der
+    // Anfang der Bewegung fehlt — gemessen am Standweitsprung, dort war die
+    // ganze Absprungphase unter dem unteren Bildrand.
+    const rahmenBereich = bewegungsBereich(
+      mitSpur ? [...aufgestellt, ...opts.spurFrames] : aufgestellt, system);
+    for (const ansicht of views) {
+      kameras.set(ansicht, panelKamera(
+        [rahmenBereich, { min: anker, max: anker }], basen.get(ansicht),
+        panelBreite, panelHoehe, luft));
+    }
   }
   // Das Raster bleibt WELTfest (Aufgabe 2): Bodengitter und Höhenmarken wandern
   // nicht mit, sie bleiben an ihrer Weltposition. Seine Reichweite folgt der
@@ -1057,13 +1515,21 @@ export function planeStreifen(opts) {
     const k = kameras.get(v);
     return Math.max(panelBreite, panelHoehe) / 2 / k.pxProMeter;
   }));
+  // Der Blick kann weit vom Anker weg zielen (auf ein Körperteil, oder auf eine
+  // Figur, die drei Meter gelaufen ist). Das Gitter beginnt aber am Anker —
+  // seine Reichweite muss also den Abstand dorthin mit abdecken, sonst steht die
+  // Figur auf leerer Fläche.
+  // Nur das Einzelbild zielt auf einen Weltpunkt; panelKamera() liefert ein Ziel
+  // aus Bildebenen-Anteilen, dessen Abstand zum Anker steckt dort schon im Rahmen.
+  const zielAbstand = kamera
+    ? laenge(sub(kameras.get(EINZELBILD_ANSICHT).ziel, anker)) : 0;
   const gitter = gitterWeltLinien(system, anker, schritt,
-    Math.max(system.height * SICHT_HOEHE_FAKTOR, 2 * maxHalbMeter + luft));
+    Math.max(system.height * SICHT_HOEHE_FAKTOR, zielAbstand + 2 * maxHalbMeter + luft));
 
   const panels = [];
   views.forEach((ansicht, zeile) => {
-    const basis = kamerabasis(system, ansicht);
-    const kamera = kameras.get(ansicht);
+    const basis = basen.get(ansicht);
+    const sicht = kameras.get(ansicht);
     aufgestellt.forEach((frame, spalte) => {
       const pan = {
         ansicht,
@@ -1074,17 +1540,28 @@ export function planeStreifen(opts) {
         y: PANEL_ABSTAND_PX + zeile * (panelHoehe + PANEL_ABSTAND_PX),
         breite: panelBreite,
         hoehe: panelHoehe,
-        ziel: kamera.ziel, X: basis.X, Y: basis.Y, blick: basis.blick, sag: basis.sag,
-        pxProMeter: kamera.pxProMeter,
-        halbBreiteMeter: panelBreite / 2 / kamera.pxProMeter,
-        halbHoeheMeter: panelHoehe / 2 / kamera.pxProMeter,
+        ziel: sicht.ziel, X: basis.X, Y: basis.Y, blick: basis.blick, sag: basis.sag,
+        pxProMeter: sicht.pxProMeter,
+        halbBreiteMeter: panelBreite / 2 / sicht.pxProMeter,
+        halbHoeheMeter: panelHoehe / 2 / sicht.pxProMeter,
         schritt,
         annotationen: {
           achsenkreuz: [], bodengitter: [], schwerpunkt: [],
           stuetzflaeche: [], kontaktpunkte: [],
+          // Nur wenn eine Spur verlangt ist: der Abnahmetest fordert, dass
+          // jede vorhandene Gruppe im Bild auch etwas zeichnet.
+          ...(mitSpur ? { spur: [] } : {}),
         },
         koerper: [],
         beschriftung: [],
+        // Sammelstelle des Fußblocks; setzeFussStapel() verteilt die Zeilen am
+        // Ende und entfernt das Feld wieder.
+        fussZeilen: [],
+        sparsam,
+        // Beim Einzelbild steht das Achsenkreuz als Kompass in der Bildecke:
+        // die freie Kamera kann so nah heranfahren, dass der Bind-Anker weit
+        // außerhalb des Bildes liegt.
+        kompass: kamera !== null,
       };
       if (!mitMesh) {
         // Ohne WebGL wird das Welt-Raster in das Panel projiziert.
@@ -1093,13 +1570,19 @@ export function planeStreifen(opts) {
             FARBE.gitter, 1);
         }
       }
+      // Sparsam: nur Maßstab, Boden und Figur. Alles andere — Kontaktzahlen,
+      // Stützfläche, Schwerpunkt, Sohlenpunkte, Achsenkreuz — steht ohnehin als
+      // Zahl im Bericht. Ein zweites Mal ins Bild gedruckt verdeckt es die
+      // Figur, ohne etwas hinzuzufügen: die Etiketten landen quer über Rumpf
+      // und Beinen, und genau dort muss man hinsehen.
       zeichneMassstab(pan, system, anker, schritt);
       zeichneStuetzflaeche(pan, system, frame);
       zeichneKontaktpunkte(pan, system, frame);
       zeichneAchsenkreuz(pan, system, anker);
       zeichneSchwerpunkt(pan, system, frame);
+      if (mitSpur) zeichneSpur(pan, profile, opts.spurFrames);
       zeichneKoerper(pan, profile, frame, mitMesh);
-      zeichneBeschriftung(pan, system, frame, schritt);
+      zeichneBeschriftung(pan, system, frame, schritt, sparsam);
       panels.push(pan);
     });
   });
@@ -1127,7 +1610,11 @@ export function planeStreifen(opts) {
   // diesen Faktor liefen bei 12 Frames × 4 Ansichten — dem Maximum, das Werkzeug
   // `look` verlangen kann — 48 Beschriftungen über ihre Panelkante und wurden
   // abgeschnitten (gemessen mit echten Font-Metriken im Abnahmetest).
-  const schriftFaktor = panelBreite / PANEL_BREITE_PX;
+  // Nach oben wächst die Schrift mit der WURZEL des Panelfaktors: linear wären
+  // aus 9 px im 640er Einzelbild 19 px, das erschlüge das Bild. Die Wurzel gibt
+  // 13 px — deutlich lesbarer als vorher, ohne die Fläche zu fressen.
+  const panelFaktor = panelBreite / PANEL_BREITE_PX;
+  const schriftFaktor = panelFaktor > 1 ? Math.sqrt(panelFaktor) : panelFaktor;
   if (schriftFaktor !== 1) {
     for (const pan of panels) {
       const gruppen = [...Object.values(pan.annotationen), pan.koerper, pan.beschriftung];
@@ -1138,6 +1625,9 @@ export function planeStreifen(opts) {
       }
     }
   }
+
+  // Zuletzt, weil der Zeilenabstand an der FERTIGEN Schriftgröße hängt.
+  for (const pan of panels) setzeFussStapel(pan);
 
   return {
     schemaVersion: 1,
@@ -1172,7 +1662,15 @@ export function planeStreifen(opts) {
       forward: profile.world.forward,
       left: profile.world.left,
       quelle: 'RigProfile world + bones[].bindWorld (gemessen)',
-      ansichten: Object.fromEntries(views.map((v) => [v, kamerabasis(system, v).sag])),
+      ansichten: Object.fromEntries(views.map((v) => [v, basen.get(v).sag])),
+    },
+    // Beim Einzelbild steht hier, mit welcher Kamera gearbeitet wurde: der
+    // Agent braucht die Zahlen, um zwei Aufrufe zueinander in Beziehung zu
+    // setzen — der Ersatz für die Panels, die früher nebeneinander lagen.
+    kamera: kamera === null ? null : {
+      ...kamera,
+      zielWelt: kameras.get(EINZELBILD_ANSICHT).ziel.map((x) => Number(x.toFixed(4))),
+      sag: basen.get(EINZELBILD_ANSICHT).sag,
     },
     warnungen,
   };
@@ -1194,6 +1692,11 @@ export function pruefeVollstaendigkeit(plan) {
     for (const gruppe of PFLICHT_ANNOTATIONEN) {
       const n = Array.isArray(gruppen[gruppe]) ? gruppen[gruppe].length : 0;
       if (n === 0) {
+        // Im sparsamen Modus (Pruefbericht, Spur) traegt eine Gruppe nur noch
+        // ihre Grafik, nicht mehr ihre Beschriftung. Eine Figur im Flug hat
+        // dann wirklich 0 Stuetzflaechen-Primitive — der gemessene Zustand,
+        // kein fehlendes Bildelement. Ausserhalb bleibt die Pflicht hart.
+        if (pan.sparsam) continue;
         fehlt.push(`${pan.ansicht}/Frame ${pan.frame}: ${gruppe} hat 0 von mindestens 1 Primitive`);
       }
     }
@@ -1341,7 +1844,8 @@ export function zeichneOverlay(ctx, plan, { hintergrund = true } = {}) {
       ctx.fillRect(pan.x, pan.y, pan.breite, pan.hoehe);
     }
     for (const gruppe of EBENEN_REIHENFOLGE) {
-      for (const p of pan.annotationen[gruppe]) malePrimitive(ctx, p);
+      // `spur` gibt es nur, wenn eine Bewegungsspur verlangt war.
+      for (const p of pan.annotationen[gruppe] ?? []) malePrimitive(ctx, p);
     }
     for (const p of pan.koerper) malePrimitive(ctx, p);
     for (const p of pan.beschriftung) malePrimitive(ctx, p);
@@ -1531,7 +2035,12 @@ function pngAusCanvas(canvas) {
 export function bildeStreifen(opts) {
   let letzteMenge = null;
 
-  for (const skala of SKALA_STUFEN) {
+  // Die Treppe geht von der ANGEFORDERTEN Groesse aus, nicht von 1. Der
+  // Pruefbericht fordert 0,72, weil zwei Bilder in voller Groesse das
+  // Antwortbudget sprengen (gemessen 537 KB gegen 512 KB erlaubt).
+  const grundSkala = Number.isFinite(opts.skala) && opts.skala > 0 ? opts.skala : 1;
+  for (const stufe of SKALA_STUFEN) {
+    const skala = stufe * grundSkala;
     const plan = planeStreifen({ ...opts, skala });
     pruefeVollstaendigkeit(plan);
 
@@ -1621,11 +2130,19 @@ function zaeheAnnotationen(plan) {
 }
 
 function eintragAus(plan, base64, bytes) {
+  const k = plan.kamera;
   return {
     view: plan.views.join('+'),
     views: plan.views.slice(),
+    // Beim Einzelbild trägt der Eintrag die Kamera in Zahlen: der Agent liest
+    // daran ab, was er gesehen hat, und kann denselben Blick auf einem anderen
+    // Frame wiederholen.
+    kamera: k === null ? null : { ...k },
     frames: plan.frames.map((f) => f.index),
-    ref: `strip_${plan.views.join('+')}_${plan.frames.map((f) => f.index).join('-')}.png`,
+    ref: k === null
+      ? `strip_${plan.views.join('+')}_${plan.frames.map((f) => f.index).join('-')}.png`
+      : `blick_r${Math.round(k.richtungGrad)}_h${Math.round(k.hoeheGrad)}_${k.ziel}_`
+        + `${k.weite}_f${plan.frames[0].index}.png`,
     data: base64,
     mimeType: 'image/png',
     width: plan.breite,
@@ -1667,9 +2184,49 @@ export function createStripRenderer(opts = {}) {
   }
   const hole = typeof opts.frameQuelle === 'function' ? opts.frameQuelle : (i) => opts.frames[i];
 
+  /** Holt einen Frame und meldet mit Zahl, wenn er nicht aufgelöst ist. */
+  const frameHolen = (i, wovon) => {
+    if (!Number.isInteger(i) || i < 0) {
+      fehler(`${wovon} ${JSON.stringify(i)}: erwartet ganzzahlige Frame-Zahl >= 0`);
+    }
+    const f = hole(i);
+    if (!f || typeof f !== 'object') {
+      fehler(`frameQuelle(${i}) liefert ${JSON.stringify(f ?? null)}: Frame ${i} ist nicht `
+        + `aufgelöst`);
+    }
+    return { ...f, frame: i };
+  };
+
   return {
     quelle: 'AP9',
     views: ANSICHTEN.slice(),
+    weiten: WEITEN.slice(),
+    /**
+     * Ein Frame, eine Blickrichtung, ein Bild in voller Größe — das Werkzeug
+     * `look`. Für eine Abfolge ruft der Aufrufer mehrmals auf; bei gleicher
+     * Weite ist der Maßstab jedes Mal derselbe.
+     *
+     * @param {{frame: number, richtung_grad?: number, hoehe_grad?: number,
+     *          ziel?: string, weite?: string}} anfrage
+     * @returns {object} EIN Bildeintrag, mit `kamera` in Zahlen
+     */
+    bild(anfrage = {}) {
+      const { frame, skala, sparsam, spur, ...kamera } = anfrage;
+      // Spur: alle Frames der Timeline aufloesen, damit die Bahnen ueber die
+      // GANZE Bewegung laufen und nicht nur ueber den gezeigten Moment.
+      let spurFrames = null;
+      if (spur === true && Number.isInteger(opts.frameCount)) {
+        spurFrames = [];
+        for (let i = 0; i < opts.frameCount; i++) {
+          const f = hole(i);
+          if (f && typeof f === 'object') spurFrames.push({ ...f, index: i });
+        }
+      }
+      return bildeStreifen({
+        scene, profile, frames: [frameHolen(frame, 'frame')], kamera, skala, sparsam, spurFrames,
+        frameCount: opts.frameCount, canvas: opts.canvas, renderer: opts.renderer,
+      });
+    },
     /**
      * @param {{frames: number[], views?: string[]}} anfrage Frame-Zahlen der Timeline
      * @returns {object[]} genau EIN Bild mit allen angeforderten Ansichten

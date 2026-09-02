@@ -27,8 +27,22 @@ export const INTENT_ARTEN = [
   'part_speed'       // Tempo eines Koerperteils: Koerperhoehen pro Sekunde
 ];
 
-/** Ansichten des Bildstreifens, plan.md 5.5 Werkzeug 14 und AP9. */
+/** Ansichten des Bildstreifens, plan.md 5.5 Werkzeug 14 und AP9. Der Streifen
+ *  bleibt fuer `validate`; `look` richtet seine Kamera ueber Gradzahlen. */
 export const ANSICHTEN = ['front', 'side', 'quarter', 'top'];
+
+/**
+ * Kameraangaben des Werkzeugs `look`. Dieselben Werte stehen in
+ * src/render/strip.js (WEITE_ANTEILE, RICHTUNG_STANDARD_GRAD,
+ * HOEHE_STANDARD_GRAD) — dort mit ihrer Begruendung; hier stehen sie, weil der
+ * Katalog keine Renderer-Abhaengigkeit hat (so wie ANSICHTEN oben).
+ *
+ * Die Weiten sind Anteile der GEMESSENEN Koerperhoehe, keine Zoomzahlen: der
+ * Agent soll waehlen, nicht rechnen.
+ */
+export const WEITEN = ['ganz', 'halb', 'nah'];
+export const RICHTUNG_STANDARD_GRAD = 30;
+export const HOEHE_STANDARD_GRAD = 10;
 
 /**
  * Kanaele eines Gelenkwinkels — allgemeine Liste, plan.md 5.5 Werkzeug 11.
@@ -57,8 +71,12 @@ export const FRAME_MIN = 12;
 export const FRAME_MAX = 600;
 
 /**
- * BENANNTER VERFAHRENSPARAMETER: wie viele Einzelbilder ein look-Aufruf
- * hoechstens liefert — Frames MAL Ansichten, nicht Frames allein.
+ * BENANNTER VERFAHRENSPARAMETER: wie viele Kacheln ein Bildstreifen hoechstens
+ * traegt — Frames MAL Ansichten, nicht Frames allein.
+ *
+ * Galt bis zum 2.9.2026 fuer `look`. Seit dem Umbau auf das Einzelbild liefert
+ * `look` genau EIN Bild je Aufruf und braucht diese Schranke nicht mehr; sie
+ * gilt weiter fuer den Streifen, den `validate` seinem Bericht anhaengt.
  *
  * Gemessen an den Antworten des Agentenlaufs vom 1. September 2026:
  *
@@ -243,7 +261,8 @@ export const KATALOG = [
     name: 'set_duration',
     description: 'SCHRITT 3 - legt fest, wie lang die Bewegung ist, in Frames. Muss vor jedem Setzen von '
       + 'Haltungen oder Phasen kommen; ohne Laenge weisen die anderen Werkzeuge ab. Die Framerate '
-      + 'steht in der Antwort.',
+      + 'steht in der Antwort. Ändert NICHTS an bestehenden Haltungen — für einen sauberen Neuanfang '
+      + 'vor der nächsten Bewegung gibt es clear_motion.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -254,6 +273,15 @@ export const KATALOG = [
       },
       required: ['frameCount']
     }
+  },
+  {
+    name: 'clear_motion',
+    description: 'Löscht die gesamte Bewegung und macht die Timeline leer: alle gesetzten Haltungen '
+      + '(set_pose, set_joint), alle Phasen, alle Fußanker (hold_foot) und die gesetzte Absicht '
+      + '(set_intent). Modell, Vermessung und Rollen bleiben — die Länge der Timeline (set_duration) '
+      + 'bleibt auch. Für eine NEUE Bewegung: erst clear_motion, dann Haltungen setzen. Ohne ihn '
+      + 'erbst du alle Schlüsselbilder der vorigen Bewegung, auch auf Frames, die du nie anfasst.',
+    inputSchema: leer
   },
   {
     name: 'add_phase',
@@ -346,9 +374,12 @@ export const KATALOG = [
     description: 'EBENE 1, DER HAUPTWEG - setzt eine ganze Koerperhaltung auf einen Frame: alle Gelenke in '
       + 'einem Aufruf, so wie ein Animator ein Schluesselbild setzt. So arbeitet man hier: mehrere '
       + 'Haltungen auf verschiedene Frames setzen; dazwischen wird beim Loesen ueberblendet, weich '
-      + 'oder linear (ease). WICHTIG: Gelenkwinkel allein heben die Figur nicht vom Boden - '
-      + 'wo sie im Raum steht, sagst du mit root. Danach mit look ansehen und mit '
-      + 'describe_pose nachmessen. Die '
+      + 'oder linear (ease). BODEN: die Figur steht immer auf dem Boden, solange du keine Hoehe '
+      + 'setzt - der Loeser senkt die Wurzel je Frame so ab, dass der tiefste Punkt auf der '
+      + 'Bodenebene liegt (Hocke, Stand, Schritt brauchen kein root). Eine Zahl in root.pos[1] '
+      + 'hebt sie an (Sprung, Flug); unter den Boden geht es nie, zu tief Gesetztes wird angehoben '
+      + 'und gemeldet. Die Antwort sagt dir mit Zahl, ob sie steht, schwebt oder angehoben wurde. '
+      + 'Danach mit look ansehen und mit describe_pose nachmessen. Die '
       + 'angegebenen Gelenke ERSETZEN die Haltung dieses Frames. Gelenk- und Kanalnamen kommen aus '
       + 'describe_rig und sind je Gelenk verschieden.',
     inputSchema: {
@@ -363,17 +394,19 @@ export const KATALOG = [
         },
         root: {
           type: 'object',
-          description: 'WO die Figur steht und wohin sie schaut. Ohne das bleibt sie auf der '
-            + 'Stelle — Gelenkwinkel allein heben niemanden vom Boden. '
-            + '{pos: [x, y, z]} in Metern im Weltsystem aus describe_world; '
+          description: 'WO die Figur steht und wohin sie schaut. Ohne root bleibt sie an ihrem Ort '
+            + 'und steht auf dem Boden. '
+            + '{pos: [x, y, z]} in Metern im Weltsystem aus describe_world; y = null heisst '
+            + '"auf dem Boden" (der Loeser rechnet die Hoehe), eine Zahl in y ist eine feste Hoehe. '
             + '{turnGrad: Zahl} dreht die ganze Figur um die Hochachse. '
-            + 'Ein Sprung entsteht, indem pos[1] (die Hoehe) ueber die Frames steigt und '
-            + 'wieder faellt; ein Schritt, indem pos entlang der Blickrichtung wandert. '
+            + 'Ein Schritt: pos [x, null, z] wandert entlang der Blickrichtung, die Hoehe bleibt am Boden. '
+            + 'Ein Sprung: Absprung- und Landeframe OHNE Hoehe (sie stehen), der Scheitel mit '
+            + 'einer Zahl in y und ease "wurf" - die Parabel laeuft dann vom Boden zum Scheitel und zurueck. '
             + 'Zwischen gesetzten Frames wird die Wurzel wie alles andere ueberblendet.',
           properties: {
             pos: {
-              type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3,
-              description: 'Position des Beckens [x, y, z] in Metern'
+              type: 'array', items: { type: ['number', 'null'] }, minItems: 3, maxItems: 3,
+              description: 'Position des Beckens [x, y, z] in Metern; y = null stellt die Figur auf den Boden'
             },
             turnGrad: {
               type: 'number',
@@ -416,7 +449,9 @@ export const KATALOG = [
       + 'neigt sich der Rumpf nach vorne (neigung pelvis/neck), sitzt die Huefte hinter dem '
       + 'Knoechel (abstand_vorne pelvis/ankle_l)? Beispiel Schritt: wandert der Fuss (tempo), '
       + 'bleibt der andere stehen? Jede Bewegung braucht andere Fragen - stell sie. '
-      + 'Koerperteile sind Rollennamen aus describe_rig, dazu "com" fuer den Schwerpunkt. '
+      + 'Koerperteile sind Rollennamen aus describe_rig, dazu "com" fuer den Schwerpunkt und '
+      + '"sole_l" / "sole_r" fuer den tiefsten Sohlenpunkt je Fuss - damit misst du, ob ein Fuss '
+      + 'auf dem Boden steht (hoehe sole_l = 0). Der Fussknochen selbst sitzt Zentimeter ueber der Sohle. '
       + 'Alle Laengen in Metern, Winkel in Grad.',
     inputSchema: {
       type: 'object',
@@ -504,9 +539,13 @@ export const KATALOG = [
   {
     name: 'describe_pose',
     description: 'Sagt in Zahlen, wie die Figur in einem Frame steht: Weltpositionen der Koerperteile in '
-      + 'Metern, Schwerpunkt, Hoehe ueber dem Boden, Bodenkontakt, und ob der Frame eine gesetzte '
-      + 'Haltung ist oder eine Ueberblendung. Das Gegenstueck zu look: dort das Bild, hier die '
-      + 'Zahlen.',
+      + 'Metern, Schwerpunkt, Bodenkontakt, bodenabstand_m (tiefster Punkt ueber dem Boden, 0 = steht, '
+      + 'negativ = im Boden), wurzelhoehe (ob Boden, dein root.pos oder eine Anhebung die Hoehe bestimmt '
+      + 'hat, mit Betrag), sohlen_m je Fuss, und ob der Frame eine gesetzte '
+      + 'Haltung ist oder eine Ueberblendung. Dazu winkel_grad — die gefahrenen Gelenkwinkel je '
+      + 'Gelenk und Kanal in Grad, auch auf ueberblendeten Frames — und gesetzteWinkel_grad, nur '
+      + 'die, die auf diesem Frame gesetzt wurden. Damit liest du deine Haltung in deiner eigenen '
+      + 'Sprache zurueck. Das Gegenstueck zu look: dort das Bild, hier die Zahlen.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -530,30 +569,84 @@ export const KATALOG = [
       + 'Kriterien. Liefert immer einen Bildstreifen mit. Braucht gesetzte Kriterien.',
     inputSchema: leer
   },
-  {
-    name: 'look',
-    description: 'Zeigt, wie die Bewegung aussieht: gerenderte Bilder der angegebenen Frames, annotiert mit '
-      + 'Bodengitter, Schwerpunkt und Kontaktpunkten. Braucht keine Vorbereitung und keine '
-      + 'Kriterien - loest selbst. In der Antwort steht ausserdem, ob die Timeline ueberhaupt '
-      + 'Bewegung enthaelt. NACH JEDER AENDERUNG AUFRUFEN: Zahlen allein zeigen nicht, ob eine '
-      + 'Bewegung richtig aussieht.',
+    {
+    name: 'trace',
+    description: 'Zeigt den VERLAUF der ganzen Bewegung in EINEM Bild: die Bahnen von Haenden, '
+      + 'Fuessen und Becken ueber alle Frames, dazu die Figur an einem Frame deiner Wahl. '
+      + 'Die Bahn zeigt die Form der Bewegung, der Abstand der Punkte das Timing - eng ist '
+      + 'langsam, weit ist schnell, ein Knaeuel ist Stillstand. Ein Knick in der Bahn ist ein '
+      + 'Richtungswechsel. Damit siehst du, ob eine Bewegung flieszt, ohne Frame fuer Frame '
+      + 'durchzugehen. Kamera wie bei look. RUFE DAS AUF, BEVOR DU EINE BEWEGUNG ABGIBST: '
+      + 'ein einzelner Frame sagt nichts darueber, wie die Bewegung laeuft.',
     inputSchema: {
       type: 'object',
       properties: {
-        frames: {
-          type: 'array', items: { type: 'integer', minimum: 0 }, minItems: 1,
-          maxItems: KACHELN_MAX,
-          description: `Frames, 1 bis ${KACHELN_MAX} Stueck. Frames MAL Ansichten `
-            + `darf ${KACHELN_MAX} nicht ueberschreiten: gerendert wird ein Bild je Paar, `
-            + `und mehr passt nicht in eine Antwort von 512 KB.`
+        frame: {
+          type: 'integer', minimum: 0,
+          description: 'Welcher Frame als Figur im Bild steht. Die Bahnen laufen immer ueber '
+            + 'die GANZE Timeline, unabhaengig davon. Ohne Angabe die Mitte.'
         },
-        views: {
-          type: 'array', items: { type: 'string', enum: ANSICHTEN }, minItems: 1, maxItems: 4,
-          description: `Ansichten aus ${ANSICHTEN.join('/')}. Bei 2 Ansichten also `
-            + `hoechstens ${KACHELN_MAX / 2} Frames, bei 4 hoechstens ${KACHELN_MAX / 4}.`
+        richtung_grad: {
+          type: 'number', minimum: 0, maximum: 359,
+          description: `Woher die Kamera blickt: 0 von vorn, 90 von links, 180 von hinten, `
+            + `270 von rechts. Standard ${RICHTUNG_STANDARD_GRAD}. Eine Bahn, die auf die `
+            + `Kamera zulaeuft, ist verkuerzt - dann von der Seite schauen.`
+        },
+        hoehe_grad: {
+          type: 'number', minimum: -89, maximum: 90,
+          description: `Wie hoch die Kamera steht: 0 auf Augenhoehe, 90 von oben. `
+            + `Standard ${HOEHE_STANDARD_GRAD}. Fuer Schritte und Fussbahnen ist 90 gut.`
+        }
+      }
+    }
+  },
+{
+    name: 'look',
+    description: 'Fotografiert EINEN Frame und liefert EIN grosses Bild, annotiert mit Bodengitter, '
+      + 'Hoehenleiste, Schwerpunkt, Kontaktpunkten und Stuetzflaeche. Du richtest die Kamera '
+      + 'selbst: Blickrichtung, Blickhoehe, worauf sie zielt und wie nah sie herangeht. Ohne '
+      + 'Angabe steht sie schraeg von vorn und zeigt die ganze Figur. '
+      + 'DEN VERLAUF EINER BEWEGUNG SIEHST DU, INDEM DU MEHRMALS AUFRUFST - je Frame ein Bild, '
+      + 'z. B. 0, 6, 12, 18. Bei gleicher weite ist der Massstab in jedem Bild derselbe und das '
+      + 'Bodengitter steht fest im Raum, die Bilder sind also untereinander vergleichbar. '
+      + 'Einen Fehler an einem Gelenk findest du mit ziel und weite: nah heran, dann siehst du '
+      + 'ihn. Braucht keine Vorbereitung und keine Kriterien - loest selbst. NACH JEDER '
+      + 'AENDERUNG AUFRUFEN: Zahlen allein zeigen nicht, ob eine Bewegung richtig aussieht.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        frame: {
+          type: 'integer', minimum: 0,
+          description: 'Der Frame, den du sehen willst. Ein Aufruf ist ein Bild; fuer eine '
+            + 'Abfolge rufe mehrmals mit derselben Kamera auf.'
+        },
+        richtung_grad: {
+          type: 'number', minimum: 0, maximum: 359,
+          description: `Woher die Kamera blickt, um die Figur herum: 0 von vorn, 90 von links, `
+            + `180 von hinten, 270 von rechts. Standard ${RICHTUNG_STANDARD_GRAD} - schraeg von `
+            + `vorn, dort verdeckt keine Koerperseite die andere.`
+        },
+        hoehe_grad: {
+          type: 'number', minimum: -89, maximum: 90,
+          description: `Wie hoch die Kamera steht: 0 auf Augenhoehe, 90 senkrecht von oben `
+            + `(Draufsicht, gut fuer Stand und Fussstellung), negativ von unten. `
+            + `Standard ${HOEHE_STANDARD_GRAD}.`
+        },
+        ziel: {
+          type: 'string',
+          description: 'Worauf die Kamera zielt: "figur" fuer die ganze Figur (Standard) oder '
+            + 'ein GELENK aus describe_rig - dieselben Namen, mit denen du set_pose fuetterst, '
+            + 'z. B. "knee_l", "arm_r", "spine". Zusammen mit weite "nah" faehrst du damit an '
+            + 'das Gelenk heran, das du gerade verstellt hast.'
+        },
+        weite: {
+          type: 'string', enum: WEITEN,
+          description: 'Wie viel im Bild ist, gemessen an der Koerperhoehe: "ganz" die ganze '
+            + 'Figur (Standard), "halb" etwa ein Koerperteil wie Oberkoerper oder Bein, "nah" '
+            + 'ein Gelenk mit seinen Nachbarn - dort erkennst du Durchdringung und Ueberbeugung.'
         }
       },
-      required: ['frames', 'views']
+      required: ['frame']
     }
   },
   {
@@ -588,18 +681,21 @@ export const KATALOG = [
   {
     name: 'hold_foot',
     description: 'Nagelt einen Fuss ueber einen Frame-Bereich fest: er bleibt da stehen, wo er zu Beginn '
-      + 'des Bereichs steht, auch wenn sich das Becken bewegt. Der Loeser rechnet die Beinkette dafuer '
-      + 'selbst - du musst keine Gelenkwinkel dafuer suchen. GENAU DAS BRAUCHST DU FUER SCHRITTE: der '
-      + 'Standfuss bleibt fest, waehrend die Figur ueber ihn hinweg wandert, der andere schwingt frei. '
-      + 'Ohne das rutschen die Fuesse mit dem Becken mit und validate meldet es. Mehrere Anker sind '
-      + 'erlaubt, auch fuer beide Fuesse gleichzeitig. Setze sie ERST, wenn die Haltungen stehen: sie '
+      + 'des Bereichs steht (auf dem Boden, wenn du keine Hoehe gesetzt hast), auch wenn sich das '
+      + 'Becken bewegt. Der Loeser rechnet die Beinkette dafuer selbst - du musst keine Gelenkwinkel '
+      + 'dafuer suchen; ohne gesetzte Hoehe darf das Becken dabei sinken, so wie beim Gehen. GENAU DAS '
+      + 'BRAUCHST DU FUER SCHRITTE: der Standfuss bleibt fest, waehrend die Figur ueber ihn hinweg '
+      + 'wandert, der andere schwingt frei - und den haeltst DU ueber dem Boden (Knie beugen, Huefte '
+      + 'heben); steckt er im Boden, wird die Figur angehoben und der Anker verfehlt, die Antwort sagt es. '
+      + 'Ohne Anker rutschen die Fuesse mit dem Becken mit und validate meldet es. Mehrere Anker sind '
+      + 'erlaubt; foot "beide" nagelt beide Fuesse fest. Setze sie ERST, wenn die Haltungen stehen: sie '
       + 'wirken nach den Haltungen. Deine gesetzten Beinwinkel bleiben dabei stehen; reicht der Rest '
       + 'der Kette nicht bis zum Anker, gibt die Huefte nach und der Bericht nennt den Fuss mit dem '
       + 'Betrag in Metern, der fehlt.',
     inputSchema: {
       type: 'object',
       properties: {
-        foot: { type: 'string', description: 'Fussrolle aus describe_rig, foot_l oder foot_r' },
+        foot: { type: 'string', description: 'Fussrolle aus describe_rig: foot_l, foot_r oder beide' },
         von: { type: 'integer', minimum: 0, description: 'erster Frame, in dem der Fuss steht' },
         bis: { type: 'integer', minimum: 0, description: 'letzter Frame, in dem er steht' },
         remove: { type: 'boolean', description: 'true entfernt alle Anker dieses Fusses in diesem Bereich' }
@@ -637,4 +733,4 @@ export const KISTE = KATALOG.filter((t) => t.kiste).map((t) => t.name);
 export const KATALOG_SICHTBAR = KATALOG.filter((t) => !t.kiste);
 
 /** Erwartete Anzahl. Weicht KATALOG davon ab, ist etwas verlorengegangen. */
-export const KATALOG_GROESSE = 23;
+export const KATALOG_GROESSE = 25;

@@ -22,6 +22,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // (AGENTS.md, Regel 1) — vor dieser Kopplung lief die Vermessung ausschließlich
 // auf Rigs mit Mixamo-Benennung.
 import { detectRig, PARAMS as ERKENNUNG } from './detect.js';
+import { dreieckSchnitt, Kollisionsgitter } from './kollision.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BENANNTE PARAMETER (Verfahrensparameter, keine Körpermaße)
@@ -95,7 +96,8 @@ export const SOLE_LENGTH_MIN = 0.05;
  *  werden topologisch aus der Rolle abgeleitet — siehe kettenEnde().
  *  Reihenfolge = Reihenfolge im Profil. */
 export const SEGMENTS = [
-  { id: 'torso',      from: 'pelvis',    to: 'neck'         },
+  { id: 'torso_lower', from: 'pelvis',   to: 'spine'        },
+  { id: 'torso_upper', from: 'spine',    to: 'neck'         },
   { id: 'head',       from: 'neck',      to: 'ende_kopf'    },
   { id: 'upperarm_l', from: 'arm_l',     to: 'forearm_l'    },
   { id: 'forearm_l',  from: 'forearm_l', to: 'hand_l'       },
@@ -171,7 +173,10 @@ const KETTENENDEN = [
 // Beugung ist also eine Drehung um x, wie plan.md 5.1 für hip_l.flex nennt.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const JOINT_CATALOG = [
+/** Der Gelenkkatalog, auch fuer die Werkzeugschicht: handlers.js baut daraus
+ *  die Zuordnung Setz-Name -> Messname in der measure-Fehlermeldung (Befund
+ *  2.1, Buehnenlauf 2. September 2026 — hip_l heisst beim Messen thigh_l). */
+export const JOINT_CATALOG = [
   { joint: 'pelvis',     bone: 'pelvis',    end: 'ende_kopf', dofs: {
       tilt:  { axis: 'x', moves: 'z', want: +1, mirror: true,  limit: [-40, 40],
                richtung: 'tilt: + neigt das Becken nach vorn, - nach hinten' },
@@ -225,7 +230,7 @@ const JOINT_CATALOG = [
       swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-130, 90],
                richtung: 'swing: + schwingt den linken Arm nach vorn, - nach hinten' },
       twist: { axis: 'x', want: +1, mirror: false, limit: [-90, 90], twist: true,
-               richtung: 'twist: + dreht den linken Arm um seine eigene Achse (vorwärts rollend), - rückwärts. WICHTIG beim Senken: in der T-Pose zeigt die Handfläche nach unten. Senkst du den Arm nur mit lift, zeigt sie danach nach vorn und die Hand steht unnatürlich ab. Ein Mensch dreht dabei mit. Faustregel am haengenden Arm: links twist +75, rechts twist -75.' } } },
+               richtung: 'twist: + dreht den linken Arm um seine eigene Achse (vorwärts rollend), - rückwärts. WICHTIG bei lift: in der T-Pose zeigt die Handfläche nach unten, und sie dreht einfach mit. Senkst du den Arm nur mit lift, zeigt sie danach nach vorn; hebst du ihn nur mit lift, zeigt sie nach hinten — in beiden Fällen steht die Hand unnatürlich ab. Ein Mensch dreht dabei mit. Faustregel am haengenden Arm: links twist +75, rechts twist -75.' } } },
   { joint: 'arm_r',      bone: 'arm_r',     end: 'ende_hand_r', dofs: {
       lift:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-95, 100],
                richtung: 'lift: + hebt den rechten Arm nach oben, - senkt ihn. '
@@ -233,7 +238,7 @@ const JOINT_CATALOG = [
       swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-130, 90],
                richtung: 'swing: + schwingt den rechten Arm nach vorn, - nach hinten' },
       twist: { axis: 'x', want: +1, mirror: false, limit: [-90, 90], twist: true,
-               richtung: 'twist: + dreht den rechten Arm um seine eigene Achse (vorwärts rollend), - rückwärts. WICHTIG beim Senken: in der T-Pose zeigt die Handfläche nach unten. Senkst du den Arm nur mit lift, zeigt sie danach nach vorn und die Hand steht unnatürlich ab. Ein Mensch dreht dabei mit. Faustregel am haengenden Arm: links twist +75, rechts twist -75.' } } },
+               richtung: 'twist: + dreht den rechten Arm um seine eigene Achse (vorwärts rollend), - rückwärts. WICHTIG bei lift: in der T-Pose zeigt die Handfläche nach unten, und sie dreht einfach mit. Senkst du den Arm nur mit lift, zeigt sie danach nach vorn; hebst du ihn nur mit lift, zeigt sie nach hinten — in beiden Fällen steht die Hand unnatürlich ab. Ein Mensch dreht dabei mit. Faustregel am haengenden Arm: links twist +75, rechts twist -75.' } } },
   { joint: 'elbow_l',    bone: 'forearm_l', end: 'ende_hand_l', dofs: {
       // ACHSE GEMESSEN, nicht katalogisiert. Am Xbot durchprobiert: die alte
       // Achse 'z' bewegte die Hand bei bend=+60 um 24,5 cm nach OBEN und 0,0 cm
@@ -860,7 +865,18 @@ function measureSegments(ctx, opts = {}) {
     const dists = verts
       .map((p) => pointSegDist(p, a, b))
       .sort((x, y) => x - y);
-    let radius = percentile(dists, radiusPercentile);
+    const globalerRadius = percentile(dists, radiusPercentile);
+    const stationenRadius = meshHuelle(verts, a, b, 10, radiusPercentile).huelle;
+    // Ein kurzes Teilsegment kann an einem Ende eine breite Hüfte oder
+    // Schulter streifen. Dann bläht das globale 90.-Perzentil die gesamte
+    // Kapsel auf (unterer Xbot-Rumpf: 17,8 statt 14,4 cm) und erzeugt später
+    // Kollisions-Fehlalarme. Die über mindestens fünf Stationen gemessene
+    // Hülle beschreibt den Segmentkörper; nur bei mehr als 15 % Überhöhung
+    // ersetzt sie deshalb den globalen Wert.
+    let radius = stationenRadius > 0
+      && globalerRadius > stationenRadius * (1 + RADIUS_DEVIATION_MAX)
+      ? stationenRadius
+      : globalerRadius;
     if (!(radius > 0) || !Number.isFinite(radius)) {
       uebersprungen.push(`Segment ${s.id} übersprungen: Radius ${radius} m aus ${dists.length} Vertex-Abständen (Perzentil ${radiusPercentile}) — keine Haut am Segment messbar`);
       continue;
@@ -1090,6 +1106,18 @@ export function measureJoints(gltf, opts = {}) {
 
   applyBindPose(ctx);   // sicherstellen, dass wirklich die Bind-Pose anliegt
 
+  // Grenze eines Kanals: gemessen, wenn measureJointLimits ein Ergebnis
+  // beigelegt hat, sonst der Katalogwert. Die Herkunft steht PRO RICHTUNG —
+  // ein Kanal kann unten anatomisch und oben gemessen sein (arm.swing am
+  // Xbot: nach hinten stoppt keine Selbstberührung, nach vorn der Rumpf).
+  // Eine pauschale Herkunft je Gelenk verschwiege genau das.
+  const gemesseneGrenzen = opts.limits && opts.limits.limits ? opts.limits.limits : null;
+  const grenzeFuer = (joint, name, spec) => {
+    const g = gemesseneGrenzen ? gemesseneGrenzen[`${joint}.${name}`] : null;
+    if (!g) return { limit: spec.limit, limitSource: { min: 'anatomisch', max: 'anatomisch' } };
+    return { limit: g.limit, limitSource: { min: g.source.min, max: g.source.max } };
+  };
+
   const joints = {};
   let measurableCount = 0;
   let notMeasurableCount = 0;
@@ -1147,7 +1175,7 @@ export function measureJoints(gltf, opts = {}) {
         dofOut[name] = {
           axis: spec.axis,
           sign: spec.mirror && def.joint.endsWith('_r') ? -1 : 1,
-          limit: spec.limit,
+          ...grenzeFuer(def.joint, name, spec),
           richtung: spec.richtung,
           signSource: 'nicht_messbar',
         };
@@ -1188,7 +1216,7 @@ export function measureJoints(gltf, opts = {}) {
         // Bewegung am Kettenende unterhalb der Nachweisgrenze: nicht messbar,
         // ausdrücklich gekennzeichnet — nicht stillschweigend 1.
         dofOut[name] = {
-          axis: spec.axis, sign: 1, limit: spec.limit,
+          axis: spec.axis, sign: 1, ...grenzeFuer(def.joint, name, spec),
           richtung: spec.richtung,
           signSource: 'nicht_messbar',
         };
@@ -1203,7 +1231,7 @@ export function measureJoints(gltf, opts = {}) {
         sign = -sign;         // Testhaken Negativfall: künstlich invertiert
       }
       dofOut[name] = {
-        axis: spec.axis, sign, limit: spec.limit,
+        axis: spec.axis, sign, ...grenzeFuer(def.joint, name, spec),
         richtung: spec.richtung,
         signSource: 'gemessen',
         measured: r4(measured),      // Welt-verschiebung am Kettenende in Metern
@@ -1216,7 +1244,6 @@ export function measureJoints(gltf, opts = {}) {
       bone: bone.name,
       dof: dofOut,
       signSource: anyMeasurable ? 'gemessen' : 'nicht_messbar',
-      limitSource: 'anatomisch',   // Bind-Pose kann Grenzen nicht liefern (plan.md 6.1)
     };
   }
 
@@ -1226,6 +1253,512 @@ export function measureJoints(gltf, opts = {}) {
     joints,
     counts: { measurable: measurableCount, notMeasurable: notMeasurableCount },
     warnings,
+  };
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gelenkgrenzen am Modell messen (statt sie aus einem Katalog zu übernehmen)
+//
+// Belegt (docs/buehne-befunde-2026-09-02.md, Befund E): der anatomische
+// Katalog erlaubt `arm.swing -130`, `arm.lift 100` und `knee.bend 150`. Am
+// Bild steckt der Oberarm im Kopf und der Unterschenkel im Oberschenkel, und
+// kein Werkzeug meldet es. NACHLESE.md Punkt 3 beschreibt dieselbe Sorte
+// Fehler eine Ebene tiefer: die Ellbogenachse stand als Handbuchwissen im
+// Katalog, statt gemessen zu werden.
+//
+// Verfahren: den Kanal aus der Bind-Pose heraus schrittweise aufdrehen und
+// nach jedem Schritt prüfen, ob sich zwei Hautdreiecke schneiden. Der letzte
+// schnittfreie Winkel ist die Grenze. Das Kriterium ist binär — Haut in Haut
+// oder nicht — und braucht keine Abstandsschwelle, die von der Vertexdichte
+// des Modells abhinge.
+//
+// Drei Dinge, die am Xbot gemessen wurden und ohne die das Verfahren falsche
+// Zahlen liefert:
+//
+// 1. NUR INNERHALB DESSELBEN MESHES. In der Bind-Pose schneiden sich am Xbot
+//    157 Dreieckspaare an der Schulter, 140 am Ellbogen, 113 am Knie —
+//    ausnahmslos `Beta_Joints × Beta_Surface`. Das Modell bringt ein zweites
+//    Mesh mit Gelenkkappen mit, das konstruktiv in der Außenhaut steckt.
+//    Meshübergreifend gerechnet wäre schon die Ruhepose eine Kollision.
+//
+// 2. DIE GELENKREGION BLEIBT AUSSEN VOR. Beim Beugen schiebt sich die Haut in
+//    der Beuge zusammen und schneidet sich selbst. Das ist Skinning, keine
+//    Kollision: die Schnitte sitzen alle wenige Zentimeter vom Gelenk. Ohne
+//    Ausschluss liefert das Verfahren knee.bend 40° statt 129° und elbow.bend
+//    35° statt 127° — die
+//    Figur wäre unbeweglich. Ausgeschlossen wird, was näher am Gelenk liegt
+//    als die Summe der beiden GEMESSENEN Kapselradien (Knie 15,2 cm, Ellbogen
+//    10,2 cm, Schulter 22,2 cm am Xbot).
+//
+// 3. NUR EINDEUTIG ZUGEORDNETE DREIECKE. Ein Dreieck zählt zu einem Segment,
+//    wenn alle drei Ecken ausschließlich von Knochen dieses Segments gewichtet
+//    werden. Am Xbot fallen dadurch 157 von 49 112 Dreiecken weg — 0,3 %.
+//
+// Was das Verfahren NICHT kann: Grenzen, an denen keine Haut auf Haut trifft.
+// Die Schulter stoppt im echten Körper durch Bänder und das Schulterblatt,
+// nicht durch Selbstberührung; `arm.swing` schwingt am Modell bis -150° frei.
+// Dort bleibt der Katalogwert stehen und heißt `anatomisch`. Die Herkunft
+// steht deshalb pro Kanal und pro Richtung, nicht pro Gelenk.
+//
+// Gemessen wird jeder Kanal ISOLIERT aus der Bind-Pose, alle anderen auf 0.
+// Echte Gelenkgrenzen sind gekoppelt — die Schulter kann bei angelegtem Arm
+// anderes als bei gehobenem. Das Verfahren liefert die Grenze in Neutral-
+// stellung, nicht mehr.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Verfahrensparameter der Grenzmessung. AGENTS.md Regel 1: unvermeidbar, aber
+ * an einer Stelle, mit Begründung, und im Ergebnis ausgegeben.
+ *
+ *  schrittGrad  Grobraster des Sweeps. 10° hält den Lauf bezahlbar; feiner
+ *               wird ausschließlich um den gefundenen Übergang herum gesucht.
+ *  feinGrad     Auflösung der anschließenden Bisektion. 1° ist die Einheit,
+ *               in der der Agent Winkel setzt — feiner brächte ihm nichts.
+ *  zellgroesseAnteil
+ *               Kantenlänge einer Gitterzelle als Anteil der Körperhöhe
+ *               (1,1 % = 2,0 cm am Xbot). Reiner Geschwindigkeitsparameter:
+ *               das Gitter filtert nur vor, das Ergebnis hängt nicht daran.
+ *  ausschluss   Wie weit um das Gelenk herum Schnitte als Hautfaltung gelten.
+ *               'radiensumme' heißt: die Summe der beiden gemessenen
+ *               Kapselradien. Eine Setzung — aber eine aus dem Modell
+ *               abgeleitete, keine eingetippte Zahl.
+ */
+export const GRENZ_PARAMS = {
+  schrittGrad: 10,
+  feinGrad: 1,
+  zellgroesseAnteil: 0.011,
+  ausschluss: 'radiensumme',
+};
+
+/**
+ * Die vier Entwicklungsclips. `run`, `headShake` und `sneak_pose` bleiben der
+ * Abnahme vorbehalten (AGENTS.md, Regel 3) und zaehlen hier nicht mit.
+ */
+export const REFERENZ_CLIPS = new Set(['idle', 'walk', 'agree', 'sad_pose']);
+
+/**
+ * Welche Winkel die mitgelieferten Animationen je Kanal tatsaechlich fahren.
+ *
+ * Wozu: eine Gelenkgrenze, gegen die eine ausgelieferte Animation DESSELBEN
+ * Modells verstoesst, ist widerlegt. Am Xbot klemmte der anatomische Katalog
+ * head.bend bei 30 Grad, waehrend `agree` 35,2 Grad faehrt, und
+ * shoulder_l.fwd bei 25 Grad gegen 26,4 gefahrene. Das Kriterium kommt aus dem
+ * Modell, nicht aus einer gewaehlten Zahl (docs/buehne-befunde-2026-09-02.md,
+ * Nachlese zu Auftrag E).
+ *
+ * Gemessen wird die Drehung gegen die Bind-Pose, um die Katalogachse zerlegt
+ * und durch das gemessene Vorzeichen geteilt — also in derselben Groesse, in
+ * der `limit` steht und der Agent seine Winkel setzt.
+ *
+ * @param {object} gltf  geladenes GLB mit `animations` und Skelett
+ * @returns {Map<string, {min: number, max: number}>}  Schluessel "gelenk.kanal"
+ */
+export function clipSpannen(gltf) {
+  const out = new Map();
+  if (!gltf || !Array.isArray(gltf.animations) || gltf.animations.length === 0) return out;
+
+  const { joints } = measureJoints(gltf);
+  let skeleton = null;
+  gltf.scene.traverse((o) => { if (o.isSkinnedMesh && !skeleton) skeleton = o.skeleton; });
+  if (!skeleton) return out;
+  const bind = new Map(skeleton.bones.map((b) => [b.name, b.quaternion.clone()]));
+
+  for (const clip of gltf.animations) {
+    if (!REFERENZ_CLIPS.has(clip.name)) continue;
+    const spuren = new Map();
+    for (const t of clip.tracks) {
+      if (t.name.endsWith('.quaternion')) spuren.set(t.name.slice(0, -11), t);
+    }
+    for (const [gelenk, j] of Object.entries(joints)) {
+      const spur = spuren.get(j.bone);
+      const qb = bind.get(j.bone);
+      if (!spur || !qb) continue;
+      for (const [kanal, d] of Object.entries(j.dof ?? {})) {
+        const schluessel = `${gelenk}.${kanal}`;
+        let e = out.get(schluessel);
+        if (!e) { e = { min: 0, max: 0 }; out.set(schluessel, e); }
+        const achse = d.axis === 'x' ? 0 : d.axis === 'y' ? 1 : 2;
+        for (let i = 0; i < spur.values.length / 4; i++) {
+          const q = [spur.values[i * 4], spur.values[i * 4 + 1],
+            spur.values[i * 4 + 2], spur.values[i * 4 + 3]];
+          const inv = [-qb.x, -qb.y, -qb.z, qb.w];
+          const dq = [
+            inv[3] * q[0] + inv[0] * q[3] + inv[1] * q[2] - inv[2] * q[1],
+            inv[3] * q[1] - inv[0] * q[2] + inv[1] * q[3] + inv[2] * q[0],
+            inv[3] * q[2] + inv[0] * q[1] - inv[1] * q[0] + inv[2] * q[3],
+            inv[3] * q[3] - inv[0] * q[0] - inv[1] * q[1] - inv[2] * q[2],
+          ];
+          let grad = 2 * Math.atan2(dq[achse], dq[3]) * 180 / Math.PI;
+          if (grad > 180) grad -= 360;
+          if (grad < -180) grad += 360;
+          const w = grad / (d.sign || 1);
+          if (!Number.isFinite(w)) continue;
+          if (w < e.min) e.min = w;
+          if (w > e.max) e.max = w;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Weitet anatomische Schranken auf, gegen die die Referenzclips verstossen.
+ *
+ * Nur `anatomisch` wird aufgeweitet: hinter einer `gemessen`-Grenze steht ein
+ * Haut-auf-Haut-Kontakt, also ein Beleg GEGEN die Bewegung. Faehrt ein Clip
+ * dort hinein, ist das Selbstdurchdringung und Sache der Physikpruefung, keine
+ * Gelenkgrenze.
+ *
+ * Beidseitig: der Katalog fuehrt die Grenzen ausdruecklich auf beiden Seiten
+ * identisch. `agree` winkt nur mit links — ohne Spiegelung waere die Figur
+ * danach einseitig beweglicher als vorher.
+ *
+ * @param {object} limits                Ergebnis der Kollisionsmessung, "gelenk.kanal" -> Eintrag
+ * @param {Map<string, object>} spannen  Ergebnis von clipSpannen
+ * @returns {string[]}  je aufgeweiteter Richtung eine Zeile fuer den Bericht
+ */
+export function weiteAnClips(limits, spannen) {
+  const bericht = [];
+  const gegen = (k) => (k.includes('_l.') ? k.replace('_l.', '_r.')
+    : k.includes('_r.') ? k.replace('_r.', '_l.') : null);
+
+  for (const [schluessel, s] of spannen) {
+    const paare = [schluessel, gegen(schluessel)].filter((k) => k && limits[k]);
+    if (paare.length === 0) continue;
+
+    for (const [seite, idx, verstoss] of [
+      ['min', 0, s.min < (limits[schluessel]?.limit?.[0] ?? 0)],
+      ['max', 1, s.max > (limits[schluessel]?.limit?.[1] ?? 0)],
+    ]) {
+      if (!verstoss) continue;
+      const gefahren = seite === 'min' ? s.min : s.max;
+      for (const k of paare) {
+        const e = limits[k];
+        if (e.source[seite] !== 'anatomisch') continue;   // gemessener Beleg bleibt
+        const alt = e.limit[idx];
+        const neu = Math.round(seite === 'min' ? Math.min(alt, gefahren) : Math.max(alt, gefahren));
+        if (neu === alt) continue;
+        e.limit[idx] = neu;
+        e.source[seite] = 'gemessen';
+        bericht.push(`${k} ${seite === 'min' ? 'unten' : 'oben'} ${alt}° → ${neu}° `
+          + `(Referenzclip faehrt ${gefahren.toFixed(1)}°)`);
+      }
+    }
+  }
+  return bericht;
+}
+
+/**
+ * Das spiegelbildliche Segment: thigh_l ↔ thigh_r. `null`, wenn es keins gibt.
+ *
+ * Warum es ausgenommen wird: eine Gelenkgrenze ist das, was das Gelenk selbst
+ * begrenzt. Beim isolierten Messen steht das gegenüberliegende Glied in
+ * Neutralstellung direkt daneben — beim Gehen ist es woanders. Am Xbot
+ * klemmte hip.spread dadurch bei 5° (foot_l gegen shin_r), während walk
+ * 10,9° fährt. Ausgenommen wird die ganze gespiegelte Kette, nicht nur das
+ * eine Segment: der Fuß trifft den Unterschenkel der Gegenseite. Zwei Glieder,
+ * die in einer Haltung ineinanderstecken, meldet die Physikprüfung
+ * (src/validate/physics.js, Prüfung 2); das ist keine Grenze des Gelenks.
+ */
+function spiegel(segId) {
+  if (segId.endsWith('_l')) return `${segId.slice(0, -2)}_r`;
+  if (segId.endsWith('_r')) return `${segId.slice(0, -2)}_l`;
+  return null;
+}
+
+/** Ist `bone` der Knochen selbst oder ein Nachfahre von `vorfahr`? */
+function istNachfahre(bone, vorfahr) {
+  let cur = bone;
+  while (cur) {
+    if (cur === vorfahr) return true;
+    cur = cur.parent && cur.parent.isBone ? cur.parent : null;
+  }
+  return false;
+}
+
+/**
+ * Hautdreiecke mit eindeutiger Segmentzugehörigkeit.
+ *
+ * Ein Dreieck zählt zu Segment S, wenn alle drei Ecken ausschließlich von
+ * Knochen aus S gewichtet werden. Ecken mit Gewicht auf zwei Segmenten sind
+ * die Übergangszone am Gelenk; ihre Dreiecke fallen weg.
+ */
+function hautDreiecke(ctx) {
+  const meshes = [];
+  ctx.scene.traverse((o) => { if (o.isSkinnedMesh) meshes.push(o); });
+  const tris = [];
+  let verworfen = 0, gesamt = 0;
+
+  for (let mi = 0; mi < meshes.length; mi++) {
+    const m = meshes[mi];
+    const bones = m.skeleton ? m.skeleton.bones : ctx.bones;
+    const segOfBone = segmentDerKnochen(ctx.rollen, bones);
+    const si = m.geometry.attributes.skinIndex;
+    const sw = m.geometry.attributes.skinWeight;
+    const anzahl = m.geometry.attributes.position.count;
+    if (!si || !sw) {
+      throw new Error(`Grenzmessung abgelehnt: SkinnedMesh „${m.name || 'unbenannt'}“ mit ${anzahl} Vertices ohne skinIndex/skinWeight — Segmentzuordnung unmöglich`);
+    }
+
+    const segOfVertex = new Array(anzahl).fill(null);
+    for (let i = 0; i < anzahl; i++) {
+      let seg = null, eindeutig = true;
+      for (let k = 0; k < 4; k++) {
+        if (sw.getComponent(i, k) <= 0) continue;
+        const b = bones[si.getComponent(i, k)];
+        const s = b ? (segOfBone.get(b) ?? null) : null;
+        if (seg === null) seg = s;
+        else if (seg !== s) { eindeutig = false; break; }
+      }
+      segOfVertex[i] = eindeutig ? seg : null;
+    }
+
+    const idx = m.geometry.index;
+    const dreiecke = idx ? idx.count / 3 : anzahl / 3;
+    gesamt += dreiecke;
+    for (let t = 0; t < dreiecke; t++) {
+      const a = idx ? idx.getX(t * 3) : t * 3;
+      const b = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+      const c = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+      const seg = segOfVertex[a];
+      if (seg !== null && segOfVertex[b] === seg && segOfVertex[c] === seg) {
+        tris.push({ mi, mesh: m, ecken: [a, b, c], seg });
+      } else {
+        verworfen++;
+      }
+    }
+  }
+  return { meshes, tris, gesamt, verworfen };
+}
+
+/**
+ * Weltpositionen einer Vertexmenge eines Meshes in der aktuell anliegenden
+ * Pose. Einmal je Vertex, nicht je Dreieck — ein Vertex gehört im Schnitt zu
+ * sechs Dreiecken.
+ */
+function posiere(mesh, ziel) {
+  const v = new THREE.Vector3();
+  for (const i of ziel.keys()) {
+    mesh.getVertexPosition(i, v);
+    mesh.localToWorld(v);
+    ziel.set(i, [v.x, v.y, v.z]);
+  }
+}
+
+/**
+ * Misst die Gelenkgrenzen am Modell.
+ *
+ * @param {{scene: THREE.Object3D}} gltf  Ergebnis von loadGLB
+ * @param {object} [opts]
+ * @param {string[]} [opts.joints]  nur diese Gelenke messen (sonst alle)
+ * @param {number} [opts.ausschlussRadius]  Faktor auf die Radiensumme; 0
+ *   schaltet den Ausschluss der Gelenkregion ab (Negativfall der Tests).
+ * @returns {{limits: object, params: object, warnings: string[], ms: number,
+ *   dreiecke: {gesamt: number, zugeordnet: number, verworfen: number}}}
+ */
+export function measureJointLimits(gltf, opts = {}) {
+  const t0 = Date.now();
+  const ctx = contextMitKorrekturen(gltf, opts);
+  const { joints } = measureJoints(gltf, opts);
+  const { segments } = measureSegments(ctx);
+  const radiusVon = new Map(segments.map((s) => [s.id, s.radius]));
+  const ausschlussFaktor = opts.ausschlussRadius ?? 1;
+  const nurGelenke = opts.joints ? new Set(opts.joints) : null;
+  const zellgroesseM = ctx.height * GRENZ_PARAMS.zellgroesseAnteil;
+
+  ctx.bindSaved = new Map();
+  for (const b of ctx.bones) {
+    ctx.bindSaved.set(b.name, { q: b.quaternion.clone(), p: b.position.clone() });
+  }
+  applyBindPose(ctx);
+
+  const { meshes, tris, gesamt, verworfen } = hautDreiecke(ctx);
+  const warnings = [];
+  const nichtMessbar = [];
+  const limits = {};
+
+  for (const def of JOINT_CATALOG) {
+    if (nurGelenke && !nurGelenke.has(def.joint)) continue;
+    const rBone = ctx.rollen.get(def.bone);
+    const gemessen = joints[def.joint];
+    if (!rBone || !gemessen) {
+      warnings.push(`Gelenk ${def.joint}: Rolle ${def.bone} in diesem Skelett mit ${ctx.bones.length} Knochen nicht erkannt — Grenzen bleiben anatomisch`);
+      continue;
+    }
+    const bone = rBone.bone;
+
+    // Was bewegt sich mit? Die Frage wird je VERTEX beantwortet, nicht je
+    // Segment: ein Segment kann mehrere Knochen umfassen (torso reicht vom
+    // Becken bis zum Hals), von denen nur ein Teil unter dem Gelenk hängt.
+    // Segmentweise gerechnet stand der halbe Rumpf still, während spine ihn
+    // verformte — spine.side klemmte dadurch bei 2°.
+    const bewegtVertex = new Map();
+    for (const m of meshes) {
+      const mb = m.skeleton ? m.skeleton.bones : ctx.bones;
+      const si = m.geometry.attributes.skinIndex;
+      const sw = m.geometry.attributes.skinWeight;
+      const flags = new Uint8Array(m.geometry.attributes.position.count);
+      for (let i = 0; i < flags.length; i++) {
+        for (let k = 0; k < 4; k++) {
+          if (sw.getComponent(i, k) <= 0) continue;
+          const b = mb[si.getComponent(i, k)];
+          if (b && istNachfahre(b, bone)) { flags[i] = 1; break; }
+        }
+      }
+      bewegtVertex.set(m, flags);
+    }
+    const bewegteTris = [], stehendeTris = [];
+    for (const t of tris) {
+      const f = bewegtVertex.get(t.mesh);
+      const n = f[t.ecken[0]] + f[t.ecken[1]] + f[t.ecken[2]];
+      if (n === 3) bewegteTris.push(t);
+      else if (n === 0) stehendeTris.push(t);
+      // gemischt: Dreieck wird beim Drehen verzerrt, es gehört keiner Seite
+    }
+
+    // Die gespiegelte Kette begrenzt dieses Gelenk nicht: bewegt sich das
+    // linke Bein, sind thigh_r, shin_r und foot_r keine Gelenkgrenze.
+    const gespiegelteKette = new Set();
+    for (const t of bewegteTris) {
+      const g = spiegel(t.seg);
+      if (g) gespiegelteKette.add(g);
+    }
+    if (bewegteTris.length === 0 || stehendeTris.length === 0) {
+      // Kein Fehler, sondern der Normalfall an der Wurzel: dreht das Becken,
+      // dreht die ganze Figur mit, und es gibt keine stehende Seite, gegen
+      // die etwas stoßen könnte. Solche Gelenke behalten ihre Katalogwerte.
+      // Als Warnung im Rig-Bericht wäre das Rauschen — dort steht, was am
+      // Modell auffällig ist, nicht was das Verfahren strukturell nicht kann.
+      nichtMessbar.push(`${def.joint}: ${bewegteTris.length} bewegte und ${stehendeTris.length} stehende Dreiecke — an diesem Gelenk kann keine Selbstberührung entstehen`);
+      continue;
+    }
+
+    // Stehende Seite einmal posieren und ins Gitter legen.
+    const stehendePunkte = new Map();
+    for (const m of meshes) stehendePunkte.set(m, new Map());
+    for (const t of stehendeTris) {
+      const ziel = stehendePunkte.get(t.mesh);
+      for (const i of t.ecken) if (!ziel.has(i)) ziel.set(i, null);
+    }
+    for (const m of meshes) posiere(m, stehendePunkte.get(m));
+    const gitter = new Kollisionsgitter(zellgroesseM);
+    for (let i = 0; i < stehendeTris.length; i++) {
+      const t = stehendeTris[i];
+      const p = stehendePunkte.get(t.mesh);
+      gitter.einfuegen(i, p.get(t.ecken[0]), p.get(t.ecken[1]), p.get(t.ecken[2]));
+    }
+
+    const bewegtePunkte = new Map();
+    for (const m of meshes) bewegtePunkte.set(m, new Map());
+    for (const t of bewegteTris) {
+      const ziel = bewegtePunkte.get(t.mesh);
+      for (const i of t.ecken) if (!ziel.has(i)) ziel.set(i, null);
+    }
+
+    const bindQ = bone.quaternion.clone();
+
+    /** Erstes schneidendes Segmentpaar bei diesem Agentenwinkel, oder null. */
+    const schnittBei = (grad, spec, sign) => {
+      const localAxis = new THREE.Vector3(
+        spec.axis === 'x' ? 1 : 0, spec.axis === 'y' ? 1 : 0, spec.axis === 'z' ? 1 : 0);
+      const worldAxis = localAxis.applyQuaternion(bindQ).normalize();
+      const q = new THREE.Quaternion().setFromAxisAngle(worldAxis, (grad * sign) * Math.PI / 180);
+      bone.quaternion.copy(bindQ).premultiply(q);
+      ctx.skeleton.update();
+      ctx.scene.updateMatrixWorld(true);
+
+      for (const m of meshes) posiere(m, bewegtePunkte.get(m));
+      const gelenkOrt = bone.getWorldPosition(new THREE.Vector3());
+
+      for (const t of bewegteTris) {
+        const p = bewegtePunkte.get(t.mesh);
+        const a = p.get(t.ecken[0]), b = p.get(t.ecken[1]), c = p.get(t.ecken[2]);
+        // Schwerpunkt des Dreiecks: sein Abstand zum Gelenk entscheidet, ob
+        // der Schnitt Hautfaltung ist oder eine echte Kollision.
+        const mx = (a[0] + b[0] + c[0]) / 3, my = (a[1] + b[1] + c[1]) / 3, mz = (a[2] + b[2] + c[2]) / 3;
+        const abstand = Math.hypot(mx - gelenkOrt.x, my - gelenkOrt.y, mz - gelenkOrt.z);
+        for (const j of gitter.kandidaten(a, b, c)) {
+          const s = stehendeTris[j];
+          if (s.mi !== t.mi) continue;               // andere Meshes stecken konstruktiv ineinander
+          if (gespiegelteKette.has(s.seg)) continue; // die Gegenseite steht nur zufaellig daneben
+          if (abstand < ausschlussFaktor * ((radiusVon.get(t.seg) ?? 0) + (radiusVon.get(s.seg) ?? 0))) continue;
+          const q0 = stehendePunkte.get(s.mesh);
+          if (dreieckSchnitt(a, b, c, q0.get(s.ecken[0]), q0.get(s.ecken[1]), q0.get(s.ecken[2]))) {
+            return `${t.seg}|${s.seg}`;
+          }
+        }
+      }
+      return null;
+    };
+
+    for (const [name, spec] of Object.entries(def.dofs)) {
+      const dof = gemessen.dof[name];
+      const sign = dof ? (dof.sign ?? 1) : 1;
+      const eintrag = {
+        limit: [spec.limit[0], spec.limit[1]],
+        source: { min: 'anatomisch', max: 'anatomisch' },
+        treffer: { min: null, max: null },
+      };
+      for (const seite of ['min', 'max']) {
+        const schranke = seite === 'min' ? spec.limit[0] : spec.limit[1];
+        if (schranke === 0) continue;               // nichts aufzudrehen
+        const richtung = Math.sign(schranke);
+        let frei = 0, paar = null, treffer = null;
+        for (let g = GRENZ_PARAMS.schrittGrad; g <= Math.abs(schranke); g += GRENZ_PARAMS.schrittGrad) {
+          paar = schnittBei(g * richtung, spec, sign);
+          if (paar) { treffer = g; break; }
+          frei = g;
+        }
+        if (!treffer && Math.abs(schranke) % GRENZ_PARAMS.schrittGrad !== 0) {
+          paar = schnittBei(schranke, spec, sign);
+          if (paar) treffer = Math.abs(schranke);
+        }
+        if (!treffer) continue;                     // kein Schnitt: Katalog bleibt
+
+        // Zwischen dem letzten freien und dem ersten schneidenden Schritt
+        // bisektieren, bis feinGrad erreicht ist.
+        let unten = frei, oben = treffer, letztesPaar = paar;
+        while (oben - unten > GRENZ_PARAMS.feinGrad) {
+          const mitte = Math.round((unten + oben) / 2);
+          if (mitte === unten || mitte === oben) break;
+          const p = schnittBei(mitte * richtung, spec, sign);
+          if (p) { oben = mitte; letztesPaar = p; } else { unten = mitte; }
+        }
+        eintrag.limit[seite === 'min' ? 0 : 1] = unten * richtung;
+        eintrag.source[seite] = 'gemessen';
+        eintrag.treffer[seite] = letztesPaar;
+      }
+      limits[`${def.joint}.${name}`] = eintrag;
+    }
+
+    bone.quaternion.copy(bindQ);
+    ctx.skeleton.update();
+    ctx.scene.updateMatrixWorld(true);
+  }
+
+  restoreBind(ctx);
+
+  // Nach dem Einengen das Aufweiten: die Kollisionsmessung kann eine Schranke
+  // nur enger machen. Eine Schranke, gegen die eine ausgelieferte Animation
+  // desselben Modells verstoesst, ist aber widerlegt — am Xbot klemmte
+  // head.bend bei 30 Grad, waehrend `agree` 35,2 faehrt.
+  const aufgeweitet = weiteAnClips(limits, clipSpannen(gltf));
+
+  return {
+    limits,
+    aufgeweitet,
+    params: {
+      schrittGrad: GRENZ_PARAMS.schrittGrad,
+      feinGrad: GRENZ_PARAMS.feinGrad,
+      zellgroesseM: r4(zellgroesseM),
+      ausschluss: GRENZ_PARAMS.ausschluss,
+    },
+    dreiecke: { gesamt, zugeordnet: tris.length, verworfen },
+    nichtMessbar,
+    warnings,
+    ms: Date.now() - t0,
   };
 }
 
@@ -1248,11 +1781,11 @@ export function applyBindPose(ctx) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Misst den Bind-Pose-Oberflächenabstand ALLER nicht benachbarten
- * Segmentpaare, in Metern und MIT VORZEICHEN: negativ, wo sich die Kapseln
- * schon in der Bind-Pose überschneiden. Benachbart = die Segmente teilen
- * einen Knochen; die sollen sich immer berühren dürfen und werden nicht
- * eingesammelt.
+ * Misst den Bind-Pose-Oberflächenabstand ALLER Segmentpaare, in Metern und
+ * MIT VORZEICHEN: negativ, wo sich die Kapseln schon in der Bind-Pose
+ * überschneiden. An einem gemeinsamen Gelenk beginnt die Kapsel erst einen
+ * gemessenen Radius hinter dem Gelenk; die konstruktive Berührung selbst wird
+ * damit nicht als Durchdringung gespeichert.
  *
  * @returns {Object<string, number>} {"segmentA|segmentB": Abstand in Metern}
  */
@@ -1271,22 +1804,13 @@ export function measureRestDistances(gltf, opts = {}) {
   }
   const ids = [...caps.keys()];
 
-  // Benachbart heißt: die beiden Segmente teilen sich einen Endpunkt, hängen
-  // also am selben Gelenk (Oberschenkel/Unterschenkel am Knie). Ihre Kapseln
-  // überschneiden sich dort konstruktiv und bei jeder Beugung mehr — sie als
-  // Durchdringung zu melden, wäre in jedem gebeugten Knie ein Fehlalarm.
+  // ALLE Paare eintragen, auch die zehn Gelenkpaare. Früher wurden sie
+  // grundsätzlich ausgelassen; ein vollständig in den Oberschenkel
+  // eingeklappter Unterschenkel war dadurch strukturell unsichtbar. Die
+  // gekürzten Achsen lassen die normale Gelenkregion frei, aber nicht die
+  // Überbeugung dahinter (Bühnenbefund D).
   //
-  // Die frühere Fassung prüfte nur A.from|B.to und B.from|A.to und übersah
-  // damit den häufigsten Fall A.to === B.from (Rumpf/Kopf am Hals). Solange
-  // nur nahe Paare eingetragen wurden, fiel das nicht auf.
-  const isAdjacent = (a, b) => {
-    const A = SEGMENTS.find((x) => x.id === a);
-    const B = SEGMENTS.find((x) => x.id === b);
-    if (!A || !B) return true;
-    return A.from === B.from || A.from === B.to || A.to === B.from || A.to === B.to;
-  };
-
-  // ALLE nicht benachbarten Paare eintragen, nicht nur die in der Bind-Pose
+  // Nicht nur in der Bind-Pose nahe Paare eintragen:
   // nahen. Die frühere Schranke (5 % Körperhöhe) ließ am Xbot 22 von 82
   // Paaren übrig — ohne torso|hand_l und ohne torso|forearm_l. Eine Hand im
   // Rumpf konnte deshalb gar nicht gemeldet werden: das Paar existierte in
@@ -1303,14 +1827,49 @@ export function measureRestDistances(gltf, opts = {}) {
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
       const a = ids[i], b = ids[j];
-      if (isAdjacent(a, b)) continue;
       const [a1, a2] = caps.get(a);
       const [b1, b2] = caps.get(b);
+      const A = SEGMENTS.find((s) => s.id === a);
+      const B = SEGMENTS.find((s) => s.id === b);
+      if (!A || !B) continue;
+      const [aa1, aa2, bb1, bb2] = kapselachsenAmGelenk(
+        a1, a2, b1, b2, A, B, radiusById.get(a), radiusById.get(b));
       restDistances[`${a}|${b}`] =
-        r4(segSegDist(a1, a2, b1, b2) - (radiusById.get(a) + radiusById.get(b)));
+        r4(segSegDist(aa1, aa2, bb1, bb2) - (radiusById.get(a) + radiusById.get(b)));
     }
   }
   return restDistances;
+}
+
+/** Gemeinsamer Rollenendpunkt zweier Segmentdefinitionen, sonst null. */
+function gemeinsamesSegmentgelenk(A, B) {
+  for (let a = 0; a < 2; a++) {
+    for (let b = 0; b < 2; b++) {
+      if ([A.from, A.to][a] === [B.from, B.to][b]) return { a, b };
+    }
+  }
+  return null;
+}
+
+/** Schneidet die Kapselachse am gemeinsamen Gelenk um ihren gemessenen Radius. */
+function kuerzeKapselachse(p0, p1, ende, radius) {
+  const out = [p0.clone(), p1.clone()];
+  const joint = out[ende];
+  const other = out[1 - ende];
+  const laenge = joint.distanceTo(other);
+  if (!(laenge > 0) || !(radius > 0)) return out;
+  out[ende].lerp(other, Math.min(radius, laenge / 2) / laenge);
+  return out;
+}
+
+/** Kapselachsen eines Paares; Nachbarn ohne konstruktive Gelenküberdeckung. */
+function kapselachsenAmGelenk(a1, a2, b1, b2, A, B, rA, rB) {
+  const geteilt = gemeinsamesSegmentgelenk(A, B);
+  if (!geteilt) return [a1, a2, b1, b2];
+  return [
+    ...kuerzeKapselachse(a1, a2, geteilt.a, rA),
+    ...kuerzeKapselachse(b1, b2, geteilt.b, rB),
+  ];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1466,9 +2025,22 @@ export function measureRigProfile(gltf, opts = {}) {
     }
   }
 
-  // Gelenke: Vorzeichen messen.
+  // Gelenke: Vorzeichen messen, Grenzen am Modell suchen.
+  //
+  // Die Grenzmessung kostet am Xbot 1,9 s gegenüber 0,13 s für den
+  // Rest des Profils — sie dreht jeden Kanal durch und prüft nach jedem
+  // Schritt auf Selbstdurchdringung. Das ist der Preis dafür, dass die
+  // Grenzen aus dem Modell kommen statt aus einem Handbuch. Sie läuft einmal
+  // je geladenem Modell. `opts.grenzenMessen: false` schaltet sie ab; die
+  // Grenzen heißen dann wieder durchgehend `anatomisch`, wie vor dieser
+  // Messung (docs/plan.md 6.1 in seiner alten Fassung).
   const probeDeg = opts.probeDeg ?? PROBE_DEG;
-  const measured = measureJoints(gltf, { ...opts, probeDeg });
+  let grenzen = null;
+  if (opts.grenzenMessen !== false) {
+    grenzen = measureJointLimits(gltf, { ...opts, probeDeg });
+    warnings.push(...grenzen.warnings);
+  }
+  const measured = measureJoints(gltf, { ...opts, probeDeg, limits: grenzen });
   warnings.push(...measured.warnings);
 
   // Ruheabstände.
@@ -1518,6 +2090,9 @@ export function measureRigProfile(gltf, opts = {}) {
       radiusPercentile: opts.radiusPercentile ?? RADIUS_PERCENTILE,
       soleTolerance: SOLE_TOLERANCE,
       contactMargin: CONTACT_MARGIN,
+      // Verfahrensparameter der Grenzmessung, damit im Rig-Bericht steht,
+      // wie fein gesucht und was um das Gelenk herum ausgeschlossen wurde.
+      grenzen: grenzen ? grenzen.params : null,
     },
     warnings,
   };

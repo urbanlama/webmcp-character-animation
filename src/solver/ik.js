@@ -193,7 +193,9 @@ export function gelenkQuat(kn, skel, gelenkName) {
  * ziele = {
  *   anker:   [{knochen, soll, id}],             // Fußanker, Welt Meter
  *   com:     {soll} | null,                     // Schwerpunktbahn
- *   boden:   [{knochen}] ,                      // diese Knochen nicht unter groundY
+ *   boden:   [{knochen, lokal?, id?, marge?}],  // diese Punkte nicht unter groundY;
+ *                                               // lokal wie beim Anker (Sohlenpunkt),
+ *                                               // marge in Metern, Standard 0
  *   haltung: {name: wert}                       // weiche Gelenkvorzugaben in Grad
  * }
  *
@@ -218,10 +220,20 @@ export function ankerPunkt(skel, kn, a) {
   return vAdd(b.pos, vScale(qRot(b.quat, a.lokal), stab));
 }
 
+/**
+ * Wie tief ein Bodenziel unter seiner erlaubten Höhe liegt, in Metern.
+ * Positiv heißt: im Boden (bzw. unter der Marge). Der Punkt ist der Knochen-
+ * ursprung oder, mit `lokal`, ein knochenfester Punkt wie eine Sohle.
+ */
+function bodenTiefe(skel, kn, b) {
+  if (!kn.get(b.knochen)) throw new Error(`Bodenziel: Knochen „${b.knochen}“ nicht in ${kn.size} gelösten`);
+  const p = ankerPunkt(skel, kn, b);
+  return (skel.groundY + (b.marge ?? 0)) - p[1];
+}
+
 export function restvektor(skel, pose, ziele, gelenke) {
   const kn = poseZuFk(skel, pose);
   const r = [];
-  const bodenTol = skel.height * 0.01;
 
   for (const a of ziele.anker) {
     const p = ankerPunkt(skel, kn, a);
@@ -232,10 +244,15 @@ export function restvektor(skel, pose, ziele, gelenke) {
     r.push({ art: 'com', teil: 'schwerpunkt', vektor: vSub(com, ziele.com.soll), gewicht: GEWICHT.schwerpunkt });
   }
   for (const b of ziele.boden) {
-    const p = kn.get(b.knochen);
-    if (!p) throw new Error(`Bodenziel: Knochen „${b.knochen}“ nicht in ${kn.size} gelösten`);
-    const tiefe = (skel.groundY + bodenTol) - p.pos[1];
-    if (tiefe > 0) r.push({ art: 'boden', teil: b.knochen, vektor: [0, -tiefe, 0], gewicht: GEWICHT.boden });
+    // IMMER ein Eintrag, auch wenn der Punkt über dem Boden liegt (dann 0).
+    // Der Restvektor muss zwischen Plus- und Minus-Schritt der zentralen
+    // Differenz gleich lang bleiben. Vorher stand der Eintrag nur bei
+    // tiefe > 0: genau an der Bodenebene — wo der Bodenstand die Zehen
+    // hinstellt — kippte er zwischen den beiden Schritten, die Jacobi-Matrix
+    // bekam NaN, und die Optimierung brach nach 3 Iterationen ab (gemessen
+    // am Xbot: Anker 9,3 cm verfehlt, ohne Bodenziele 0,04 cm).
+    const tiefe = Math.max(0, bodenTiefe(skel, kn, b));
+    r.push({ art: 'boden', teil: b.id ?? b.knochen, vektor: [0, -tiefe, 0], gewicht: GEWICHT.boden });
   }
   // Haltungsrest in METER, nicht in Grad: sonst rechnet die Optimierung
   // Winkel gegen Strecken und bleibt im Minimum des Haltungsziels stehen
@@ -265,14 +282,17 @@ function flach(r) {
  * @param {object} pose0    Startpose {wpos, waxis, pivot, dofs}
  * @param {object} ziele    siehe restvektor
  * @param {string[]} gelenke freie Gelenkschlüssel ("hip_l.flex")
- * @param {object} [opt]    {wurzelFrei: true|false, iterationen}
+ * @param {object} [opt]    {wurzelFrei: true|false|'y', iterationen} — 'y' lässt
+ *                          nur die Höhe der Wurzel frei (Bodenstand mit Fußanker:
+ *                          das Becken darf sinken, damit das Standbein reicht,
+ *                          aber nicht seitlich oder vorwärts wandern)
  * @returns {{pose, fehler, iterationen, abgebrochen}}
  */
 export function optimiere(skel, pose0, ziele, gelenke, opt = {}) {
-  const wurzelFrei = opt.wurzelFrei !== false;
+  const wurzelAchsen = opt.wurzelFrei === 'y' ? [1] : (opt.wurzelFrei !== false ? [0, 1, 2] : []);
   const maxIt = opt.iterationen ?? ITERATIONEN;
   const pose = kopierePose(pose0);
-  const offset = wurzelFrei ? 3 : 0;
+  const offset = wurzelAchsen.length;
   const n = offset + gelenke.length;
 
   // Grenzwerte je Variable: Gelenke hart auf Profilgrenze (Rang 1, plan.md 6.4).
@@ -297,7 +317,7 @@ export function optimiere(skel, pose0, ziele, gelenke, opt = {}) {
       let h;
       if (i < offset) {
         h = SCHRITT_METER;
-        plus.wpos[i] += h; minus.wpos[i] -= h;
+        plus.wpos[wurzelAchsen[i]] += h; minus.wpos[wurzelAchsen[i]] -= h;
       } else {
         const k = gelenke[i - offset];
         h = SCHRITT_GRAD;
@@ -331,7 +351,7 @@ export function optimiere(skel, pose0, ziele, gelenke, opt = {}) {
     let bewegung = 0;
     for (let i = 0; i < offset; i++) {
       const d = beg(delta[i], -SCHRANK_METER, SCHRANK_METER);
-      pose.wpos[i] += d;
+      pose.wpos[wurzelAchsen[i]] += d;
       bewegung = Math.max(bewegung, Math.abs(d) / SCHRANK_METER);
     }
     gelenke.forEach((k, gi) => {
@@ -402,11 +422,9 @@ export function vermessen(skel, pose, ziele, gelenke) {
     out.com_soll = ziele.com.soll;
     out.com_betrag_m = vLen(vSub(com, ziele.com.soll));
   }
-  const bodenTol = skel.height * 0.01;
   for (const b of ziele.boden) {
-    const p = kn.get(b.knochen);
-    const tiefe = (skel.groundY + bodenTol) - p.pos[1];
-    if (tiefe > 0) out.boden.push({ teil: b.knochen, tiefe_m: tiefe });
+    const tiefe = bodenTiefe(skel, kn, b);
+    if (tiefe > 0) out.boden.push({ teil: b.id ?? b.knochen, tiefe_m: tiefe });
   }
   for (const k of gelenke) {
     const d = skel.dofs[k];

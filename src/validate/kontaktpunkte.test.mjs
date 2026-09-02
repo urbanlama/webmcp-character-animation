@@ -46,6 +46,28 @@ async function aufbau() {
   return { profil, skel, standHoehe };
 }
 
+/**
+ * Dieselben Frames, um `m` Meter in den Boden gedrückt — so, wie sie ein
+ * fremder Erzeuger liefern könnte.
+ *
+ * Seit dem Bodenstand (Bühnenlauf 2. September 2026, Befund A) liefert der
+ * Löser keine Figur mehr im Boden: eine zu tief gesetzte Wurzel wird
+ * angehoben und gemeldet. Der Validator muss den Fall trotzdem erkennen —
+ * Frames kommen nicht nur vom eigenen Löser. Deshalb senkt der Test selbst.
+ */
+function inDenBodenGedrueckt(frames, m) {
+  const runter = (p) => [p[0], p[1] - m, p[2]];
+  return frames.map((f) => ({
+    ...f,
+    positions: Object.fromEntries(Object.entries(f.positions).map(([k, p]) => [k, runter(p)])),
+    solePositions: f.solePositions
+      ? Object.fromEntries(Object.entries(f.solePositions).map(([k, p]) => [k, runter(p)]))
+      : f.solePositions,
+    com: f.com ? runter(f.com) : f.com,
+    root: f.root ? { ...f.root, pos: runter(f.root.pos) } : f.root,
+  }));
+}
+
 /** Eine Haltung über sechs Frames stillstehen lassen. */
 function halte(profil, skel, joints, rootPos) {
   const { frames } = loeseBewegung(profil, skel, {
@@ -85,7 +107,7 @@ test('Boden: abgesenkte Wurzel meldet alle acht Sohlen mit dem richtigen Betrag'
   assert.equal(befunde(profil, stand, 'boden').length, 0,
     'die stehende Figur darf keinen Bodenfehler haben');
 
-  const gesenkt = halte(profil, skel, {}, [0, standHoehe - ABSENKUNG, 0]);
+  const gesenkt = inDenBodenGedrueckt(halte(profil, skel, {}, [0, standHoehe, 0]), ABSENKUNG);
   const sohlen = befunde(profil, gesenkt, 'boden').filter((i) => i.part.startsWith('sole_'));
 
   const proFrame = new Map();
@@ -112,7 +134,7 @@ test('Boden: abgesenkte Wurzel meldet alle acht Sohlen mit dem richtigen Betrag'
 
 test('Boden, Negativfall: ohne Sohlenverzeichnis melden nur zwei Zehenknochen', async () => {
   const { profil, skel, standHoehe } = await aufbau();
-  const gesenkt = halte(profil, skel, {}, [0, standHoehe - ABSENKUNG, 0]);
+  const gesenkt = inDenBodenGedrueckt(halte(profil, skel, {}, [0, standHoehe, 0]), ABSENKUNG);
   const alt = befunde(profil, ohneSohlenverzeichnis(gesenkt), 'boden');
   const teile = [...new Set(alt.map((i) => i.part))];
 

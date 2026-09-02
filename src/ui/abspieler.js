@@ -149,7 +149,11 @@ export function mounteAbspieler({ wurzel, holeBewegung, stelleFrame, dokument })
     const max = Math.max(0, n - 1);
     if (schieber.max !== String(max)) schieber.max = String(max);
     if (index > max) index = max;
-    anzeige.textContent = `Frame ${index + 1} / ${n}`;
+    // 0-basiert, wie die Werkzeuge zaehlen (Befund 3.7, Buehnenlauf 2.9.2026):
+    // Der Mensch und der Agent muessen denselben Frame nennen. Die Spanne
+    // 0..n-1 ist dieselbe, die set_pose, describe_pose und die Ablehnung
+    // des Anfahrens benutzen.
+    anzeige.textContent = `Frame ${index} / ${max}`;
     if (schieber.value !== String(index)) schieber.value = String(index);
   }
 

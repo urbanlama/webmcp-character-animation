@@ -368,10 +368,19 @@ Bind-Pose-Ruheabstände, Vorzeichen der Freiheitsgrade.
 
 **Was nicht gemessen werden kann, wird ausdrücklich gekennzeichnet:**
 
-- *Gelenkgrenzen.* Aus einer Bind-Pose nicht ableitbar. Es gelten anatomische
-  Standardwerte, skaliert auf die Proportionen des Modells, mit `limitSource:
-  "anatomisch"` im Profil. Das ist eine deklarierte Ausnahme von der Messregel, keine
-  stille.
+- *Gelenkgrenzen.* **Teilweise messbar — seit dem 2. September 2026.** Aus der
+  ruhenden Bind-Pose lässt sich keine Grenze ablesen; aus dem Modell, das man
+  durchbiegt, schon. `measureJointLimits` dreht jeden Kanal aus der Bind-Pose heraus
+  auf und sucht den ersten Schnitt zweier Hautdreiecke. Der letzte schnittfreie
+  Winkel ist die Grenze (am Xbot: `knee.bend` 129° statt 150°, `arm.lift` 92° statt
+  100°). Was keine Selbstberührung stoppt, findet das Verfahren nicht — die Schulter
+  hält im echten Körper das Schulterblatt, `arm.swing` schwingt am Modell bis -150°
+  frei. Dort bleibt der anatomische Standardwert stehen.
+
+  Die Herkunft steht deshalb **pro Kanal und pro Richtung** in `dof.limitSource`
+  (`{min, max}`), nicht pauschal je Gelenk: derselbe Kanal kann unten `anatomisch`
+  und oben `gemessen` sein. Eine Herkunft je Gelenk verschwiege genau das, und der
+  Agent wüsste nicht, welcher Grenze er trauen kann.
 - *Twist-Vorzeichen.* Am Kettenende nicht messbar. Wird über einen seitlich versetzten
   Punkt am Knochen gemessen; gelingt auch das nicht, gilt `signSource: "nicht_messbar"`
   und das Vorzeichen bleibt 1.
@@ -453,6 +462,26 @@ Klare Rangfolge bei Konflikten, von hart nach weich:
 
 Wird eine weichere Bedingung zugunsten einer härteren aufgegeben, steht das im Bericht
 mit Betrag: „Schwerpunktbahn um 6 cm verfehlt, weil sonst das Knie überstreckt würde."
+
+**Bodenstand — die Wurzelhöhe hat einen Normalzustand, den Boden.** Belegt im Bühnenlauf
+vom 2. September 2026: jede Beinpose verkürzte die Beinkette, die Wurzel blieb, die Figur
+schwebte (Hocke 15,5 cm über dem Boden); der Agent riet die Höhe und steckte 11 cm im Boden;
+für beides kam dieselbe Meldung, und weil „Flug" galt, fielen Balance und Rutschen still aus.
+
+Seitdem: Ohne gesetzte Höhe stellt der Löser in jedem Frame den tiefsten Punkt der Figur
+(Sohlen und Knochen mit Haut — am Xbot liegen die Zehenknochen unter den Sohlenpunkten) auf
+die Bodenebene. `root.pos` mit einer Zahl in y hebt sie ausdrücklich an, `[x, null, z]`
+bewegt sie am Boden. Zwischen einem Boden-Schlüsselbild und einer gesetzten Höhe läuft die
+Höhenkurve (auch `wurf`: der Absprung braucht keine geratene Höhe), zwischen zwei
+Boden-Schlüsselbildern wird je Frame abgesetzt. Rang 2 wird ZULETZT durchgesetzt: was nach
+den Fußankern noch im Boden steckt, wird angehoben und als Konflikt mit Betrag gemeldet.
+
+Ein Fußanker darf das Becken sinken lassen, wenn keine Höhe gesetzt ist (Schritt: 3,4 cm
+am Xbot); verankert werden Fuß- und Zehenknochen, damit die Sohle flach bleibt. Das freie
+Bein hält der Agent selbst über dem Boden — steckt es im Boden, geht Rang 2 vor Rang 3,
+die Figur wird angehoben, und der Ankerkonflikt nennt genau diese Anhebung als Grund.
+Versucht und verworfen: das freie Bein per IK vom Boden heben — ein gestrecktes Bein ist
+eine Singularität, die Optimierung wich über `hip.spread` seitlich aus.
 
 ### 6.5 Drehimpuls
 

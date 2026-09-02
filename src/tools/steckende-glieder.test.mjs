@@ -6,11 +6,11 @@
 // (src/validate/physics.js), läuft aber nur in `validate` — also erst, nachdem
 // der Agent ein Dutzend weitere Haltungen daraufgesetzt hat.
 //
-// Am Xbot gemessen: arm_l.swing 90 mit elbow_l.bend 150 ergibt torso|hand_l
-// 22,2 cm Überschneidung bei 13,7 cm erlaubt. Genau das muss in der Antwort
-// von set_pose stehen, so wie das Fußrutschen dort schon steht.
+// Die gemessene Ellbogengrenze klemmt 150° jetzt auf 127°. Diese harte Pose
+// bringt die linke Hand trotzdem in den rechten Oberarm (10,3 cm) — genau
+// dieses tatsächlich gelöste Paar muss in der set_pose-Antwort stehen.
 //
-// Positivfall: die Hand im Rumpf wird mit beiden Teilen und dem Betrag genannt.
+// Positivfall: das gelöste Paar wird mit beiden Teilen und dem Betrag genannt.
 // Negativfall: ein hängender Arm ist keine Durchdringung und bleibt still —
 // sonst wäre die Meldung Rauschen und der Agent lernt, sie zu übergehen.
 
@@ -39,14 +39,14 @@ function timeline(joints) {
 
 const geloest = (joints) => loeseBewegung(PROFIL, SKEL, timeline(joints), {}).frames[0];
 
-test('Hand im Rumpf: die Wirkung nennt beide Teile und den Betrag', () => {
+test('Durchdringung: die Wirkung nennt beide Teile und den Betrag', () => {
   const frame = geloest({ arm_l: { swing: 90 }, elbow_l: { bend: 150 } });
   const saetze = steckendeGliedmassen(PROFIL, frame);
 
   assert.equal(saetze.length, 1, `erwartet genau einen Satz, bekommen: ${JSON.stringify(saetze)}`);
   const s = saetze[0];
-  assert.match(s, /torso/, 'der Rumpf muss benannt sein');
   assert.match(s, /hand_l/, 'die Hand muss benannt sein');
+  assert.match(s, /upperarm_r/, 'der tatsächlich getroffene Gegenarm muss benannt sein');
   assert.match(s, /\d+,\d cm/, 'der Betrag muss in cm dastehen');
   assert.match(s, /validate/, 'der Agent muss wissen, dass validate das später meldet');
 });

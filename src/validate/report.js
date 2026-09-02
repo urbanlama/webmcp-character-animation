@@ -52,16 +52,42 @@ import { istInt } from '../contracts/validate.js';
 // BENANNTER PARAMETER (Verfahrensparameter, kein Körpermaß)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Höchste Frame-Zahl, die in einen Bildstreifen geht. Begrenzt durch den
- *  Bildstreifen selbst: AP9 kürzt ab PANELS_ZEIT_MAX Panels (24 — gemessen
- *  1133 ms für 24, 2151 ms für 48 Panels, src/render/strip.js
- *  PANELS_ZEIT_MAX) und das Bytebudget 512 KB nimmt nur bis zu 12 Panels je
- *  2 Ansichten; 12 Frames × 2 Ansichten ergeben gemessen 527 KB Antwort und
- *  wurden NACH dem Rendern abgewiesen. 6 Frames × 2 Ansichten bleiben mit
- *  Base64 zuzüglich Bericht messbar unter beiden Grenzen. Wird der Wert
- *  angepasst, muss er mit PANELS_ZEIT_MAX und FRAMES_MAX in src/render/strip.js
- *  abgeglichen werden (Messskript: spikes/tmp-strip-zeit.mjs). */
-export const MAX_BILDFRAMES = 6;
+/** Wie viele Frames der Bericht ins Bild nimmt: genau einer.
+ *
+ *  Bis zum 2. September 2026 waren es sechs, in zwei Ansichten nebeneinander
+ *  geklebt — zwölf Kacheln, jede Figur fingernagelgroß, und darauf war eine
+ *  Fehlhaltung nachweislich nicht erkennbar (docs/buehne-befunde-2026-09-02.md,
+ *  Punkt 1). Gezeigt wird jetzt EIN Moment, dafür groß und aus zwei Richtungen.
+ *  Den Verlauf liefert `trace`, den zeitlichen Zusammenhang also nicht mehr der
+ *  Bericht. */
+export const MAX_BILDFRAMES = 1;
+
+export const BERICHT_SKALA = 0.72;
+
+/** Die zwei Blickrichtungen des Prüfberichts, um 90 Grad versetzt.
+ *
+ *  Warum zwei und nicht einer: aus einem einzelnen Blick ist ein 3D-Raum nicht
+ *  eindeutig — ein Arm VOR dem Körper und ein Arm NEBEN dem Körper sehen von
+ *  vorn gleich aus. Zwei versetzte Blicke lösen das auf.
+ *
+ *  Warum nicht mehr: jede weitere Ansicht kostet Bildgröße im selben
+ *  Antwortbudget. Bis zum 2. September 2026 klebte der Bericht sechs Frames in
+ *  zwei Ansichten zusammen — zwölf Kacheln, jede Figur fingernagelgroß, und
+ *  darauf war eine Fehlhaltung nachweislich nicht erkennbar
+ *  (docs/buehne-befunde-2026-09-02.md, Punkt 1).
+ *
+ *  30 Grad ist der Standardblick von `look` (RICHTUNG_STANDARD_GRAD), 120 der
+ *  um 90 Grad gedrehte dazu. */
+export const BERICHT_ANSICHTEN = [
+  { richtung_grad: 30, hoehe_grad: 10, weite: 'ganz', skala: BERICHT_SKALA, sparsam: true },
+  { richtung_grad: 120, hoehe_grad: 10, weite: 'ganz', skala: BERICHT_SKALA, sparsam: true },
+];
+
+/** Zwei Bilder in voller Groesse (640x800) sprengen das Antwortbudget: gemessen
+ *  537 KB gegen 512 KB erlaubt, weil Base64 ein Drittel aufschlaegt. 0,72
+ *  halbiert die Flaeche und laesst beide Blicke zusammen mit dem Bericht
+ *  durch — 461x576 je Bild, immer noch das 2,3-fache der alten Rasterkachel
+ *  (300x380), auf der nachweislich nichts zu erkennen war. */
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helfer
@@ -131,29 +157,27 @@ export function waehleBildframes(frameCount, beanstandet, phasen) {
     fehler(`frameCount = ${JSON.stringify(frameCount)}: erwartet ganzzahlige Timelinellänge > 0, `
       + `ohne sie kann kein Frame in den Bildstreifen gewählt werden`);
   }
-  const kritisch = new Set((beanstandet ?? []).map(Number));
-  for (const p of phasen) {
-    if (istInt(p.from) && p.from >= 0) kritisch.add(p.from);
-    if (istInt(p.to) && p.to - 1 >= 0) kritisch.add(p.to - 1);
+  // Der Frame mit den MEISTEN Beanstandungen. Der frueheste waere der falsche:
+  // eine Bewegung beginnt oft mit einer harmlosen Randmeldung, waehrend der
+  // eigentliche Bruch in der Mitte sitzt. Gezaehlt statt gewichtet, weil die
+  // Meldungen verschiedene Einheiten tragen (cm, Grad, m/s²) und ein Vergleich
+  // ueber sie hinweg eine erfundene Gewichtung braeuchte.
+  const zaehlung = new Map();
+  for (const f of beanstandet ?? []) {
+    const n = Number(f);
+    if (!istInt(n) || n < 0 || n >= frameCount) continue;
+    zaehlung.set(n, (zaehlung.get(n) ?? 0) + 1);
   }
-  const imBereich = [...kritisch].filter((f) => f >= 0 && f < frameCount).sort((a, b) => a - b);
+  if (zaehlung.size > 0) {
+    // Gleichstand: der frueheste. Wo eine Bewegung zuerst bricht, steht die
+    // Ursache; was danach kommt, ist oft Folge.
+    const sortiert = [...zaehlung].sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+    return [sortiert[0][0]];
+  }
 
-  if (imBereich.length === 0) {
-    // Keine Beanstandung, keine Phasengrenze: gleichmäßig verteilen —
-    // Fehlerfreiheit ist kein Erfolg, der Agent sieht trotzdem die Bewegung.
-    const k = Math.min(frameCount, MAX_BILDFRAMES);
-    if (k === 1) return [0];
-    return [...new Set(
-      Array.from({ length: k }, (_, i) => Math.round((i * (frameCount - 1)) / (k - 1))),
-    )].sort((a, b) => a - b);
-  }
-  if (imBereich.length <= MAX_BILDFRAMES) return imBereich;
-  // Zu viele kritische Frames: gleichmäßig über sie verteilen, damit kein
-  // Bereich unbeleuchtet bleibt.
-  return [...new Set(
-    Array.from({ length: MAX_BILDFRAMES }, (_, i) =>
-      imBereich[Math.round((i * (imBereich.length - 1)) / (MAX_BILDFRAMES - 1))]),
-  )].sort((a, b) => a - b);
+  // Keine Beanstandung: die Mitte. Fehlerfreiheit ist kein Erfolg — der Agent
+  // sieht trotzdem, was er gebaut hat (plan.md 5.3).
+  return [Math.floor(frameCount / 2)];
 }
 
 /** Bildeinträge in die Vertragsform bringen und die Bildpflicht erzwingen. */

@@ -200,15 +200,16 @@ test('Negativfall zur Fehlberichterstattung: die Leiste versteckt ihren Grund ni
 
 // --- Einhängen der Bewegung ---------------------------------------------------------
 
-test('mit gelöster Bewegung ist die Leiste bereit und zeigt Frame 1 / N', () => {
+test('mit gelöster Bewegung ist die Leiste bereit und zeigt Frame 0 / N-1 (0-basiert wie die Werkzeuge)', () => {
   const { leiste, setzeBewegung } = aufbau();
   leiste.pruefe(); setzeBewegung(bewegung(90, 30)); leiste.pruefe();
   const stand = leiste.stand();
   assert.equal(stand.bereit, true);
   assert.equal(stand.frameCount, 90);
   assert.equal(stand.fps, 30);
-  assert.equal(stand.frameText, 'Frame 1 / 90',
-    `die Frameanzeige muss "Frame 1 / 90" sein, sie ist "${stand.frameText}"`);
+  assert.equal(stand.frameText, 'Frame 0 / 89',
+    `die Frameanzeige muss "Frame 0 / 89" sein (0-basiert wie set_pose und describe_pose, `
+      + `Befund 3.7), sie ist "${stand.frameText}"`);
 });
 
 test('Negativfall: eine Bewegung mit 0 Frames wird abgelehnt, nicht still akzeptiert', () => {
@@ -240,17 +241,17 @@ test('Abspielen: 1 s bei 30 fps und 1x schaltet 30 Frames und stellt den letzten
   assert.equal(leiste.stand().laeuft, true);
   assert.equal(gestellte[gestellte.length - 1], 0,
     'beim Start steht der 1. Frame auf der Szene');
-  // Auf der Szene steht Frame 1 — der echte Weg über stellePose.
+  // Auf der Szene steht Frame 0 — der echte Weg über stellePose.
   assert.ok(Math.abs(knoehenHoehe(s) - 1.0) < 1e-6,
-    `Frame 1 muss den Knochen auf y = 1,0 m stellen, er steht auf ${knoehenHoehe(s).toFixed(4)} m`);
+    `Frame 0 muss den Knochen auf y = 1,0 m stellen, er steht auf ${knoehenHoehe(s).toFixed(4)} m`);
 
   leiste.tick(1.0);
 
   const stand = leiste.stand();
   assert.equal(stand.index, 30, `30 Frames bei 30 fps und 1 s erwartet, es sind ${stand.index}`);
-  assert.equal(stand.frameText, 'Frame 31 / 90');
+  assert.equal(stand.frameText, 'Frame 30 / 89');
   assert.ok(Math.abs(knoehenHoehe(s) - 1.30) < 1e-6,
-    `Frame 31 muss den Knochen auf y = 1,30 m stellen, er steht auf ${knoehenHoehe(s).toFixed(4)} m`);
+    `Frame 30 muss den Knochen auf y = 1,30 m stellen, er steht auf ${knoehenHoehe(s).toFixed(4)} m`);
   assert.equal(gestellte[gestellte.length - 1], 30, 'der letzte neue Frame muss gestellt sein');
 });
 
@@ -292,9 +293,9 @@ test('das Ende stoppt das Abspielen, statt in eine Schleife zu fallen', () => {
   leiste.umschalten();
   for (let i = 0; i < 20; i++) leiste.tick(1);   // 600 Frames Zeit für 10 Frames Clip
   const stand = leiste.stand();
-  assert.equal(stand.index, 9, `am Ende muss Frame 10 stehen, es ist Frame ${stand.index + 1}`);
+  assert.equal(stand.index, 9, `am Ende muss Frame 9 stehen (0-basiert), es ist Frame ${stand.index}`);
   assert.equal(stand.laeuft, false, 'am Ende muss das Abspielen von selbst stoppen');
-  assert.equal(stand.frameText, 'Frame 10 / 10');
+  assert.equal(stand.frameText, 'Frame 9 / 9');
 });
 
 test('Negativfall zum Zeitdeckel: ein alter Zeitstempel springt nicht ans Ende', () => {
@@ -307,7 +308,7 @@ test('Negativfall zum Zeitdeckel: ein alter Zeitstempel springt nicht ans Ende',
   leiste.tick(3600);   // eine Stunde "verpasster" Zeit
   assert.ok(leiste.stand().index < 90,
     `nach einem 1-h-Schritt dürfen höchstens ${TICK_MAX_SEK} s gleich 30 Frames übersprungen `
-      + `worden sein, es stehen bei Frame ${leiste.stand().index + 1}`);
+      + `worden sein, es stehen bei Frame ${leiste.stand().index}`);
   assert.equal(leiste.stand().index, 30,
     `der Deckel lässt genau ${TICK_MAX_SEK} s = 30 Frames zu, es waren ${leiste.stand().index}`);
 });
@@ -323,9 +324,9 @@ test('Schieber: Anfahren stellt den Frame auf die Szene und pauasiert', () => {
   leiste.anfahren(41);
   const stand = leiste.stand();
   assert.equal(stand.laeuft, false, 'Anfahren muss pausieren — wer zieht, will vergleichen');
-  assert.equal(stand.frameText, 'Frame 42 / 90');
+  assert.equal(stand.frameText, 'Frame 41 / 89');
   assert.ok(Math.abs(knoehenHoehe(s) - 1.41) < 1e-6,
-    `Frame 42 muss den Knochen auf y = 1,41 m stellen, er steht auf ${knoehenHoehe(s).toFixed(4)} m`);
+    `Frame 41 muss den Knochen auf y = 1,41 m stellen, er steht auf ${knoehenHoehe(s).toFixed(4)} m`);
   assert.equal(gestellte[gestellte.length - 1], 41);
 });
 
@@ -337,12 +338,12 @@ test('Negativfall zum Schieber: ein Frame außerhalb der Timeline wird mit Zahl 
     'die Ablehnung muss den Bereich nennen (AGENTS.md, Handwerkliches)');
 });
 
-test('Negativfall: die Frameanzeige zeigt N und der Schieber trägt N-1 als Maximum', () => {
+test('Negativfall: die Frameanzeige ist 0-basiert und der Schieber trägt N-1 als Maximum', () => {
   const { leiste, setzeBewegung } = aufbau();
   setzeBewegung(bewegung(40, 30));
   leiste.pruefe();
   const stand = leiste.stand();
-  assert.equal(stand.frameText, 'Frame 1 / 40');
+  assert.equal(stand.frameText, 'Frame 0 / 39');
 });
 
 // --- Außer Betrieb ----------------------------------------------------------------------

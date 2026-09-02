@@ -31,7 +31,7 @@ const basiswert = () => 0;
 
 test('Verankerung: ein spaet gesetzter Kanal blendet ueber die ganze Strecke', () => {
   const kurven = baueKurven(OVERRIDES);
-  const anzahl = verankereKurven(kurven, OVERRIDES, basiswert);
+  const anzahl = verankereKurven(kurven, OVERRIDES, basiswert, 30);
   // Beide Kanaele stehen auf nur einem Schluesselbild: `side` auf Frame 30,
   // `bend` auf Frame 0. Beide brauchen ihre Gegenstuetze.
   assert.equal(anzahl, 2, 'spine.side und spine.bend brauchen je eine Verankerung');
@@ -75,12 +75,12 @@ test('Verankerung: ein Kanal auf beiden Schluesselbildern bleibt unangetastet', 
   };
   const kurven = baueKurven(beide);
   const vorher = kurven.get('spine.side').length;
-  const anzahl = verankereKurven(kurven, beide, basiswert);
+  const anzahl = verankereKurven(kurven, beide, basiswert, 30);
   assert.equal(anzahl, 0, 'kein Kanal braucht eine Verankerung');
   assert.equal(kurven.get('spine.side').length, vorher, 'die Kurve bleibt, wie sie war');
 });
 
-test('Verankerung: hinter dem letzten Schluesselbild HAELT der Kanal, danach wirkt er nicht', () => {
+test('Verankerung: hinter dem letzten eigenen Schluesselbild haelt der Kanal bis zum Timeline-Ende', () => {
   // Der erste Anlauf dieser Pruefung verlangte Ausblenden zur Ruhelage: der
   // Kanal haette auf Frame 60 wieder bei 0 stehen muessen. Das war der
   // gemessene "Zucken"-Fehler: Der Agent setzt auf Frame 30 eine Neigung und
@@ -89,20 +89,46 @@ test('Verankerung: hinter dem letzten Schluesselbild HAELT der Kanal, danach wir
   // als Stuetzstelle wanderte der Wert zurueck auf 0: die Figur ging in eine
   // Haltung und wurde wieder herausgezogen.
   //
-  // Gewollt ist jetzt: HALTEN bis zum naechsten Schluesselbild (gleiche Zahl
-  // noch einmal), und erst DANACH gehoert der Frame wieder den Phasen.
+  // Gewollt ist: HALTEN bis zum letzten Frame. Andere Schlüsselbilder ändern
+  // nur ihre eigenen Kanäle.
   const drei = {
     0: { joints: { spine: { bend: 0 } }, ease: 'smooth' },
     30: { joints: { spine: { side: -20 } }, ease: 'smooth' },
     60: { joints: { spine: { bend: 5 } }, ease: 'smooth' },
   };
   const kurven = baueKurven(drei);
-  verankereKurven(kurven, drei, basiswert);
+  verankereKurven(kurven, drei, basiswert, 90);
   const side = kurven.get('spine.side');
 
   assert.equal(kurvenWert(side, 60), -20,
-    'auf Frame 60 haelt der Kanal die gesetzte Haltung (-20), er blendet nicht zur Ruhelage aus');
-  assert.equal(kurvenWert(side, 61), null, 'danach gehoert der Frame wieder den Phasen');
+    'auf einem fremden Schlüsselbild hält der Kanal die gesetzte Haltung');
+  assert.equal(kurvenWert(side, 90), -20, 'der letzte Timeline-Frame hält den gesetzten Wert');
+  assert.equal(kurvenWert(side, 91), null, 'erst außerhalb der Timeline endet die Kurve');
+});
+
+test('Verankerung: ein Kanal gilt bis zum Timeline-Ende, nicht nur bis zum naechsten fremden Schluesselbild', () => {
+  // `elbow_l.bend` wird nur auf Frame 8 gesetzt. Die Schlüsselbilder 16 und
+  // 23 betreffen ausschließlich das Knie und dürfen den Ellbogen nicht lösen.
+  const fremdeSchluessel = {
+    0: { joints: { knee_l: { bend: 0 } }, ease: 'smooth' },
+    8: { joints: { elbow_l: { bend: 120 } }, ease: 'smooth' },
+    16: { joints: { knee_l: { bend: 20 } }, ease: 'smooth' },
+    23: { joints: { knee_l: { bend: 0 } }, ease: 'smooth' },
+  };
+
+  // Negativfall: ohne Verankerung endet die Kurve nach ihrem einzigen Wert.
+  // Dieser Aufbau muss den gemessenen 120°-Sprung auf 0 reproduzieren.
+  const roh = baueKurven(fremdeSchluessel).get('elbow_l.bend');
+  assert.equal(kurvenWert(roh, 17), null,
+    'der Negativfall endet nach Frame 8 und würde auf die Ruhelage zurückfallen');
+
+  const kurven = baueKurven(fremdeSchluessel);
+  verankereKurven(kurven, fremdeSchluessel, basiswert, 23);
+  const elbow = kurven.get('elbow_l.bend');
+  for (const frame of [8, 16, 17, 22, 23]) {
+    assert.equal(kurvenWert(elbow, frame), 120,
+      `Frame ${frame} hält den gesetzten Ellbogenwert statt auf 0° zu springen`);
+  }
 });
 
 test('Verankerung: eine Ausgangshaltung ohne diesen Kanal gilt als Ruhelage', () => {
@@ -111,7 +137,7 @@ test('Verankerung: eine Ausgangshaltung ohne diesen Kanal gilt als Ruhelage', ()
   // trotzdem verankert werden, sonst greift der Fix im Browser nicht.
   // Genau daran scheiterte der erste Anlauf: 339 Tests gruen, live unveraendert.
   const kurven = baueKurven(OVERRIDES);
-  const anzahl = verankereKurven(kurven, OVERRIDES, () => undefined);
+  const anzahl = verankereKurven(kurven, OVERRIDES, () => undefined, 30);
   assert.equal(anzahl, 2, 'auch ohne Basiswert werden beide Kanaele verankert');
   assert.equal(kurven.get('spine.side')[0].grad, 0, 'die Stuetzstelle traegt die Ruhelage 0');
 });

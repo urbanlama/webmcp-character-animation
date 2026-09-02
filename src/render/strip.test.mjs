@@ -1218,3 +1218,107 @@ test('Lesbarkeit, beide Ränder: kein Etikett wird abgeschnitten — weder im Ma
     + `Panels (${stufe} Stufe) werden ${gegenprobe.n} Etiketten als überlaufend gemeldet, größter `
     + `Überstand ${gegenprobe.groester} px — bei 0 wäre der Positivfall oben wertlos`);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reihe Einzelbild — Pixel für das Werkzeug `look` (Befund 1.1 bis 1.4)
+//
+// Die Planebene prüft src/render/einzelbild.test.mjs. Hier geht es um das, was
+// es nur im Browser gibt: dass aus dem Plan ein PNG in voller Größe wird, dass
+// es mit Mesh unter dem Antwortbudget bleibt und dass die größere Schrift nicht
+// über die Bildkante läuft — mit echten Font-Metriken gemessen.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Rendert ein Einzelbild in der echten Seite und misst die Beschriftungen. */
+async function bildInDerSeite({ profile, frame, kamera, mitMesh = false }) {
+  const { page } = await seite();
+  return page.evaluate(async (anfrage) => {
+    const strip = await import(new URL('src/render/strip.js', document.baseURI).href);
+    const opts = {
+      profile: anfrage.profile, frames: [anfrage.frame], kamera: anfrage.kamera, frameCount: 1,
+    };
+    if (anfrage.mitMesh) {
+      const { loadGLB } = await import(new URL('src/scene/load.js', document.baseURI).href);
+      const antwort = await fetch(new URL('spikes/test-b-motion/assets/Xbot.glb',
+        document.baseURI).href);
+      if (!antwort.ok) {
+        throw new Error(`Testmodell nicht ladbar: HTTP ${antwort.status} für ${antwort.url}`);
+      }
+      opts.scene = (await loadGLB(await antwort.arrayBuffer())).scene;
+    }
+
+    const begonnen = performance.now();
+    const eintrag = strip.bildeStreifen(opts);
+    const dauerMs = performance.now() - begonnen;
+    const plan = strip.planeStreifen(opts);
+
+    const mess = document.createElement('canvas').getContext('2d');
+    const ueberlauf = [];
+    for (const pan of plan.panels) {
+      const texte = [].concat(...Object.values(pan.annotationen)).concat(pan.beschriftung)
+        .filter((pr) => pr.art === 'text');
+      for (const pr of texte) {
+        mess.font = `${pr.groesse}px ui-monospace, Consolas, monospace`;
+        const b = mess.measureText(pr.text).width;
+        const li = pr.anker === 'rechts' ? pr.x - b
+          : (pr.anker === 'mitte' ? pr.x - b / 2 : pr.x);
+        const ueber = Math.max(pan.x - li, (li + b) - (pan.x + pan.breite));
+        if (ueber > 1) ueberlauf.push(`„${pr.text}" um ${Math.round(ueber)} px`);
+      }
+    }
+    return {
+      eintrag, ueberlauf, dauerMs,
+      panels: plan.panels.length,
+      kleinsteSchrift: Math.min(...plan.panels.flatMap((pan) =>
+        [].concat(...Object.values(pan.annotationen)).concat(pan.beschriftung)
+          .filter((pr) => pr.art === 'text').map((pr) => pr.groesse))),
+    };
+  }, { profile, frame, kamera, mitMesh });
+}
+
+test('Einzelbild, Pixel: ein PNG in voller Größe, mit Mesh, unter dem Antwortbudget', async () => {
+  const profile = await gemessenesProfil();
+  const { eintrag, ueberlauf, dauerMs, panels, kleinsteSchrift } = await bildInDerSeite({
+    profile, frame: await stehPose(), kamera: {}, mitMesh: true,
+  });
+
+  assert.equal(panels, 1, `${panels} Panels im Einzelbild, erwartet genau 1`);
+  assert.equal(eintrag.width, strip.BILD_BREITE_PX + 2 * strip.PANEL_ABSTAND_PX,
+    `Bild ist ${eintrag.width} px breit`);
+  assert.equal(eintrag.mimeType, 'image/png');
+  assert.match(eintrag.data, /^iVBORw0K/, 'die Daten müssen ein Base64-PNG ohne Datenpräfix sein');
+  assert.equal(eintrag.meshGezeichnet, true, 'das Einzelbild muss die Figur als Mesh zeigen');
+  assert.ok(eintrag.bytes <= strip.ANTWORT_BUDGET_BYTES,
+    `Einzelbild ist ${eintrag.bytes} Byte, Grenze ${strip.ANTWORT_BUDGET_BYTES} Byte — `
+    + 'ein Bild in voller Größe muss ohne Budgettreppe durchkommen');
+  assert.ok(dauerMs < strip.STRIPE_ZIEL_MS,
+    `Rendern dauerte ${Math.round(dauerMs)} ms, Grenze ${strip.STRIPE_ZIEL_MS} ms`);
+
+  // Der Grund für den ganzen Umbau: die Schrift war im Raster auf 4 px gefallen.
+  // Der Grund für den ganzen Umbau: im Raster fiel die Schrift auf 4 px. Die
+  // kleinste Schrift im Einzelbild ist die 8-px-Sohlenbeschriftung, mit dem
+  // Wurzelfaktor auf 11,7 px gewachsen. 10 px als Schranke: das Doppelte des
+  // alten Werts, mit Luft nach unten für künftige kleine Etiketten.
+  assert.ok(kleinsteSchrift >= 10,
+    `kleinste Schrift ${kleinsteSchrift} px — im Einzelbild muss sie deutlich über den 4 px `
+    + 'liegen, auf die die Budgettreppe des Rasters sie gedrückt hat');
+  assert.deepEqual(ueberlauf, [],
+    `${ueberlauf.length} Beschriftungen laufen über die Bildkante: ${ueberlauf.join(', ')}`);
+});
+
+test('Einzelbild, Pixel: nah an ein Gelenk gefahren bleibt lesbar und im Budget', async () => {
+  const profile = await gemessenesProfil();
+  const { eintrag, ueberlauf } = await bildInDerSeite({
+    profile, frame: await stehPose(),
+    kamera: { ziel: 'foot_l', weite: 'nah', richtung_grad: 90, hoehe_grad: 25 },
+    mitMesh: true,
+  });
+
+  assert.equal(eintrag.kamera.ziel, 'foot_l',
+    `der Eintrag muss das Ziel nennen, war: ${JSON.stringify(eintrag.kamera)}`);
+  assert.equal(eintrag.ref, 'blick_r90_h25_foot_l_nah_f0.png',
+    `der Verweis muss den Blick beschreiben, war: ${eintrag.ref}`);
+  assert.ok(eintrag.bytes <= strip.ANTWORT_BUDGET_BYTES,
+    `Nahaufnahme ist ${eintrag.bytes} Byte, Grenze ${strip.ANTWORT_BUDGET_BYTES} Byte`);
+  assert.deepEqual(ueberlauf, [],
+    `${ueberlauf.length} Beschriftungen laufen über die Bildkante: ${ueberlauf.join(', ')}`);
+});

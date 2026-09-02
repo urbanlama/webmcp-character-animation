@@ -57,9 +57,12 @@ export const DURCHDRINGUNG_TOLERANZ_ANTEIL = 0.005;
  *  Gemessen über die vier Entwicklungsclips (idle, walk, agree, sad_pose,
  *  AGENTS.md Regel 3): 47 % ist der größte Wert, den die Kapselgeometrie ohne
  *  echte Durchdringung erzeugt (agree, Frame 17). Eine Hand, die wirklich im
- *  Rumpf steckt, liegt bei 74 % (torso|hand_l, 17,0 cm bei 22,9 cm
+ *  ehemaligen Gesamt-Rumpf steckt, lag bei 74 % (17,0 cm bei 22,9 cm
  *  Radiensumme). 60 % liegt dazwischen, mit 13 Prozentpunkten Abstand nach
- *  beiden Seiten. */
+ *  beiden Seiten. Nach Rumpfteilung und der Prüfung aller Gelenkpaare: 0
+ *  Meldungen in je 91 Stichproben von idle, walk, agree und sad_pose. Der Wert
+ *  wird deshalb nicht angehoben; die Referenzclips bleiben Kalibrierung, nicht
+ *  Testkorpus. */
 export const KAPSEL_UEBERDECKUNG_ANTEIL = 0.60;
 
 /** Anteil der Erdbeschleunigung, um den die gemessene Senkrechtbeschleunigung
@@ -215,6 +218,42 @@ function segSegDist(a1, a2, b1, b2) {
   const p1 = [a1[0] + d1[0]*s, a1[1] + d1[1]*s, a1[2] + d1[2]*s];
   const p2 = [b1[0] + d2[0]*t, b1[1] + d2[1]*t, b1[2] + d2[2]*t];
   return dist3(p1, p2);
+}
+
+/** Gemeinsamer Endpunkt zweier Segmente, sonst null. */
+function gemeinsamesGelenk(A, B) {
+  for (let a = 0; a < 2; a++) {
+    for (let b = 0; b < 2; b++) {
+      if (A[a] === B[b]) return { a, b };
+    }
+  }
+  return null;
+}
+
+/** Rückt den Kapselende um seinen GEMESSENEN Radius vom gemeinsamen Gelenk ab.
+ *
+ * Zwei Segmentkapseln müssen das Gelenk selbst überdecken. Ohne diesen
+ * Ausschnitt läge ihre Achsdistanz an jedem Knie bei 0 und schon eine normale
+ * Beugung wäre eine 100%-Durchdringung. Maximal die halbe Segmentlänge wird
+ * abgerückt: sehr kurze Hand- oder Fußsegmente bleiben eine messbare Achse. */
+function kuerzeAmGelenk(p0, p1, ende, radius) {
+  const out = [p0, p1].map((p) => [...p]);
+  const joint = out[ende];
+  const other = out[1 - ende];
+  const laenge = dist3(joint, other);
+  if (!(laenge > 0) || !(radius > 0)) return out;
+  const weg = Math.min(radius, laenge / 2) / laenge;
+  out[ende] = joint.map((x, i) => x + (other[i] - x) * weg);
+  return out;
+}
+
+/** Kapselachsen eines Paares; an einem gemeinsamen Gelenk ohne Gelenkregion. */
+function pruefachsen(a1, a2, b1, b2, A, B, rA, rB) {
+  const geteilt = gemeinsamesGelenk(A, B);
+  if (!geteilt) return [a1, a2, b1, b2];
+  const a = kuerzeAmGelenk(a1, a2, geteilt.a, rA);
+  const b = kuerzeAmGelenk(b1, b2, geteilt.b, rB);
+  return [...a, ...b];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -395,8 +434,15 @@ export function pruefePhysik(profile, frames, fps) {
       const pa = bonesOf(f), A = segById.get(a), B = segById.get(b);
       const a1 = pa[A[0]], a2 = pa[A[1]], b1 = pa[B[0]], b2 = pa[B[1]];
       if (!a1 || !a2 || !b1 || !b2) continue;   // Knochen fehlt: Intention, kein physikalischer Befund
-      const rSumme = (radiusById.get(a) ?? 0) + (radiusById.get(b) ?? 0);
-      const ueberschneidung = rSumme - segSegDist(a1, a2, b1, b2);
+      const rA = radiusById.get(a) ?? 0;
+      const rB = radiusById.get(b) ?? 0;
+      const rSumme = rA + rB;
+      // Auch Nachbarsegmente werden geprüft. Ihre Kapseln werden nur am
+      // gemeinsamen Gelenk um den jeweils gemessenen Radius gekürzt: normales
+      // Beugen bleibt frei, ein in den Oberschenkel zurückgefaltetes Schienbein
+      // nicht (Bühnenbefund D).
+      const [aa1, aa2, bb1, bb2] = pruefachsen(a1, a2, b1, b2, A, B, rA, rB);
+      const ueberschneidung = rSumme - segSegDist(aa1, aa2, bb1, bb2);
       const inBind = Math.max(0, -dist);
       const erlaubt = Math.max(inBind, KAPSEL_UEBERDECKUNG_ANTEIL * rSumme);
       if (ueberschneidung - erlaubt > durchdringTol) {

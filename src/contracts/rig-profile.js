@@ -144,13 +144,13 @@ export function validateRigProfile(obj) {
   // joints
   const joints = obj.joints;
   if (joints === null || typeof joints !== 'object' || Array.isArray(joints)) {
-    fehler(errors, 'joints', joints, 'Objekt {name: {bone, dof, signSource, limitSource}}');
+    fehler(errors, 'joints', joints, 'Objekt {name: {bone, dof, signSource}}');
   } else {
     if (!boneIds) boneIds = new Set();
     for (const [name, j] of Object.entries(joints)) {
       const field = `joints.${name}`;
       if (j === null || typeof j !== 'object' || Array.isArray(j)) {
-        fehler(errors, field, j, 'Objekt {bone, dof, signSource, limitSource}');
+        fehler(errors, field, j, 'Objekt {bone, dof, signSource}');
         continue;
       }
       if (typeof j.bone !== 'string' || j.bone === '') {
@@ -177,15 +177,21 @@ export function validateRigProfile(obj) {
               || !istZahl(d.limit[0]) || !istZahl(d.limit[1]) || d.limit[0] >= d.limit[1]) {
             fehler(errors, `${f}.limit`, d.limit, 'Paar [min, max] mit min < max');
           }
+          // Die Herkunft der Grenze steht pro Kanal UND pro Richtung. Ein
+          // Kanal kann unten anatomisch und oben gemessen sein — am Xbot
+          // arm.swing: nach hinten stoppt keine Selbstberührung, nach vorn
+          // der Rumpf. Eine Herkunft je Gelenk verschwiege das.
+          const q = d.limitSource;
+          if (q === null || typeof q !== 'object' || Array.isArray(q)
+              || !LIMIT_QUELLEN.includes(q.min) || !LIMIT_QUELLEN.includes(q.max)) {
+            fehler(errors, `${f}.limitSource`, q,
+              `Objekt {min, max} mit je einem von ${JSON.stringify(LIMIT_QUELLEN)}`);
+          }
         }
       }
       if (!SIGN_QUELLEN.includes(j.signSource)) {
         fehler(errors, `${field}.signSource`, j.signSource,
           `einer von ${JSON.stringify(SIGN_QUELLEN)}`);
-      }
-      if (!LIMIT_QUELLEN.includes(j.limitSource)) {
-        fehler(errors, `${field}.limitSource`, j.limitSource,
-          `einer von ${JSON.stringify(LIMIT_QUELLEN)}`);
       }
     }
   }
@@ -239,13 +245,13 @@ export function validateRigProfile(obj) {
   // restDistances — Schluessel 'a|b', Werte: endliche Zahlen in Metern.
   //
   // Die Paarzahl ist NICHT begrenzt: der Vertrag zaehlt keine Eintraege, und
-  // es waere falsch, das zu tun. Am Xbot sind es 82 nicht benachbarte
-  // Segmentpaare, ein Rig mit mehr Segmenten hat mehr.
+  // es waere falsch, das zu tun. Am Xbot sind es 105 Paare aus 15 Segmenten,
+  // einschließlich der Gelenkpaare; ein Rig mit mehr Segmenten hat mehr.
   //
   // Negative Werte sind zulaessig und gewollt: der Eintrag ist der
   // OBERFLAECHENabstand der beiden Kapseln in der Bind-Pose, und der ist
   // negativ, wo sich die Kapseln schon dort ueberschneiden (Xbot:
-  // torso|thigh_r bei -0,16 m, weil die Radien das 90. Perzentil der
+  // torso_lower|thigh_r bei -0,16 m, weil die Radien das 90. Perzentil der
   // Huellpunkte sind). Frueher stand hier "Zahl >= 0" und measure.js schnitt
   // bei 0 ab — damit war die Modellueberdeckung verschwiegen, die die
   // Durchdringungspruefung als Untergrenze braucht.

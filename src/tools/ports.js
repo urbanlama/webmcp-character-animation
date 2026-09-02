@@ -16,6 +16,8 @@
 
 import { WerkzeugMeldung } from './errors.js';
 import { alsTimeline } from './state.js';
+import { RICHTUNG_STANDARD_GRAD, HOEHE_STANDARD_GRAD } from './catalog.js';
+import { BERICHT_ANSICHTEN } from '../validate/report.js';
 
 /** Fehler, wenn ein Werkzeug ein Paket braucht, das noch nicht angeschlossen ist. */
 export function nichtAngeschlossen(tool, paket, was) {
@@ -127,6 +129,28 @@ export function attrappenValidator() {
 export function attrappenRenderer() {
   return {
     quelle: 'attrappe',
+    spur({ frame, ...kamera }) {
+      return this.bild({ frame, ...kamera });
+    },
+    bild({ frame, ...kamera }) {
+      return {
+        view: 'blick',
+        views: ['blick'],
+        kamera: {
+          richtungGrad: kamera.richtung_grad ?? RICHTUNG_STANDARD_GRAD,
+          hoeheGrad: kamera.hoehe_grad ?? HOEHE_STANDARD_GRAD,
+          ziel: kamera.ziel ?? 'figur',
+          weite: kamera.weite ?? 'ganz',
+          zielWelt: [0, 0, 0],
+          sag: 'Attrappe: kein gemessener Blick'
+        },
+        frames: [frame],
+        ref: `attrappe_blick_${frame}.png`,
+        data: PLATZHALTER_PNG,
+        mimeType: 'image/png',
+        warnung: `Attrappe: 1x1 Platzhalter statt eines annotierten Bildes von Frame ${frame} (AP9 fehlt)`
+      };
+    },
     streifen({ frames, views }) {
       return views.map((view) => ({
         view,
@@ -531,23 +555,32 @@ export function echtePorts(opt = {}) {
 
   const rendererPort = {
     quelle: 'AP9 (src/render/strip.js)',
-    streifen({ frames, views }) {
-      const s = brauchtModell('look', 'Der Bildstreifen');
+    /** Baut den Renderer auf der zuletzt gelösten Bewegung. */
+    bauen(werkzeug) {
+      const s = brauchtModell(werkzeug, 'Das Bild');
       if (!loesung) {
         throw new WerkzeugMeldung({
-          tool: 'look', param: 'gelöste Frames', value: 0,
+          tool: werkzeug, param: 'gelöste Frames', value: 0,
           range: 'mindestens 1 gelöster Frame',
           next: 'rufe zuerst validate auf, das löst die Timeline',
-          message: '0 gelöste Frames vorhanden: der Bildstreifen zeigt die gelöste '
+          message: '0 gelöste Frames vorhanden: das Bild zeigt die gelöste '
             + 'Bewegung, nicht die Bind-Pose — rufe zuerst validate auf'
         });
       }
-      const r = mod().strip.createStripRenderer({
+      return mod().strip.createStripRenderer({
         scene: s.gltf.scene, profile: s.profil,
         frameQuelle: (i) => alsStreifenFrame(loesung.frames[i]),
         frameCount: loesung.frameCount, renderer: opt.renderer
       });
-      return r.streifen({ frames, views });
+    },
+    bild(anfrage) {
+      return rendererPort.bauen('look').bild(anfrage);
+    },
+    spur(anfrage) {
+      return rendererPort.bauen('trace').bild({ weite: 'verlauf', ...anfrage, spur: true, sparsam: true });
+    },
+    streifen({ frames, views }) {
+      return rendererPort.bauen('look').streifen({ frames, views });
     }
   };
 
@@ -557,22 +590,23 @@ export function echtePorts(opt = {}) {
       const s = brauchtModell('validate', 'Der Validierungsbericht');
       // Der Bericht holt sich seinen Streifen selbst (plan.md 5.3): Zahlen ohne
       // Bild gehen nicht raus. Die Auswahl kommt aus report.js, nicht von hier.
+      // Zwei grosse Einzelbilder desselben Frames statt eines Rasters aus
+      // sechs. Aus einem Blick ist der Raum nicht eindeutig, aus zwoelf
+      // Briefmarken erkennt der Agent nichts (docs/buehne-befunde-2026-09-02.md,
+      // Punkt 1). Der Verlauf gehoert `look`, das der Agent selbst richtet.
       const streifenQuelle = (auswahl) => {
+        const frame = auswahl[0]?.frame ?? 0;
         const r = mod().strip.createStripRenderer({
           scene: s.gltf.scene,
           profile: s.profil,
           frameQuelle: (i) => alsStreifenFrame(
-          auswahl.find((x) => x.frame === i) ?? timeline.solved.frames[i]),
+            auswahl.find((x) => x.frame === i) ?? timeline.solved.frames[i]),
           frameCount: timeline.frameCount,
           renderer: opt.renderer
         });
-        gerendert = r.streifen({ frames: auswahl.map((a) => a.frame), views: ['side', 'front'] });
+        gerendert = BERICHT_ANSICHTEN.map((k) => r.bild({ frame, ...k }));
         return gerendert;
       };
-      // Die gerenderten Streifen werden hier festgehalten: der Bericht traegt
-      // nur die VERWEISE (view, frames, ref), die Bilddaten braucht aber die
-      // Antwort an den Agenten. Ohne diesen Griff muesste handlers.js ein
-      // zweites Mal rendern — dieselben Frames, 250 KB, doppelte Zeit.
       let gerendert = [];
       const checks = Array.isArray(intent) ? intent : (intent && intent.checks) || [];
       const bericht = mod().report.baueValidationReport({

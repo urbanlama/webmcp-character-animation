@@ -20,7 +20,7 @@ meldung in `set_pose`). Ein Standweitsprung war als Sprung erkennbar.
 | B | **`look` klatscht mehrere Bilder in eins und lässt keine Kamera zu** — kein Zoom, kein Ausschnitt, vier feste Ansichten; bei Platznot schrumpft alles bis zu 4 px Schrift | 1.1–1.5 |
 | C | **Ein gesetzter Wert hält genau ein Schlüsselbild weit**, dann springt er in einem Frame auf die Ruhelage — 120° in 1/30 s, ohne Meldung | 3.1, 3.2, 3.6 |
 | D | **Überbeugung ist strukturell unsichtbar** — benachbarte Segmente (Knie, Ellbogen, Hals) werden nie auf Durchdringung geprüft; der Rumpf ist eine einzige Kapsel von der Hüfte bis zum Hals | Pose 15 · Korrektur zu 15 |
-| E | **Gelenkgrenzen kommen aus einem Handbuchkatalog**, nicht vom Modell: Schulter -130°, Arm 100°, Knie 150° erzeugen Stellungen, die kein Mensch kann | Pose 7, 15 |
+| E | ~~**Gelenkgrenzen kommen aus einem Handbuchkatalog**~~ — behoben am 2. September, siehe Nachtrag zu D und E. , nicht vom Modell: Schulter -130°, Arm 100°, Knie 150° erzeugen Stellungen, die kein Mensch kann | Pose 7, 15 |
 | F | **Zwei Vokabulare** — 10 von 18 Gelenken sind unter ihrem Setz-Namen nicht messbar; die Sohle fehlt ganz | 2.1, 2.2 |
 | G | **`pelvis.tilt` dreht die ganze Figur** statt des Beckens gegen die Beine | Pose 2 |
 | H | Kleinkram mit klarer Ursache: kein Zurücksetzen des Zustands · Anzeige zählt ab Frame 1, Werkzeuge ab 0 · zwei Etiketten auf derselben Panelzeile · `hold_foot` nimmt kein „beide" · falsche Ursachenzuschreibung bei geklemmten Winkeln · Handstellung als unbemerkter Nebeneffekt | 1.3, 3.7, Pose 11, 15, 3.5 |
@@ -103,6 +103,79 @@ Gemeldet wird keiner der beiden Fälle, aus zwei verschiedenen Gründen:
 2. **`head|upperarm_l` wird geprüft**, aber die erlaubte Überschneidung liegt
    bei 10,0 cm (60 % der Radiensumme von 16,6 cm). Der Oberarm im Kopf bleibt
    darunter.
+
+## Nachtrag zu D und E — was das Kollisionsmodell über den Xbot wissen muss
+
+Erhoben am 2. September 2026 beim Bau der Grenzmessung (`measureJointLimits`,
+`src/rig/measure.js`). Drei Messungen, die jeder braucht, der Selbstberührung
+am Mesh prüft — also auch Auftrag D.
+
+**1. Der Xbot bringt zwei Meshes mit, die konstruktiv ineinanderstecken.**
+
+In der Bind-Pose, ohne jede Pose, schneiden sich:
+
+```
+upperarm_l | torso     157 Dreieckspaare
+forearm_l  | upperarm_l 140
+shin_l     | thigh_l    113
+```
+
+Ausnahmslos `Beta_Joints × Beta_Surface`. Das Modell hat ein zweites Mesh mit
+Gelenkkappen, das in der Außenhaut sitzt. Alle Schnitte liegen auf einem Ring
+in konstantem Abstand vom Gelenk (Streuung unter 1 mm) — die Kappe steckt im
+Arm, wie gebaut.
+
+**Folgt daraus:** Kollision zählt nur INNERHALB desselben Meshes. Wer
+meshübergreifend rechnet, meldet die Ruhepose als Durchdringung. Der
+Kapselprüfung in `src/validate/physics.js` fällt das heute nicht auf, weil sie
+gar nicht bis auf Dreiecksebene geht.
+
+**2. Skinning-Faltung sieht aus wie Kollision.**
+
+Beim Beugen schiebt sich die Haut in der Beuge zusammen und schneidet sich
+selbst. Ohne Gegenmaßnahme liefert die Messung `knee.bend` 40° und
+`elbow.bend` 35° — die Figur wäre unbeweglich. Die Schnitte sitzen alle dicht
+am Gelenk (4 bis 9 cm), echte Kollisionen weit darüber (`arm.lift` bei 100°:
+88 Schnitte bis 37,7 cm).
+
+**Folgt daraus:** Schnitte näher am Gelenk als die Summe der beiden gemessenen
+Kapselradien sind Hautfaltung, keine Kollision. Am Xbot: Knie 15,2 cm,
+Ellbogen 10,2 cm, Schulter 22,2 cm.
+
+**3. Die gespiegelte Kette ist keine Gelenkgrenze.**
+
+`hip.spread` klemmte bei 5°, weil beim isolierten Messen der linke Fuß den
+rechten Unterschenkel trifft (`foot_l|shin_r`). Beim Gehen steht das andere
+Bein woanders — `walk` fährt 10,9°. Zwei Glieder, die in einer konkreten
+Haltung ineinanderstecken, meldet die Physikprüfung; eine Grenze des Gelenks
+ist das nicht.
+
+**4. Belegzahl zur Segmentzuordnung.** Ein Dreieck zählt zu einem Segment, wenn
+alle drei Ecken ausschließlich von Knochen dieses Segments gewichtet werden.
+Am Xbot fallen dadurch 157 von 49 112 Dreiecken weg — 0,3 %. Am Ellbogen
+bleiben 2 206 Dreiecke im Unterarm stehen; es geht nichts Nennenswertes
+verloren.
+
+**5. Was die Messung ergab** (Katalog → gemessen, Xbot, 2,2 s für alle Kanäle):
+
+| Kanal | Katalog | neu | Herkunft |
+|---|---|---|---|
+| `knee.bend` oben | 150 | **129** / 128 | gemessen (`shin\|thigh`) |
+| `elbow.bend` oben | 150 | **127** | gemessen (`forearm\|upperarm`) |
+| `arm.lift` oben | 100 | **92** | gemessen (`forearm\|head` — der Arm im Kopf) |
+| `arm.lift` unten | −95 | **−81** | gemessen (`hand\|thigh` — der Arm liegt an) |
+| `arm.swing` unten | −130 | −130 | anatomisch — keine Selbstberührung bis −150° |
+
+8 von 74 Richtungen kommen aus der Messung, 66 bleiben anatomisch. Wenig — aber
+nur dort, wo wirklich Haut auf Haut trifft. `arm.lift` unten trifft die
+Entwicklungsclips fast auf den Grad: gemessene Grenze −81°, `idle` fährt −78,7°.
+
+**6. Nebenbefund: zwei Katalogwerte sind enger als das Modell selbst fährt.**
+`head.bend` fährt in den Entwicklungsclips 35,2° gegen einen Katalogwert von
+30, `shoulder_l.fwd` 26,4° gegen 25. Der anatomische Katalog klemmt dort
+Bewegung ab, die ausgeliefert mitkommt. Nicht angefasst.
+
+---
 
 ## Noch nicht geprüft — offene Bereiche
 
@@ -498,3 +571,44 @@ Max am abgespielten Clip: „ein starkes Ruckeln kann ich nicht bestätigen. Zu
 Ergebnis: kein belastbarer Befund. Die in NACHLESE.md (1. September) genannten
 Schwankungen um Faktor 42 mit vier Richtungswechseln in zwölf Frames sind in
 diesem Aufbau nicht reproduzierbar.
+
+---
+
+# Nachtrag 2. September 2026 — was aus Punkt 1 gebaut wurde
+
+## `validate`: ein Moment, zwei Blicke
+
+Statt sechs Frames in zwei Ansichten (zwölf Kacheln) zeigt der Bericht jetzt
+EINEN Frame aus zwei um 90 Grad versetzten Richtungen, jedes Bild 461 × 576 px.
+Gewählt wird der Frame mit den MEISTEN Beanstandungen, bei Gleichstand der
+früheste; ohne Beanstandung die Mitte der Bewegung.
+
+Zwei Blicke, weil aus einem einzelnen ein 3D-Raum nicht eindeutig ist — ein Arm
+VOR dem Körper und ein Arm NEBEN dem Körper sehen von vorn gleich aus.
+
+Im Bild geblieben ist, was Zahlen nicht können: Höhenleiste, Bodengitter,
+Schwerpunktkreuz mit Lot, Sohlenpunkte, Kompass. Rausgeflogen sind die vier
+Textzeilen des Fußblocks, die acht Sohlennamen, der Ansichtsname und die
+Körperhöhe — alles davon steht im Berichtstext und verdeckte im Bild genau die
+Stellen, auf die man schauen muss.
+
+## `trace`: der Verlauf in einem Bild
+
+Neues Werkzeug. Es legt die BAHNEN von Händen, Füßen und Becken über die ganze
+Timeline in ein Bild, dazu die Figur an einem Frame.
+
+    die Bahn      zeigt die FORM der Bewegung — Bogen, Zickzack, Rückschlag
+    der Abstand   zeigt das TIMING — eng ist langsam, weit ist schnell,
+                  ein Knäuel ist Stillstand
+    ein Knick     zeigt den Richtungswechsel, den man sonst in Zahlen sucht
+
+Das löst, was der alte Streifen versprach und nicht hielt: Standbilder
+nebeneinander zeigen keinen Verlauf, weil zwischen zwei Bildern nicht steht, was
+dazwischen passiert ist — und bei sechs Kacheln erkennt man ohnehin nichts.
+
+Eigene Sichtweite `verlauf` (2,4 × Körperhöhe), damit die Bahnen vollständig ins
+Bild passen. Am Standweitsprung belegt: Sprungbogen des Beckens, Armschwung und
+Fußbahnen sind mit Frame-Nummern lesbar.
+
+Dateien: `src/render/spur.js` (Geometrie, ohne three.js), `zeichneSpur` in
+`src/render/strip.js`, Werkzeug in `catalog.js` und `handlers.js`.

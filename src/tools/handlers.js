@@ -14,9 +14,10 @@ import {
   pruefeFrame, pruefeObjekt
 } from './errors.js';
 import {
-  KATALOG, KATALOG_SICHTBAR, VERBEN, INTENT_ARTEN, ANSICHTEN, KANAELE, FRAME_MIN, FRAME_MAX, KACHELN_MAX, KACHEL_KB, MESS_FRAMES_MAX,
-  EASE_ARTEN, EASE_STANDARD
+  KATALOG, KATALOG_SICHTBAR, VERBEN, INTENT_ARTEN, KANAELE, FRAME_MIN, FRAME_MAX, MESS_FRAMES_MAX,
+  EASE_ARTEN, EASE_STANDARD, WEITEN
 } from './catalog.js';
+import { JOINT_CATALOG } from '../rig/measure.js';
 import { nichtAngeschlossen } from './ports.js';
 import { alsTimeline } from './state.js';
 import { PFLICHTROLLEN, priorisiereFragen, offenerRest } from './rollen-priorisierung.js';
@@ -157,6 +158,28 @@ export function standMeldung(z, bericht) {
  * @param {string} channel  Kanalname, z. B. lift
  * @returns {object} Freiheitsgrad aus dem Profil: { axis, sign, limit, ... }
  */
+/**
+ * BENANNTER VERFAHRENSPARAMETER: welcher Nachbarframe in der look-Antwort als
+ * naechster Blick vorgeschlagen wird.
+ *
+ * 6 Frames sind bei 30 fps eine Fuenftelsekunde — weit genug, dass sich die
+ * Haltung sichtbar geaendert hat, nah genug, dass der Agent den Zusammenhang
+ * noch sieht. Der Vorschlag ersetzt den alten Bildstreifen: er sagt dem Agenten,
+ * dass ein Verlauf aus mehreren Aufrufen entsteht.
+ */
+const NACHBAR_ABSTAND = 6;
+
+/**
+ * Freiwillige Gradangabe der look-Kamera. Fehlt sie, entscheidet die
+ * Voreinstellung im Renderer — der Agent soll ein Bild bekommen, ohne vier
+ * Zahlen nennen zu muessen.
+ */
+function pruefeGradOptional(tool, param, v, min, max) {
+  if (v === undefined || v === null) return undefined;
+  return pruefeZahl(tool, param, v, min, max, 'Grad',
+    `nenne den Winkel in Grad zwischen ${min} und ${max}, oder lass ihn weg`);
+}
+
 function pruefeGelenkKanal(tool, ports, joint, channel) {
   // Ohne gemessene Freiheitsgrade — kein Modell geladen, oder eine Attrappe —
   // gibt es keine echten Kanalnamen. Dann gilt weiter die allgemeine Liste aus
@@ -661,6 +684,56 @@ export function baueWerkzeuge({ store, ask, ports }) {
         + `${zahl(neu / z0.fps)} Sekunden.`);
     },
 
+    // --- 7b  Bewegung leeren --------------------------------------------------
+
+    /**
+     * Leert die Bewegung: Haltungen, Phasen, Fußanker, Absicht. Die
+     * Bühnenerhebung vom 2. September 2026 (Nebenbefund zu Pose 15, Befund
+     * 3.4): es gab keinen Weg, den Sitzungszustand zu leeren — wer eine neue
+     * Bewegung begann, erbte alle Schlüsselbilder der vorigen, auch auf
+     * Frames, die er nie anfasste. Das hat dreimal zu Fehldiagnosen geführt.
+     *
+     * Bewusst NICHT geleert: roleConfirmations und offeneRollenFragen. Die
+     * Bestätigungen sind Aussagen über das Modell („dieser Knochen ist das
+     * Becken"), nicht über die Bewegung — das Modell bleibt geladen und
+     * vermessen (state.js: „gehoert nicht zum Timeline-Vertrag"). Sie
+     * wiederherzustellen wäre über die sichtbaren Werkzeuge unmöglich:
+     * confirm_role liegt in der Kiste und ist dem Agenten unsichtbar.
+     * frameCount bleibt ebenfalls: die Länge war eine bewusste Entscheidung,
+     * und ein Reset auf 0 würde sofort wieder set_duration erzwingen.
+     *
+     * Rücknehmbar wie jede Änderung über store.aendere.
+     */
+    async clear_motion() {
+      const z0 = store.roh();
+      const poses = Object.keys(z0.overrides ?? {}).map(Number).sort((a, b) => a - b);
+      const phasen = (z0.phases ?? []).map((p) => p.id);
+      const anker = (z0.anchors ?? []).map((x) => `${x.foot} ${x.von}-${x.bis}`);
+      const hatteIntent = z0.intent != null;
+
+      store.aendere((z) => {
+        z.overrides = {};
+        z.phases = [];
+        z.anchors = [];
+        z.intent = null;
+      });
+
+      const z1 = store.roh();
+      return text(
+        `Bewegung geleert: ${poses.length} gesetzte Haltung${poses.length === 1 ? '' : 'en'}`
+          + (poses.length ? ` (Frame${poses.length === 1 ? '' : 's'} ${poses.join(', ')})` : '')
+          + `, ${phasen.length} Phase${phasen.length === 1 ? '' : 'n'}`
+          + (phasen.length ? ` (${phasen.join(', ')})` : '')
+          + `, ${anker.length} Fußanker`
+          + (anker.length ? ` (${anker.join(', ')})` : '')
+          + `, ${hatteIntent ? 1 : 0} gesetzte Absicht entfernt. `
+          + `Übrig: ${z1.frameCount} Frames Länge bei ${z1.fps} fps, `
+          + `0 Haltungen, 0 Phasen, 0 Anker, keine Absicht. `
+          + `Modell, Vermessung und Rollenbestätigungen bleiben — die Timeline ist ab jetzt leer, `
+          + `setze deine Haltungen neu. Rücknehmbar mit undo.`
+      );
+    },
+
     // --- 8..9  Phasen -------------------------------------------------------
 
     async add_phase(args) {
@@ -861,10 +934,16 @@ export function baueWerkzeuge({ store, ask, ports }) {
         wurzel = {};
         if (r.pos !== undefined) {
           const pos = pruefeListe('set_pose', 'root.pos', r.pos, 3, 3,
-            'Position des Beckens [x, y, z] in Metern, Weltsystem aus describe_world');
-          pos.forEach((v, i) => pruefeZahl('set_pose', `root.pos[${i}]`, v, -1000, 1000, 'Meter',
-            'die Bodenhöhe und der Maßstab stehen in describe_world'));
-          wurzel.pos = pos.map(Number);
+            'Position des Beckens [x, y, z] in Metern, Weltsystem aus describe_world; y darf null sein (auf dem Boden)');
+          // Die Höhe darf null sein: dann stellt der Löser die Figur auf den
+          // Boden (Bühnenlauf 2. September 2026, Befund A — jede geratene Höhe
+          // war entweder zu hoch oder im Boden). x und z gelten trotzdem.
+          pos.forEach((v, i) => {
+            if (i === 1 && v === null) return;
+            pruefeZahl('set_pose', `root.pos[${i}]`, v, -1000, 1000, 'Meter',
+              'die Bodenhöhe und der Maßstab stehen in describe_world; y = null stellt die Figur auf den Boden');
+          });
+          wurzel.pos = pos.map((v, i) => (i === 1 && v === null ? null : Number(v)));
         }
         // Drehung: drehGrad je Achse, turnGrad als Kurzform fuer die Hochachse.
         //
@@ -944,14 +1023,17 @@ export function baueWerkzeuge({ store, ask, ports }) {
 
       const schluessel = gesetzteFrames(store.roh());
       const wurzelTeile = [];
-      if (wurzel && wurzel.pos) wurzelTeile.push(`Position [${wurzel.pos.join(', ')}] m`);
+      if (wurzel && wurzel.pos) {
+        wurzelTeile.push(`Position [${wurzel.pos.map((v) => (v === null ? 'Boden' : v)).join(', ')}] m`
+          + (wurzel.pos[1] === null ? ' (Höhe vom Löser: auf dem Boden)' : ' (feste Höhe — die Figur steht nur auf dem Boden, wenn y dazu passt)'));
+      }
       if (wurzel && wurzel.drehGrad) {
         wurzelTeile.push('Drehung ' + Object.entries(wurzel.drehGrad)
           .map(([a, g]) => `${a} ${zahl(g)}°`).join(', '));
       }
       const wurzelText = wurzelTeile.length > 0
         ? ` Wurzel: ${wurzelTeile.join(', ')}.`
-        : ' Wurzel nicht gesetzt: die Figur bleibt, wo sie steht.';
+        : ' Wurzel nicht gesetzt: die Figur bleibt an ihrem Ort und wird auf den Boden gestellt.';
 
       return text(`Haltung auf Frame ${a.frame} gesetzt: ${namen.length} Gelenke, `
         + `${geprueft.length} Winkel, Übergang "${ease}".${wurzelText} `
@@ -1044,23 +1126,45 @@ export function baueWerkzeuge({ store, ask, ports }) {
       const vorne = Array.isArray(welt.forwardVektor) ? welt.forwardVektor : [0, 0, 1];
       const seite = Array.isArray(welt.leftVektor) ? welt.leftVektor : [1, 0, 0];
 
+      // sole_l / sole_r: der tiefste Sohlenpunkt des Fusses. Ohne ihn kann der
+      // Agent „stehe ich auf dem Boden?" nicht in Zahlen beantworten — der
+      // Fussknochen sitzt am Xbot 8,8 cm ueber der Sohle (Befund 2.2 vom
+      // 2. September 2026).
       const punkt = (frame, teil) => {
         if (teil === 'com') return frame.com ?? null;
+        const sohle = /^sole_([lr])$/.exec(teil);
+        if (sohle) return tiefsteSohle(frame, sohle[1]);
         const eintrag = rollen[teil];
         const knochen = eintrag && eintrag.bone;
         if (!knochen) return null;
         return (frame.positions && frame.positions[knochen]) ?? null;
       };
-      const bekannt = ['com', ...Object.keys(rollen).filter((r) => rollen[r] && rollen[r].bone)];
+      const bekannt = ['com', 'sole_l', 'sole_r', ...Object.keys(rollen).filter((r) => rollen[r] && rollen[r].bone)];
+      // Setz-Name -> Messname: 10 von 18 Gelenken, die der Agent mit set_pose
+      // setzt, heissen beim Messen anders (Befund 2.1, Buehnenlauf 2. September
+      // 2026): der Agent setzt hip_l.flex und misst thigh_l. Ohne den
+      // Ersatznamen in der Fehlermeldung war jedes Mal ein Fehlaufruf. Die
+      // Zuordnung kommt aus dem Gelenkkatalog (bone = Messrolle), nicht aus
+      // einem zweiten Vokabular — und nur, wenn die Messrolle hier wirklich
+      // existiert, denn Fremdmodelle koennen Rollen nicht haben.
+      const messName = (teil) => {
+        const def = JOINT_CATALOG.find((d) => d.joint === teil);
+        return def && rollen[def.bone] && rollen[def.bone].bone ? def.bone : null;
+      };
       const brauchePunkt = (frame, teil, feld, i) => {
         const p = punkt(frame, teil);
         if (!p) {
+          const ersatz = messName(teil);
           throw new WerkzeugMeldung({
             tool: 'measure', param: `fragen[${i}].${feld}`, value: teil,
             range: `einer von ${bekannt.length} Körperteilen: ${bekannt.join(', ')}`,
-            next: 'die Rollennamen und ihre Knochen liefert describe_rig',
-            message: `Körperteil "${teil}" ist an diesem Modell nicht zugeordnet: `
-              + `${bekannt.length} stehen zur Verfügung (${bekannt.join(', ')})`
+            next: ersatz
+              ? `messe "${ersatz}" statt "${teil}"`
+              : 'die Rollennamen und ihre Knochen liefert describe_rig',
+            message: `Körperteil "${teil}" ist an diesem Modell nicht zugeordnet`
+              + (ersatz ? ` — beim Messen heißt es "${ersatz}"`
+                : `: ${bekannt.length} stehen zur Verfügung (${bekannt.join(', ')})`)
+              + (ersatz ? `; ${bekannt.length} stehen zur Verfügung (${bekannt.join(', ')})` : '')
           });
         }
         return p;
@@ -1322,6 +1426,12 @@ export function baueWerkzeuge({ store, ask, ports }) {
             : 'aus Phasen oder Ausgangshaltung, kein gesetzter Frame in der Nähe'),
         naechsteSchluesselFrames: { davor: vorher ?? null, danach: nachher ?? null },
         kontakt: f.contact ?? null,
+        // Der tiefste Punkt der Figur (Sohlen und Knochen) ueber dem Boden;
+        // negativ heisst im Boden. Vorher hatte der Agent nur „kontakt" und
+        // die Hoehe des Fussknochens — 8,8 cm ueber der Sohle, unbrauchbar.
+        bodenabstand_m: f.bodenabstand_m ?? null,
+        wurzelhoehe: f.hoehe ?? null,
+        sohlen_m: sohlenHoehen(f, boden),
         schwerpunkt_m: f.com ? f.com.map((v) => +v.toFixed(4)) : null,
         schwerpunktHoeheUeberBoden_m: f.com ? +(f.com[1] - boden).toFixed(4) : null,
         wurzel: f.root
@@ -1335,7 +1445,10 @@ export function baueWerkzeuge({ store, ask, ports }) {
         winkel_grad: gelenkeAusDofs(f.dofs),
         gesetzteWinkel_grad: (z0.overrides[String(a.frame)] || {}).joints ?? {},
         hinweis: 'Positionen in Metern im Weltsystem, y ist oben. '
-          + `Bodenebene bei ${+boden.toFixed(5)} m. Das Bild dazu liefert look.`
+          + `Bodenebene bei ${+boden.toFixed(5)} m. bodenabstand_m ist der tiefste Punkt der Figur `
+          + 'ueber dem Boden (0 = steht, negativ = im Boden); wurzelhoehe sagt, ob der Boden '
+          + '(boden), dein root.pos (gesetzt) oder eine Anhebung (angehoben) die Hoehe bestimmt hat. '
+          + 'Das Bild dazu liefert look.'
       });
     },
 
@@ -1482,8 +1595,22 @@ export function baueWerkzeuge({ store, ask, ports }) {
       const { bericht: gefasst, vorher: befundeVorher, nachher: befundeNachher }
         = fasseIssuesZusammen(bericht);
 
+      // Flug schaltet Balance und Rutschen ab — phasenabhaengig, so gewollt
+      // (AGENTS.md). Nur muss der Agent es erfahren: im Buehnenlauf vom
+      // 2. September 2026 schwebte eine Landepose unbemerkt, und die
+      // Balancepruefung, die „kippt nach hinten" gemeldet haette, lief nie.
+      const flug = (gefasst.phases ?? []).filter((p) => p.state === 'flug');
+      const flugFrames = flug.reduce((n, p) => n + (p.to - p.from), 0);
+      const flugText = flug.length > 0
+        ? `\nFlugphase in ${flug.map((p) => `Frames ${p.from}–${p.to - 1}`).join(', ')} `
+          + `(${flugFrames} von ${gefasst.frameCount} Frames): dort werden Balance und Fussrutschen `
+          + 'nicht geprueft. Soll die Figur dort stehen, lass root.pos y weg (oder null) — '
+          + 'der Loeser stellt sie auf den Boden.'
+        : '';
+
       const text = berichtTextKompakt(gefasst, bilder)
         + (warnung ? `\n(${warnung})` : '')
+        + flugText
         + ohneAbsicht
         + (befundeVorher > befundeNachher
           ? `\n${befundeVorher} Einzelbefunde zu ${befundeNachher} zusammengefasst `
@@ -1496,40 +1623,29 @@ export function baueWerkzeuge({ store, ask, ports }) {
     },
 
     async look(args) {
-      const a = pruefeObjekt('look', 'Argumente', args, 'übergib {frames, views}');
+      const a = pruefeObjekt('look', 'Argumente', args,
+        'übergib {frame} — richtung_grad, hoehe_grad, ziel und weite sind freiwillig');
       const z0 = store.roh();
       brauchtLaenge('look', z0.frameCount);
-      pruefeListe('look', 'frames', a.frames, 1, KACHELN_MAX,
-        'mehr Frames passen nicht in eine Antwort von 512 KB');
-      a.frames.forEach((f, i) => pruefeFrame('look', `frames[${i}]`, f, z0.frameCount));
-      pruefeListe('look', 'views', a.views, 1, ANSICHTEN.length,
-        `erlaubt sind ${ANSICHTEN.join(', ')}`);
-      a.views.forEach((v, i) => pruefeAuswahl('look', `views[${i}]`, v, ANSICHTEN,
-        'die Ansichten sind im Charakter-Bezugssystem, nicht in dem der Bühne'));
+      pruefeFrame('look', 'frame', a.frame, z0.frameCount);
 
-      // Nicht die Frames allein entscheiden, sondern ihr Produkt mit den
-      // Ansichten: gerendert wird eine Kachel je Paar. Im Agentenlauf vom
-      // 1. September 2026 blieb der Aufruf mit 10 Frames und 2 Ansichten
-      // INNERHALB des Schemas und flog trotzdem mit 654 KB raus — nach dem
-      // Rendern. Das Schema versprach etwas, das die Antwortgrenze nie
-      // einhalten konnte. Jetzt wird VOR dem Rendern abgewiesen, mit Zahlen.
-      const kacheln = a.frames.length * a.views.length;
-      if (kacheln > KACHELN_MAX) {
-        throw new WerkzeugMeldung({
-          tool: 'look', param: 'frames × views', value: kacheln,
-          range: `höchstens ${KACHELN_MAX} Bilder je Aufruf`,
-          next: `nimm ${Math.max(1, Math.floor(KACHELN_MAX / a.views.length))} Frames `
-            + `bei ${a.views.length} Ansichten, oder weniger Ansichten`,
-          message: `${a.frames.length} Frames × ${a.views.length} Ansichten sind ${kacheln} `
-            + `Bilder; ${KACHELN_MAX} passen in eine Antwort von 512 KB `
-            + `(gemessen: rund ${KACHEL_KB} KB je Bild). `
-            + `Nimm ${Math.max(1, Math.floor(KACHELN_MAX / a.views.length))} Frames `
-            + `bei ${a.views.length} Ansichten.`
-        });
-      }
+      // Ein Aufruf, ein Bild in voller Größe (Befund 1.1 vom 2.9.2026): das
+      // Raster aus Frames × Ansichten hat dem Agenten die Auflösung genommen,
+      // die er zum Beurteilen einer Pose braucht. Die Kamera prüft strip.js
+      // selbst — hier werden nur die Zahlen abgefangen, die schon am Schema
+      // scheitern müssten.
+      const kamera = {
+        richtung_grad: pruefeGradOptional('look', 'richtung_grad', a.richtung_grad, 0, 359),
+        hoehe_grad: pruefeGradOptional('look', 'hoehe_grad', a.hoehe_grad, -89, 90),
+        ziel: a.ziel === undefined ? undefined
+          : pruefeText('look', 'ziel', a.ziel, 'ein Körperteil aus describe_rig oder "figur"', 60),
+        weite: a.weite === undefined ? undefined
+          : pruefeAuswahl('look', 'weite', a.weite, WEITEN,
+            'ganz zeigt die Figur, halb ein Körperteil, nah ein Gelenk'),
+      };
 
       if (!ports.renderer) {
-        throw nichtAngeschlossen('look', 'AP9 (Bildstreifen)', 'Der Bildstreifen');
+        throw nichtAngeschlossen('look', 'AP9 (Bildstreifen)', 'Das Bild');
       }
 
       // Befund aus dem Browserlauf am Xbot: look lehnte mit "0 geloeste Frames"
@@ -1543,21 +1659,79 @@ export function baueWerkzeuge({ store, ask, ports }) {
         loeserBericht = ports.solver.loese(alsTimeline(z0)).bericht ?? null;
       }
 
-      const bilder = ports.renderer.streifen({ frames: a.frames, views: a.views });
-      // Zeitgrenze (Auftrag "Der Bildstreifen frisst den Rechner"): hat der
-      // Streifen gekürzt, steht im Bericht, welche Frames das Bild zeigt und
-      // welche nicht — als Warnung mit Zahl aus dem Streifeneintrag.
-      const kuerzung = (bilder[0]?.warnungen ?? []).filter((w) => w.includes('Zeitgrenze'));
+      const bild = ports.renderer.bild({ frame: a.frame, ...kamera });
+      const k = bild.kamera || {};
+      const naechste = [a.frame - NACHBAR_ABSTAND, a.frame + NACHBAR_ABSTAND]
+        .filter((f) => f >= 0 && f < z0.frameCount);
+
       return textMitBildern(
-        `Bildstreifen: ${bilder[0].frames.length} Frames (`
-        + `${bilder[0].frames.join(', ')}) — angefordert waren ${a.frames.length} `
-        + `(${a.frames.join(', ')}) — in ${a.views.length} Ansicht`
-        + `${a.views.length === 1 ? '' : 'en'} (${a.views.join(', ')}), annotiert mit `
-        + 'Achsenkreuz, Bodengitter, Schwerpunkt, Stützfläche und Kontaktpunkten.'
-        + (kuerzung.length ? `\n${kuerzung.join(' | ')}` : '')
-        + (bilder[0] && bilder[0].warnung ? `\n${bilder[0].warnung}` : '')
+        `Frame ${a.frame} von ${z0.frameCount}, ein Bild in voller Größe. `
+        + `Kamera: ${k.sag} — richtung ${k.richtungGrad}°, hoehe ${k.hoeheGrad}°, `
+        + `ziel ${k.ziel}, weite ${k.weite}`
+        + (bild.massstab ? ` (${zahl(bild.massstab.sichtHoeheMeter, 2)} m Bildhöhe, `
+          + `${zahl(bild.massstab.pxProMeter, 0)} px/m)` : '')
+        + '. Annotiert mit Achsenkreuz, Bodengitter, Höhenleiste, Schwerpunkt, '
+        + 'Stützfläche und Kontaktpunkten.'
+        // Der Verlauf ist der Teil, den der Streifen früher erledigte. Ohne
+        // diesen Satz weiß der Agent nicht, dass er ihn weiterhin sehen kann —
+        // eine Möglichkeit, von der nirgends etwas steht, hat er nicht.
+        + (naechste.length
+          ? `\nDen VERLAUF siehst du, indem du dieselbe Kamera auf die Nachbarframes `
+            + `richtest, z. B. look frame ${naechste.join(' und ')}. Maßstab und `
+            + `Bodengitter bleiben gleich, die Bilder sind vergleichbar.`
+          : '')
+        + (bild.warnung ? `\n${bild.warnung}` : '')
         + standMeldung(z0, loeserBericht),
-        bilder
+        [bild]
+      );
+    },
+
+    /**
+     * trace — der Verlauf der ganzen Bewegung in EINEM Bild.
+     *
+     * Warum es das gibt: `look` und `validate` zeigen je einen Moment in voller
+     * Groesse. Der Verlauf fehlte damit ganz — der Agent haette ihn Frame fuer
+     * Frame zusammensuchen muessen, und was er vergisst, sieht er nie
+     * (docs/buehne-befunde-2026-09-02.md, Punkt 1). Der alte Bildstreifen legte
+     * dafuer Standbilder nebeneinander; bei sechs Kacheln war jede Figur
+     * fingernagelgross und nichts darauf zu erkennen.
+     */
+    async trace(args) {
+      const a = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+      const z0 = store.roh();
+      brauchtLaenge('trace', z0.frameCount);
+
+      // Ohne Frame die Mitte: die Figur soll IN der Bewegung stehen, nicht an
+      // ihrem Anfang, wo sie meist noch in der Ruhelage ist.
+      let frame = Math.floor(z0.frameCount / 2);
+      if (a.frame !== undefined) {
+        pruefeFrame('trace', 'frame', a.frame, z0.frameCount);
+        frame = Number(a.frame);
+      }
+
+      const kamera = {
+        richtung_grad: pruefeGradOptional('trace', 'richtung_grad', a.richtung_grad, 0, 359),
+        hoehe_grad: pruefeGradOptional('trace', 'hoehe_grad', a.hoehe_grad, -89, 90),
+      };
+      if (!ports.renderer) {
+        throw nichtAngeschlossen('trace', 'AP9 (Bildstreifen)', 'Das Bild');
+      }
+      if (ports.solver) ports.solver.loese(alsTimeline(z0));
+
+      const bild = ports.renderer.spur({ frame, ...kamera });
+      const k = bild.kamera || {};
+
+      return textMitBildern(
+        `Verlauf über alle ${z0.frameCount} Frames, ein Bild in voller Größe. `
+        + `Die Figur steht auf Frame ${frame}, die Bahnen laufen über die ganze Timeline. `
+        + `Kamera: richtung ${k.richtungGrad}°, hoehe ${k.hoeheGrad}°. `
+        + 'Jede farbige Linie ist die Bahn eines Körperteils, jeder Punkt darauf ein Frame: '
+        + 'eng beieinander heißt langsam, weit auseinander schnell, ein Knäuel heißt Stillstand. '
+        + 'Ein Knick in der Bahn ist ein Richtungswechsel. '
+        + 'Eine Bahn, die auf die Kamera zuläuft, ist verkürzt — dann mit richtung_grad 90 von '
+        + 'der Seite schauen; für Fußbahnen ist hoehe_grad 90 (von oben) am deutlichsten.'
+        + (bild.warnung ? ` ${bild.warnung}` : ''),
+        [bild]
       );
     },
 
@@ -1590,8 +1764,12 @@ export function baueWerkzeuge({ store, ask, ports }) {
 
       const rollen = (ports.rig && ports.rig.rig().roles) || {};
       const fuesse = Object.keys(rollen).filter((r) => /^foot_[lr]$/.test(r));
-      pruefeAuswahl('hold_foot', 'foot', a.foot, fuesse.length ? fuesse : ['foot_l', 'foot_r'],
-        'die Fussrollen stehen in describe_rig');
+      const wahl = fuesse.length ? fuesse : ['foot_l', 'foot_r'];
+      // „beide" ist erlaubt — der Katalogtext versprach es, das Schema lehnte
+      // es ab (Buehnenlauf 2. September 2026, Pose 11).
+      pruefeAuswahl('hold_foot', 'foot', a.foot, [...wahl, 'beide'],
+        'die Fussrollen stehen in describe_rig; beide nagelt beide Fuesse fest');
+      const gewaehlt = a.foot === 'beide' ? wahl : [a.foot];
 
       if (a.bis <= a.von) {
         throw new WerkzeugMeldung({
@@ -1606,21 +1784,24 @@ export function baueWerkzeuge({ store, ask, ports }) {
         const vorher = (z0.anchors || []).length;
         store.aendere((z) => {
           z.anchors = (z.anchors || []).filter((x) =>
-            !(x.foot === a.foot && x.von >= a.von && x.bis <= a.bis));
+            !(gewaehlt.includes(x.foot) && x.von >= a.von && x.bis <= a.bis));
         });
         const nachher = (store.roh().anchors || []).length;
-        return text(`${vorher - nachher} Anker fuer ${a.foot} in Frames ${a.von}-${a.bis} entfernt; `
+        return text(`${vorher - nachher} Anker fuer ${gewaehlt.join(' und ')} in Frames ${a.von}-${a.bis} entfernt; `
           + `${nachher} bleiben.`);
       }
 
       store.aendere((z) => {
-        z.anchors = [...(z.anchors || []), { foot: a.foot, von: a.von, bis: a.bis }];
+        z.anchors = [...(z.anchors || []), ...gewaehlt.map((foot) => ({ foot, von: a.von, bis: a.bis }))];
       });
 
       const alle = store.roh().anchors;
-      return text(`${a.foot} steht ab jetzt in den Frames ${a.von} bis ${a.bis} fest `
-        + `(${a.bis - a.von + 1} Frames). Der Loeser rechnet die Beinkette dafuer; `
-        + 'die Wurzel bleibt, wo du sie gesetzt hast. '
+      return text(`${gewaehlt.join(' und ')} ${gewaehlt.length > 1 ? 'stehen' : 'steht'} ab jetzt in den Frames ${a.von} bis ${a.bis} fest `
+        + `(${a.bis - a.von + 1} Frames), dort, wo ${gewaehlt.length > 1 ? 'sie' : 'er'} auf Frame ${a.von} ${gewaehlt.length > 1 ? 'stehen' : 'steht'}. `
+        + 'Der Loeser rechnet die Beinkette dafuer. Ohne gesetzte Hoehe (root.pos y) darf das Becken '
+        + 'dafuer sinken; hast du eine Hoehe gesetzt, bleibt sie. Das freie Bein haeltst du selbst '
+        + 'ueber dem Boden — steckt es im Boden, wird die Figur angehoben und der Anker verfehlt, '
+        + 'die Wirkung sagt es dir. '
         + `${alle.length} Anker insgesamt: ${alle.map((x) => `${x.foot} ${x.von}-${x.bis}`).join(', ')}.`
         + '\nRuecknehmbar mit undo.'
         + wirkung(store.roh(), a.von, ports));
@@ -1760,7 +1941,11 @@ function wirkung(z, frame, ports) {
     // gemessen an den Sohlenpunkten). Die Hoehe des FUSSKNOCHENS taugt dafuer
     // nicht: er sitzt am Xbot 8,8 cm ueber der Sohle, und eine Figur, die
     // sauber steht, meldete damit "8,8 cm ueber dem Boden".
-    zeilen.push(hier.contact === 'flug' ? 'kein Bodenkontakt (Flugphase)' : 'Bodenkontakt');
+    //
+    // Und die Antwort ist eine ZAHL. Im Buehnenlauf vom 2. September 2026
+    // hiess es fuer „schwebt 15 cm", „steckt 11 cm im Boden" und „steht"
+    // gleichermassen „Bodenkontakt" — der Agent konnte nicht korrigieren.
+    zeilen.push(...bodenzeile(hier));
 
     // Wandert ein Fuss gegenueber dem vorigen Schluesselbild, obwohl beide
     // Frames Bodenkontakt haben? Genau das meldet validate spaeter als
@@ -1802,6 +1987,77 @@ function wirkung(z, frame, ports) {
     // Der Löser kam nicht durch. Die Haltung steht trotzdem.
     return '';
   }
+}
+
+/**
+ * Die Bodenzeile der Wirkung — mit Zahl, je nachdem, wer die Hoehe bestimmt hat.
+ *
+ * Buehnenlauf 2. September 2026, Befund A: fuer „schwebt 15 cm", „steckt
+ * 11 cm im Boden" und „steht" kam dieselbe Meldung „Bodenkontakt"; der Agent
+ * musste die Wurzelhoehe raten und bekam fuer zu hoch und zu tief dieselbe
+ * Antwort. Seit dem Bodenstand im Loeser (src/solver/loeser.js) traegt jeder
+ * Frame frame.hoehe (Quelle und Betrag) und frame.bodenabstand_m — hier
+ * werden sie zu Saetzen.
+ *
+ * @param {object} frame geloester Frame
+ * @returns {string[]} 1 bis 2 Saetze
+ */
+export function bodenzeile(frame) {
+  const cm = (m) => (Math.abs(m) * 100).toFixed(1).replace(".", ",");   // wie im Loeserbericht
+  const h = frame.hoehe ?? null;
+  const abstand = typeof frame.bodenabstand_m === 'number' ? frame.bodenabstand_m : null;
+  const zeilen = [];
+  if (h?.quelle === 'boden') {
+    const ab = h.absenkung_m ?? 0;
+    zeilen.push('steht auf dem Boden'
+      + (Math.abs(ab) >= 0.005
+        ? ` (die Wurzel wurde dafuer um ${cm(ab)} cm ${ab > 0 ? 'abgesenkt' : 'angehoben'})`
+        : ''));
+    if (h.angehoben_m > 0) {
+      zeilen.push(`${h.teil} stuende dabei ${cm(h.angehoben_m)} cm im Boden, deshalb wurde die ganze `
+        + 'Figur angehoben — halte das freie Bein ueber dem Boden, sonst haelt kein Fussanker');
+    }
+  } else if (h?.quelle === 'angehoben') {
+    zeilen.push(`Wurzel um ${cm(h.angehoben_m)} cm angehoben: bei root.pos y = ${zahl(h.gesetzt_m)} m `
+      + `stuende ${h.teil} im Boden — fuer einen Stand lass y weg (null), der Loeser stellt die Figur ab`);
+  } else if (h?.quelle === 'gesetzt' && abstand !== null) {
+    if (abstand > 0.005) {
+      zeilen.push(`schwebt ${cm(abstand)} cm ueber dem Boden, weil root.pos y = ${zahl(h.gesetzt_m)} m `
+        + 'gesetzt ist — fuer einen Stand lass y weg (null), dann stellt der Loeser die Figur ab');
+    } else {
+      zeilen.push(`steht auf dem Boden (tiefster Punkt ${cm(abstand)} cm, deine Hoehe y = ${zahl(h.gesetzt_m)} m)`);
+    }
+  } else if (abstand !== null) {
+    zeilen.push(frame.contact === 'flug'
+      ? `kein Bodenkontakt: tiefster Punkt ${cm(abstand)} cm ueber dem Boden (Flugphase)`
+      : `Bodenkontakt (tiefster Punkt ${cm(abstand)} cm ${abstand < 0 ? 'im' : 'ueber dem'} Boden)`);
+  } else {
+    zeilen.push(frame.contact === 'flug' ? 'kein Bodenkontakt (Flugphase)' : 'Bodenkontakt');
+  }
+  if (frame.contact === 'flug') {
+    zeilen.push('im Flug prueft validate weder Balance noch Fussrutschen');
+  }
+  return zeilen;
+}
+
+/** Tiefster Sohlenpunkt eines Fusses ('l' | 'r') als Weltpunkt, oder null. */
+function tiefsteSohle(frame, seite) {
+  let best = null;
+  for (const [id, p] of Object.entries(frame.solePositions ?? {})) {
+    if (!id.startsWith(`sole_${seite}_`)) continue;
+    if (!best || p[1] < best[1]) best = p;
+  }
+  return best;
+}
+
+/** Hoehe des tiefsten Sohlenpunkts je Fuss ueber dem Boden, in Metern. */
+function sohlenHoehen(frame, boden) {
+  const out = {};
+  for (const seite of ['l', 'r']) {
+    const p = tiefsteSohle(frame, seite);
+    if (p) out[`foot_${seite}`] = +(p[1] - boden).toFixed(4);
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 /**
@@ -1851,19 +2107,33 @@ export const WINKEL_ABWEICHUNG_MELDEN_GRAD = 2;
 
 /**
  * Welche gesetzten Winkel eines Frames der Loeser anders gefahren hat, mit
- * Betrag und Ursache (Fussanker oder Gelenkgrenze). Leer, wenn alles so steht,
- * wie es gesetzt wurde.
+ * Betrag und Ursache. Leer, wenn alles so steht, wie es gesetzt wurde.
+ *
+ * Zwei Ursachen, je Abweichung getrennt benannt (Befund G8, Bühnenlauf
+ * 2. September 2026, Fall 15): der Fußanker kann nur Beingelenke der
+ * verankerten Seite umbiegen — halteAnker optimiert die Kette Fuß → Becken.
+ * Ein Armgelenk steht nicht in dieser Kette; weicht dort ein Winkel ab, haben
+ * die Gelenkgrenzen geklemmt. Vorher wurde bei aktivem Anker JEDE Abweichung
+ * dem Fußanker zugeschrieben — bei `arm_l.lift 180` hieß der Lösungsweg
+ * „verkürze die Ankerspanne" und führte ins Leere. Mischen sich beide
+ * Ursachen in einem Frame, stehen zwei Sätze.
  *
  * @param {object} z      Sitzungszustand (overrides, anchors)
  * @param {number} frame  gesetzter Frame
  * @param {object} hier   geloester Frame mit `dofs` (gefahrene Winkel je Kanal)
- * @returns {string[]}    0 oder 1 Satz
+ * @returns {string[]}    0 bis 2 Sätze
  */
 export function verbogeneWinkel(z, frame, hier) {
   const gesetzt = z.overrides?.[String(frame)]?.joints;
   const dofs = hier?.dofs;
   if (!gesetzt || !dofs) return [];
   const anker = (z.anchors || []).filter((a) => a.von <= frame && frame <= a.bis);
+  // Beinkette aus dem Gelenkkatalog: alle Gelenke, deren Kette am Fuß endet
+  // (end: ende_fuss_*). Nur sie kann ein Fußanker biegen — dieselbe Quelle,
+  // aus der describe_rig die Gelenknamen liefert.
+  const beinGelenke = new Set(JOINT_CATALOG
+    .filter((j) => j.end === 'ende_fuss_l' || j.end === 'ende_fuss_r')
+    .map((j) => j.joint));
   const abweichungen = [];
   for (const [gelenk, kanaele] of Object.entries(gesetzt)) {
     for (const [kanal, soll] of Object.entries(kanaele || {})) {
@@ -1871,22 +2141,40 @@ export function verbogeneWinkel(z, frame, hier) {
       if (!Number.isFinite(ist) || !Number.isFinite(soll)) continue;
       const diff = Math.abs(ist - soll);
       if (diff >= WINKEL_ABWEICHUNG_MELDEN_GRAD) {
-        abweichungen.push({ kanal: `${gelenk}.${kanal}`, soll, ist, diff, seite: gelenk.endsWith('_l') ? 'foot_l' : gelenk.endsWith('_r') ? 'foot_r' : null });
+        const fuss = beinGelenke.has(gelenk)
+          ? (gelenk.endsWith('_l') ? 'foot_l' : 'foot_r')
+          : null;
+        abweichungen.push({ kanal: `${gelenk}.${kanal}`, soll, ist, diff, fuss });
       }
     }
   }
   if (abweichungen.length === 0) return [];
   abweichungen.sort((a, b) => b.diff - a.diff);
-  const liste = abweichungen.slice(0, 6)
-    .map((a) => `${a.kanal} ${zahl(a.soll)}° → ${zahl(a.ist)}°`).join(', ');
-  const rest = abweichungen.length > 6 ? ` und ${abweichungen.length - 6} weitere` : '';
-  const durchAnker = abweichungen.filter((a) => anker.some((k) => a.seite === null || k.foot === a.seite));
-  const ursache = anker.length > 0 && durchAnker.length > 0
-    ? ` — der Fußanker (hold_foot ${anker.map((k) => `${k.foot} ${k.von}–${k.bis}`).join(', ')}) `
+
+  const satz = (liste, ursache) => {
+    const top = liste.slice(0, 6)
+      .map((a) => `${a.kanal} ${zahl(a.soll)}° → ${zahl(a.ist)}°`).join(', ');
+    const rest = liste.length > 6 ? ` und ${liste.length - 6} weitere` : '';
+    return `${liste.length} gesetzte Winkel wurden anders gelöst: ${top}${rest}${ursache}`;
+  };
+
+  // Fußanker-Ursache nur für Beingelenke der verankerten Seite. Alles andere
+  // — Armgelenke, Wirbelsäule, oder ein Bein ohne Anker auf dieser Seite —
+  // klemmen die Gelenkgrenzen oder eine andere Korrektur.
+  const vomAnker = abweichungen.filter((a) =>
+    a.fuss !== null && anker.some((k) => k.foot === a.fuss));
+  const saetze = [];
+  if (vomAnker.length > 0) {
+    const beteiligt = anker.filter((k) => vomAnker.some((a) => a.fuss === k.foot));
+    saetze.push(satz(vomAnker, ` — der Fußanker (hold_foot ${beteiligt.map((k) => `${k.foot} ${k.von}–${k.bis}`).join(', ')}) `
       + 'biegt die Beinkette, damit der Fuß stehen bleibt; willst du deine Winkel, verkürze die Ankerspanne '
-      + 'oder stelle die Wurzel so, dass der Fuß mit deinen Winkeln erreichbar ist'
-    : ' — Gelenkgrenzen aus describe_rig haben geklemmt';
-  return [`${abweichungen.length} gesetzte Winkel wurden anders gelöst: ${liste}${rest}${ursache}`];
+      + 'oder stelle die Wurzel so, dass der Fuß mit deinen Winkeln erreichbar ist'));
+  }
+  const vonGrenzen = abweichungen.filter((a) => !vomAnker.includes(a));
+  if (vonGrenzen.length > 0) {
+    saetze.push(satz(vonGrenzen, ' — Gelenkgrenzen aus describe_rig haben geklemmt'));
+  }
+  return saetze;
 }
 
 /**

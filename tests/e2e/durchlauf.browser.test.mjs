@@ -280,7 +280,7 @@ test('Browser: ohne Renderer-Port fällt der Lauf auf den Platzhalter zurück un
 });
 
 // Referenz-Vermessung des Xbot, wie sie der Anschluss an echte Ports liefert
-// (Auftrag vom 2026-08-31: describe_body 14 Segmente / 8 Sohlen, describe_world
+// (Auftrag vom 2026-08-31: describe_body 15 Segmente / 8 Sohlen, describe_world
 // 67 Knochen / 28374 Vertices / 1,8093 m, describe_rig 18 Gelenke).
 // Das sind keine getippten Körpermaße: es ist das MESERGEBNIS an diesem einen
 // festen Referenzmodell, und der Test prüft die Seitenantworten doppelt — gegen
@@ -288,14 +288,14 @@ test('Browser: ohne Renderer-Port fällt der Lauf auf den Platzhalter zurück un
 // (fest). Ändert sich die Vermessung legitimate, muss sie hier und dort
 // gemeinsam umgestellt werden; leise abdriften darf sie nicht.
 const REFERENZ_XBOT = {
-  segmente: 14, gelenke: 18, knochen: 67, sohlen: 8,
+  segmente: 15, gelenke: 18, knochen: 67, sohlen: 8,
   vertices: 28374, hoeheMeter: 1.8093,
 };
 
 test('Browser, Negativfall: die ausgelieferte Seite hängt keine Attrappen mehr an — jedes describe-Werkzeug meldet gemessen', async () => {
   // Umkehrung des alten Befunds: dieser Fall behauptete bis 2026-08-30 die
   // Lücke („index.html ruft createToolLayer ohne ports auf, describe_body
-  // antwortet 0 von 14 Segmenten"). Die Lücke ist zu: index.html baut
+  // antwortet 0 von 15 Segmenten"). Die Lücke ist zu: index.html baut
   // echtePorts({ renderer }) und hängt sie unter ports ein. Der Test prüft
   // deshalb jetzt, dass KEINE Attrappe mehr dranhängt. Tauscht jemand die
   // Anschlüsse zurück auf attrappenPorts(), werden die beiden Prüfungen auf

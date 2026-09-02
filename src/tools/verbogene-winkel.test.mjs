@@ -8,8 +8,12 @@
 // in der Luft. Der Löser schrieb den Umstand in bericht.hinweise — die kein
 // Werkzeug je ausgab.
 //
-// Positivfall: set_pose in einem verankerten Frame nennt Kanal, gesetzten und
-// gelösten Winkel und den Anker als Ursache.
+// Positivfälle: set_pose in einem verankerten Frame nennt Kanal, gesetzten und
+// gelösten Winkel und den Anker als Ursache — aber nur für Beingelenke der
+// verankerten Seite. Abweichungen an Armgelenken oder am Bein ohne Anker
+// heißen Gelenkgrenzen (Befund G8, Fall 15: `arm_l.lift 180` bekam den
+// Anker-Lösungsweg, der ins Leere führte). Mischen sich beide Ursachen,
+// stehen zwei Sätze.
 // Negativfall: ohne Abweichung steht kein solcher Satz in der Antwort.
 
 import { test } from 'node:test';
@@ -18,9 +22,12 @@ import assert from 'node:assert/strict';
 import { verbogeneWinkel, WINKEL_ABWEICHUNG_MELDEN_GRAD } from './handlers.js';
 
 const zustand = (anchors) => ({
-  overrides: { '134': { joints: { pelvis: { tilt: 24 }, hip_l: { flex: -26 }, hip_r: { flex: -26 }, spine: { bend: 35 } }, ease: 'smooth' } },
+  overrides: { '134': { joints: { pelvis: { tilt: 24 }, hip_l: { flex: -26 }, hip_r: { flex: -26 }, spine: { bend: 35 }, arm_l: { lift: 180 }, elbow_r: { bend: -90 }, knee_r: { bend: 10 } } }, ease: 'smooth' },
   anchors,
 });
+
+/** Anzahl der Sätze einer Antwort (0, 1 oder 2). */
+const saetzeLaenge = (s) => s.split('. ').length;
 
 test('Anker biegt gesetzte Winkel: Kanal, Soll, Ist und Ursache stehen in der Wirkung', () => {
   const z = zustand([{ foot: 'foot_l', von: 79, bis: 159 }, { foot: 'foot_r', von: 79, bis: 159 }]);
@@ -40,6 +47,47 @@ test('Ohne Anker heißt die Ursache Gelenkgrenze', () => {
   const [s] = verbogeneWinkel(z, 134, geloest);
   assert.match(s, /spine\.bend 35° → 25°/);
   assert.match(s, /Gelenkgrenzen/);
+  assert.doesNotMatch(s, /Fußanker/);
+});
+
+test('G8: Armgelenk bei aktivem Fußanker heißt Gelenkgrenze, nicht Fußanker', () => {
+  // Befund G8, Fall 15: arm_l.lift 180 und elbow_r.bend -90 wurden geklemmt,
+  // die Antwort schob es dem Fußanker in die Schuhe — dessen Lösungsweg
+  // (Ankerspanne verkürzen) hilft bei Armgelenken nicht.
+  const z = zustand([{ foot: 'foot_l', von: 79, bis: 159 }, { foot: 'foot_r', von: 79, bis: 159 }]);
+  const geloest = { dofs: { 'arm_l.lift': 100, 'elbow_r.bend': 0 } };
+  const [s] = verbogeneWinkel(z, 134, geloest);
+  assert.equal(saetzeLaenge(s), 1);
+  assert.match(s, /arm_l\.lift 180° → 100°/);
+  assert.match(s, /Gelenkgrenzen/);
+  assert.doesNotMatch(s, /Fußanker/, 'Armgelenk darf dem Fußanker zugeschrieben werden');
+  assert.doesNotMatch(s, /hold_foot/);
+});
+
+test('G8: Beingelenk der verankerten Seite heißt Fußanker, das andere Bein heißt Grenzen', () => {
+  const z = zustand([{ foot: 'foot_l', von: 79, bis: 159 }]);
+  const geloest = { dofs: { 'hip_l.flex': 12.3, 'knee_r.bend': 5, spine: undefined } };
+  const saetze = verbogeneWinkel(z, 134, geloest);
+  assert.equal(saetze.length, 2, `erwartet zwei Sätze (Anker links, Grenzen rechts), gekommen: ${JSON.stringify(saetze)}`);
+  const mitAnker = saetze.find((s) => /Fußanker/.test(s));
+  const mitGrenzen = saetze.find((s) => /Gelenkgrenzen/.test(s));
+  assert.ok(mitAnker, 'kein Satz mit Fußanker-Ursache');
+  assert.ok(mitGrenzen, 'kein Satz mit Gelenkgrenzen-Ursache');
+  assert.match(mitAnker, /hip_l\.flex -26° → 12,3°|hip_l\.flex -26° → 12\.3°/);
+  assert.match(mitAnker, /hold_foot foot_l 79–159/);
+  assert.match(mitGrenzen, /knee_r\.bend/);
+  assert.doesNotMatch(mitAnker, /knee_r\.bend/, 'die Grenzen-Abweichung steht im Grenzen-Satz, nicht im Anker-Satz');
+  assert.doesNotMatch(mitGrenzen, /hip_l\.flex/);
+});
+
+test('G8: Beingelenk ohne Anker auf dieser Seite heißt nicht Fußanker', () => {
+  // Anker verankert nur links; das rechte Bein kann er nicht biegen.
+  const z = zustand([{ foot: 'foot_l', von: 79, bis: 159 }]);
+  const geloest = { dofs: { 'hip_r.flex': 0 } };
+  const [s] = verbogeneWinkel(z, 134, geloest);
+  assert.match(s, /Gelenkgrenzen/);
+  assert.doesNotMatch(s, /Fußanker/);
+  assert.doesNotMatch(s, /hold_foot/);
 });
 
 test('Negativfall: steht alles wie gesetzt, gibt es keinen Satz', () => {

@@ -40,6 +40,22 @@ const RIG = {
   params: {},
 };
 
+// Nachbarsegmente teilen den Kniepunkt. Die Kapseln dürfen dort konstruktiv
+// berühren; erst wenn der bereits vom Gelenk abgerückte Schienbeinabschnitt im
+// Oberschenkel liegt, ist es die Überbeugung aus Bühnenbefund D.
+const NACHBAR_RIG = {
+  world: { height: 1.8, groundY: 0, up: 'y' },
+  roles: {},
+  segments: [
+    { id: 'thigh_l', from: 'hip_l', to: 'knee_l', radius: 0.10 },
+    { id: 'shin_l', from: 'knee_l', to: 'foot_l', radius: 0.10 },
+  ],
+  // Der Bind-Abstand wird NACH dem Abrücken am gemeinsamen Gelenk gemessen.
+  restDistances: { 'thigh_l|shin_l': 0 },
+  soles: [],
+  params: {},
+};
+
 // Stehende Referenzpose: Füße am Boden, Arm in Ruhelage, Schwerpunkt im Lot
 // über der Stützfläche (Fußpunkte z = 0,05, daher com z = 0,05).
 const STEH = {
@@ -51,6 +67,26 @@ const STEH = {
   neck: [0, 1.45, 0],
   head_top: [0, 1.62, 0],
 };
+
+test('Durchdringung: normales Knie bleibt still, eingeklappter Unterschenkel wird gemeldet', () => {
+  const normal = {
+    hip_l: [0, 2, 0], knee_l: [0, 1, 0], foot_l: [0, 0, 0],
+  };
+  const gefaltet = {
+    hip_l: [0, 2, 0], knee_l: [0, 1, 0], foot_l: [0, 1.9, 0],
+  };
+
+  const ohne = pruefePhysik(NACHBAR_RIG, nFrames(1, normal), FPS).issues
+    .filter((i) => i.kind === 'durchdringung');
+  assert.deepEqual(ohne, [],
+    `das gemeinsame Knie ist keine Durchdringung: ${JSON.stringify(ohne)}`);
+
+  const mit = pruefePhysik(NACHBAR_RIG, nFrames(1, gefaltet), FPS).issues
+    .filter((i) => i.kind === 'durchdringung');
+  assert.equal(mit.length, 1, `eingeklapptes Knie muss gemeldet werden: ${JSON.stringify(mit)}`);
+  assert.equal(mit[0].part, 'thigh_l|shin_l');
+  assert.match(mit[0].message, /cm/, 'die Meldung nennt den gemessenen Betrag');
+});
 
 const stehFrame = (positions, extra = {}) => ({
   positions: structuredClone(positions ?? STEH),
@@ -123,7 +159,7 @@ test('Durchdringung: sich streifende Kapseln sind noch keine Durchdringung', () 
 
 test('Durchdringung: was sich schon in der Bind-Pose überschneidet, zählt nicht', () => {
   // Rig, dessen Kapseln in der Bind-Pose 0,10 m ineinander stecken
-  // (restDistances negativ) — am Xbot ist das torso|thigh_r mit -0,16 m.
+  // (restDistances negativ) — am Xbot ist das torso_lower|thigh_r mit -0,16 m.
   const bindUeberlappend = { ...RIG, restDistances: { 'arm_l|kopf': -0.10 } };
   // Pose mit exakt derselben Überschneidung von 0,10 m: keine Meldung.
   const gleich = { ...STEH, shoulder_l: [0.03, 1.50, 0], hand_l: [0.03, 1.56, 0] };

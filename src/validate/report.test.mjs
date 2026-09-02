@@ -278,27 +278,27 @@ test('Beanstandete Frames stehen im Bildstreifen', () => {
   }
 });
 
-test('Bei fehlerfreier Bewegung sind trotzdem Frames enthalten, nicht null', () => {
+test('Bei fehlerfreier Bewegung ist trotzdem ein Bild dabei, nicht null', () => {
   const bericht = baueValidationReport(BASIS());
   assert.equal(bericht.physics.passed, true, 'der Positivfall sollte physikfrei sein');
   assert.equal(bericht.intent.passed, true, 'der Positivfall sollte absichtsfrei sein');
   assert.equal(bericht.style.passed, true, 'der Positivfall sollte stilfrei sein');
-  assert.ok(Array.isArray(bericht.images) && bericht.images.length > 0);
+  assert.ok(Array.isArray(bericht.images) && bericht.images.length > 0,
+    'auch eine fehlerfreie Bewegung bekommt ein Bild — Fehlerfreiheit ist kein Grund, nicht hinzusehen');
   const imBild = bericht.images.flatMap((i) => i.frames);
-  assert.ok(imBild.length > 0, 'kein Frame im Bild — auch fehlerfreie Bewegung bekommt ein Bild');
-  // gleichmäßig verteilt über 24 Frames: erster und letzter Frame dabei
-  assert.ok(imBild.includes(0) && imBild.includes(23),
-    `Erster/letzter Frame fehlen: ${imBild}`);
+  assert.deepEqual([...new Set(imBild)], [12],
+    `erwartet die Mitte der 24 Frames, bekommen ${[...new Set(imBild)]}`);
 });
 
-test('Phasengrenzen stehen im Bildstreifen', () => {
+test('Ein Moment, zwei Blicke — kein Raster aus sechs Frames', () => {
+  // Bis zum 2. September 2026 klebte der Bericht bis zu sechs Frames in zwei
+  // Ansichten zusammen. Zwoelf Kacheln, jede Figur fingernagelgross — auf so
+  // einem Bild ist eine Fehlhaltung nachweislich nicht erkennbar
+  // (docs/buehne-befunde-2026-09-02.md, Punkt 1). Der Verlauf gehoert `look`.
   const bericht = baueValidationReport(BASIS());
-  const imBild = new Set(bericht.images.flatMap((i) => i.frames));
-  // Phasengrenzen der Timeline: 0 (Start), 7 (letzter Kontakt), 8 (erster
-  // Flug), 15 (letzter Flug), 16 (erste Landung), 23 (Ende)
-  for (const f of [0, 7, 8, 15, 16, 23]) {
-    assert.ok(imBild.has(f), `Phasengrenze ${f} fehlt im Bildstreifen ${[...imBild]}`);
-  }
+  const frames = new Set(bericht.images.flatMap((i) => i.frames));
+  assert.equal(frames.size, 1,
+    `${frames.size} verschiedene Frames im Bericht — erwartet genau einen Moment`);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

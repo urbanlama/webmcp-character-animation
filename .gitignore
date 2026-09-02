@@ -20,3 +20,11 @@ spikes/**/_c.mjs
 /wmc.html
 /agents.html
 /faq.html
+
+# Probeläufe und Belegbilder aus der Arbeit am Modell. Entstehen beim Messen
+# (tmp-*.png aus look, tmp-*.mjs als Wegwerfskript, tmp-pose.json als Bühne)
+# und gehören nicht ins Repo — die Befunde stehen in docs/, nicht in den Bildern.
+tmp-*
+
+# Abnahmebilder, nicht ins Repo
+/abnahme/
