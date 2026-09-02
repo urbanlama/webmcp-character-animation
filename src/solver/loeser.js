@@ -703,6 +703,11 @@ function wendeOverridesAn(ctx, z, tl, frames, bericht) {
         + `(set_pose mit root.pos).`,
     });
   }
+  for (const v of schluessel.imFlug ?? []) {
+    bericht.hinweise.push(`Frame ${v.frame} hat Gelenke, aber keine Wurzelposition, und liegt im Flug `
+      + `zwischen ${v.von} (wurf) und ${v.bis}: die Wurfbahn trägt die Haltung, die Höhe kommt aus der `
+      + `Parabel. Soll die Figur hier stehen, setze root.pos mit y = null (set_pose).`);
+  }
   const bilanz = { boden: [], gesetzt: [] };
   let geschrieben = 0;
   // Wurfstrecken auf den Schwerpunkt legen. Zwei Bahnen, weil waehleHoehe für
@@ -852,6 +857,20 @@ function hoehenSchluessel(skel, overrides, yKurve, entwuerfe, fps) {
   const einbruchTol = skel.height * BODEN_TOLERANZ_ANTEIL;
   const liste = [];
   const verworfen = [];
+  const imFlug = [];
+  // Wer trägt eine eigene Höhenentscheidung? Eine gesetzte Höhe, oder eine
+  // Wurzel mit pos — auch y = null, denn "auf dem Boden" ist eine Entscheidung.
+  // Eine Wurzel, die nur dreht (drehGrad ohne pos), entscheidet nichts über
+  // die Höhe.
+  const tragend = [];
+  for (const [key, ov] of Object.entries(overrides ?? {})) {
+    const f = Number(key);
+    if (!Number.isInteger(f) || !ov) continue;
+    if (explizit.has(f) || (ov.root && ov.root.pos)) {
+      tragend.push({ frame: f, ease: EASE[ov.ease] ? ov.ease : 'smooth' });
+    }
+  }
+  tragend.sort((a, b) => a.frame - b.frame);
   for (const [key, ov] of Object.entries(overrides ?? {})) {
     const f = Number(key);
     if (!Number.isInteger(f) || !ov) continue;
@@ -862,6 +881,28 @@ function hoehenSchluessel(skel, overrides, yKurve, entwuerfe, fps) {
     if (ex) {
       liste.push({ frame: f, grad: ex.grad, ease, explizit: true });
       continue;
+    }
+    // Eine Haltung ohne eigene Höhe zwischen einem wurf-Schlüssel und dem
+    // nächsten Höhenschlüssel ist eine FLUGPOSE (Tuck im Salto, Schwungbein im
+    // Sprung). Sie wird kein Boden-Schlüssel — sonst zöge sie die Figur mitten
+    // im Flug auf den Boden — sondern folgt der Wurfbahn des umgebenden
+    // Segments (wurfSchwerpunktbahn).
+    //
+    // Gemessen am 2. September 2026 nach Agentenlauf 9: Absprung Frame 34
+    // (1,13 m, wurf), Tuck Frame 44 ohne Wurzel, Landung Frame 55 am Boden —
+    // Wurzel bei 44 auf 0,56 m, Schwerpunkt 0,68 m, tiefer als beim Absprung.
+    // MIT Höhe bei 44 dagegen zwei Parabeln mit Knick, 28 m/s² Ballistik.
+    // Der Agent hatte keinen Weg, der beides vermeidet.
+    if (!(ov.root && ov.root.pos)) {
+      let davor = null, danach = null;
+      for (const t of tragend) {
+        if (t.frame < f) davor = t;
+        if (t.frame > f && !danach) danach = t;
+      }
+      if (davor && danach && davor.ease === 'wurf') {
+        imFlug.push({ frame: f, von: davor.frame, bis: danach.frame });
+        continue;
+      }
     }
     const e = entwuerfe.find((x) => x.frame.frame === f);
     if (!e) continue;
@@ -877,6 +918,7 @@ function hoehenSchluessel(skel, overrides, yKurve, entwuerfe, fps) {
   }
   liste.sort((a, b) => a.frame - b.frame);
   liste.verworfen = verworfen;
+  liste.imFlug = imFlug;
   return liste;
 }
 
@@ -1173,10 +1215,29 @@ function halteAnker(ctx, tl, frames, bericht) {
     // Sollort: wo der Fuß im ERSTEN Frame der Spanne steht. Der Agent hat ihn
     // dort hingestellt; ab da bleibt er. Der Zehenknochen (erstes Kind des
     // Fußknochens) kommt als zweiter Anker dazu, damit die Fußlage steht.
-    const soll = inSpanne[0].positions?.[knochen];
+    //
+    // `ortFrame` verschiebt diesen Bezug, ohne die Spanne zu verschieben. Der
+    // Handler setzt es, wenn ein Anker einen bestehenden ersetzt: aus 40–78
+    // wird 50–72, der Fuß soll aber dort bleiben, wo er in Frame 40 stand.
+    // Ohne dieses Feld nähme der Anker die Position aus Frame 50 — am Xbot
+    // 11 cm weiter vorn (src/solver/anker-ortframe.test.mjs). Ist der genannte
+    // Frame nicht gelöst, fällt der Bezug auf den Spannenanfang zurück und der
+    // Bericht sagt es; still danebenzugreifen wäre der schlimmere Fall.
+    let bezug = inSpanne[0];
+    if (Number.isInteger(a.ortFrame) && a.ortFrame !== inSpanne[0].frame) {
+      const gemeint = frames.find((f) => f.frame === a.ortFrame && f.loeserPose);
+      if (gemeint) bezug = gemeint;
+      else {
+        bericht.lucken.push({
+          meldung: `Anker für „${a.foot}“ über Frames ${a.von}–${a.bis}: ortFrame ${a.ortFrame} `
+            + `ist nicht gelöst (Timeline 0–${frames.length - 1}), der Ort kommt aus Frame ${inSpanne[0].frame}`,
+        });
+      }
+    }
+    const soll = bezug.positions?.[knochen];
     if (!soll) continue;
     const zehe = (skel.byId.get(knochen)?.kinder ?? [])[0] ?? null;
-    const sollZehe = zehe ? inSpanne[0].positions?.[zehe] ?? null : null;
+    const sollZehe = zehe ? bezug.positions?.[zehe] ?? null : null;
 
     aktive.push({
       a, knochen, seite, beinKanaele, frei, inSpanne, soll, zehe, sollZehe,

@@ -1054,6 +1054,30 @@ export function baueWerkzeuge({ store, ask, ports }) {
       });
 
       const schluessel = gesetzteFrames(store.roh());
+      // Eine Wurzelposition zwischen einem wurf-Schlüssel und dem nächsten
+      // Höhenschlüssel teilt die Wurfbahn in zwei Bögen. Agentenlauf 9 vom
+      // 2. September 2026: Tuck bei Frame 44 mit y = 1,8 zwischen Absprung 34
+      // (wurf) und Landung 55 — in allen acht validate-Aufrufen ein
+      // Ballistik-Knick bei 44, und kein Werkzeug sagte, woher er kam.
+      let flugText = '';
+      if (wurzel && wurzel.pos) {
+        const mitPos = Object.entries(store.roh().overrides || {})
+          .map(([k, o]) => ({ frame: Number(k), o }))
+          .filter((x) => Number.isInteger(x.frame) && x.frame !== a.frame && x.o && x.o.root && x.o.root.pos)
+          .sort((p, q) => p.frame - q.frame);
+        let davor = null, danach = null;
+        for (const x of mitPos) {
+          if (x.frame < a.frame) davor = x;
+          if (x.frame > a.frame && !danach) danach = x;
+        }
+        if (davor && danach && davor.o.ease === 'wurf') {
+          flugText = `\nACHTUNG: Frame ${a.frame} liegt im Flug zwischen ${davor.frame} (ease "wurf") und `
+            + `${danach.frame}. Eine Wurzelposition hier - feste Höhe oder y = null - teilt die Wurfbahn in `
+            + `zwei Bögen, die bei Frame ${a.frame} nicht zusammenpassen; validate meldet dort einen `
+            + `Ballistik-Knick. Setze Flugposen OHNE root.pos (drehGrad darf bleiben): dann trägt die `
+            + `Bahn von ${davor.frame} nach ${danach.frame} die Haltung, und x/z werden überblendet.`;
+        }
+      }
       const wurzelTeile = [];
       if (wurzel && wurzel.pos) {
         wurzelTeile.push(`Position [${wurzel.pos.map((v) => (v === null ? 'Boden' : v)).join(', ')}] m`
@@ -1075,6 +1099,7 @@ export function baueWerkzeuge({ store, ask, ports }) {
           ? `\n${geklemmt.length} Winkel liegen außerhalb der gemessenen Gelenkgrenzen und `
             + `werden beim Lösen geklemmt: ${geklemmt.join('; ')}`
           : '')
+        + flugText
         + wirkung(store.roh(), a.frame, ports)
         + '\nRücknehmbar mit undo.');
     },
@@ -1852,13 +1877,46 @@ export function baueWerkzeuge({ store, ask, ports }) {
           + `${nachher} bleiben.`);
       }
 
+      // Eine Spanne aendern war frueher zwei Aufrufe: remove, dann neu setzen.
+      // Im Lauf vom 2. September 2026 waren 14 von 32 hold_foot-Aufrufen
+      // solche Entfernungen. Ueberschneidet sich die neue Spanne mit einer
+      // bestehenden DESSELBEN Fusses, ersetzt sie diese jetzt.
+      //
+      // Der Ort wandert dabei NICHT mit: der Loeser nimmt den Sollort aus dem
+      // ersten Frame der Spanne, und aus 40-78 mach 50-72 hiesse sonst, den
+      // Fuss auf die Stelle zu nageln, an der er in Frame 50 gerade steht —
+      // 11 cm weiter, gemessen am Xbot bei 22 cm Wurzelfahrt. Der Ersatz erbt
+      // deshalb `ortFrame` (src/solver/loeser.js, halteAnker).
+      const ueberlappt = (x, foot) =>
+        x.foot === foot && x.von <= a.bis && x.bis >= a.von;
+      const ersetzt = (z0.anchors || []).filter((x) => gewaehlt.some((f) => ueberlappt(x, f)));
+      // Bei mehreren ueberlappenden Ankern zaehlt der frueheste: sein Ort ist
+      // der aelteste, den der Agent gemeint hat.
+      const ortJeFuss = new Map();
+      for (const x of [...ersetzt].sort((p, q) => p.von - q.von)) {
+        if (!ortJeFuss.has(x.foot)) ortJeFuss.set(x.foot, x.ortFrame ?? x.von);
+      }
+
       store.aendere((z) => {
-        z.anchors = [...(z.anchors || []), ...gewaehlt.map((foot) => ({ foot, von: a.von, bis: a.bis }))];
+        const bleiben = (z.anchors || []).filter((x) => !gewaehlt.some((f) => ueberlappt(x, f)));
+        z.anchors = [...bleiben, ...gewaehlt.map((foot) => {
+          const ort = ortJeFuss.get(foot);
+          return ort === undefined || ort === a.von
+            ? { foot, von: a.von, bis: a.bis }
+            : { foot, von: a.von, bis: a.bis, ortFrame: ort };
+        })];
       });
 
       const alle = store.roh().anchors;
+      const orte = [...new Set([...ortJeFuss.values()])];
+      const ersatzsatz = ersetzt.length
+        ? `Das ersetzt ${ersetzt.length} fruehere${ersetzt.length === 1 ? 'n' : ''} Anker `
+          + `(${ersetzt.map((x) => `${x.foot} ${x.von}-${x.bis}`).join(', ')}) — der Ort bleibt der alte, `
+          + 'nur die Spanne ist neu. '
+        : '';
       return text(`${gewaehlt.join(' und ')} ${gewaehlt.length > 1 ? 'stehen' : 'steht'} ab jetzt in den Frames ${a.von} bis ${a.bis} fest `
-        + `(${a.bis - a.von + 1} Frames), dort, wo ${gewaehlt.length > 1 ? 'sie' : 'er'} auf Frame ${a.von} ${gewaehlt.length > 1 ? 'stehen' : 'steht'}. `
+        + `(${a.bis - a.von + 1} Frames), dort, wo ${gewaehlt.length > 1 ? 'sie' : 'er'} auf Frame ${orte.length === 1 ? orte[0] : a.von} ${gewaehlt.length > 1 ? 'stehen' : 'steht'}. `
+        + ersatzsatz
         + 'Der Loeser rechnet die Beinkette dafuer. Ohne gesetzte Hoehe (root.pos y) darf das Becken '
         + 'dafuer sinken; hast du eine Hoehe gesetzt, bleibt sie. Das freie Bein haeltst du selbst '
         + 'ueber dem Boden — steckt es im Boden, wird die Figur angehoben und der Anker verfehlt, '

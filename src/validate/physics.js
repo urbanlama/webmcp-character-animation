@@ -33,6 +33,17 @@ export const BODEN_TOLERANZ_ANTEIL = 0.01;
  *  Vorwärtsneigung. */
 export const BALANCE_TOLERANZ_ANTEIL = 0.08;
 
+/** Waagerechte Schwerpunktgeschwindigkeit in m/s, ab der die Balance nicht
+ *  mehr geprüft wird. Beim Gehen und Laufen liegt der Schwerpunkt vor dem
+ *  Standfuß — das ist der Vortrieb, kein Fehler. Ein ruhiger Gang liegt bei
+ *  1,2 bis 1,5 m/s, ein Anlauf bei 3 m/s; ein Stand mit Gewichtsverlagerung
+ *  bleibt weit unter 1 m/s. Agentenlauf 9 vom 2. September 2026: sieben
+ *  Balance-Befunde bis 58 cm in den Anlaufschritten, fünf Minuten und 22
+ *  Aufrufe lang vergeblich mit "Hüfte über die Füße" bekämpft. Braucht fps;
+ *  ohne fps ist keine Geschwindigkeit bekannt, dann gilt die Prüfung wie
+ *  bisher. */
+export const BALANCE_FORTBEWEGUNG_M_PRO_S = 1.0;
+
 /** Anteil der Körperhöhe, um den sich ein verankerter Fuß zwischen zwei Frames
  *  verschieben darf. 1,5 %: Sampling-Rauschen in Referenzclips liegt darunter. */
 export const RUTSCH_TOLERANZ_ANTEIL = 0.015;
@@ -503,14 +514,30 @@ export function pruefePhysik(profile, frames, fps) {
     }
   }
 
-  // ── 3. Balance, nur bei Kontakt ────────────────────────────────────────────
+  // ── 3. Balance, nur bei Kontakt und nur ohne Fortbewegung ──────────────────
   // Schwerpunkt über der Stützfläche, gemessen in der Horizontalebene. Toleranz
   // relativ zur Körperhöhe. Gemeldet wird der Überstand als Betrag.
+  //
+  // Bewegt sich der Schwerpunkt waagerecht schneller als
+  // BALANCE_FORTBEWEGUNG_M_PRO_S, geht die Figur oder läuft — dann liegt er
+  // vor dem Standfuß, und das Lot ist kein Maßstab. Die Geschwindigkeit ist
+  // die zentrale Differenz der Nachbarframes; am Rand einseitig.
+  const dtBalance = typeof fps === 'number' && Number.isFinite(fps) && fps > 0 ? 1 / fps : null;
+  const comSpeed = (i) => {
+    if (dtBalance === null) return 0;
+    const lo = Math.max(0, i - 1), hi = Math.min(frames.length - 1, i + 1);
+    if (hi === lo) return 0;
+    const a = frames[lo].com, b = frames[hi].com;
+    if (!a || !b || !Number.isFinite(a[0]) || !Number.isFinite(b[0])) return 0;
+    return Math.hypot(b[0] - a[0], b[2] - a[2]) / ((hi - lo) * dtBalance);
+  };
+  let balanceFortbewegung = 0;
   for (let i = 0; i < frames.length; i++) {
     if (phasen[i] !== 'kontakt') continue;
     const f = frames[i];
     const com = f.com;
     if (!com || !Number.isFinite(com[0])) continue;   // ohne Schwerpunkt keine Balance-Aussage
+    if (comSpeed(i) > BALANCE_FORTBEWEGUNG_M_PRO_S) { balanceFortbewegung++; continue; }
     // Stützfläche = konvexe Hülle der TRAGENDEN Sohlenpunkte, von oben (x/z).
     //
     // Tragend heißt: höchstens auflageSchwelle über dem Boden (1 % Körperhöhe
@@ -660,6 +687,11 @@ export function pruefePhysik(profile, frames, fps) {
     }
   }
   const ausgelassen = [];
+  if (balanceFortbewegung > 0) {
+    ausgelassen.push(`balance in ${balanceFortbewegung} Frames mit Fortbewegung (Schwerpunkt waagerecht `
+      + `schneller als ${BALANCE_FORTBEWEGUNG_M_PRO_S.toFixed(1).replace('.', ',')} m/s): beim Gehen und `
+      + `Laufen liegt der Schwerpunkt vor dem Standfuß, dort ist kein Lot verlangt`);
+  }
   if (flugTripel.length > 0) {
     if (fps === undefined) {
       ausgelassen.push('ballistik');

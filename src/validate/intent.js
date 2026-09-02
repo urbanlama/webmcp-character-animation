@@ -62,7 +62,8 @@ export const KONTAKT_SCHWELLE_FALLBACK_ANTEIL = 0.035;
 //   { kind: 'travel',         part, minHoehe, maxHoehe?, richtung: [x,y,z] }
 //       minHoehe/maxHoehe in Körperhöhen, richtung: Einheitsvektor
 //   { kind: 'contact_change', foot: 'foot_l'|'foot_r', von, bis }
-//       erwartet: von und bis sind kontaktfrei, davor/danach Kontakt
+//       erwartet: der Fuß hebt zwischen von und bis ab — der erste Frame in
+//       der Luft liegt in [von, bis], unmittelbar davor hat er Kontakt
 //   { kind: 'clearance',      partA, partB, minAnteil, maxAnteil?, minDauerSek? }
 //       Anteil der Körperhöhe, minDauerSek in Sekunden
 //   { kind: 'part_height',    part, minAnteil, maxAnteil? }
@@ -320,15 +321,22 @@ function messeKontaktwechsel(alle, profile, frames, boneName, von, bis) {
     if (!p) fehler(`Knochen ${JSON.stringify(boneName)} fehlt in Frame ${i} der gelösten Timeline`);
     return p[1] - (profile.world?.groundY ?? 0);
   };
-  // Kontakt vor `von`: Fuß muss bis dahin unten gewesen sein.
-  const letzterKontakt = footY(von) < schwelle;
-  const flugAb = footY(bis) >= schwelle;
+  // Der Fuß muss unmittelbar vor dem Fenster (oder an seinem Anfang) am Boden
+  // gewesen sein — sonst ist das Abheben früher passiert und wird hier nicht
+  // gemessen, sondern nur noch die Luft.
+  //
+  // Bis zum 2. September 2026 verlangte die Prüfung das Abheben EXAKT bei
+  // `bis`, während der Katalog von einem Fenster sprach. Agentenlauf 9: der
+  // Agent gab 30..35 an, der Fuß hob bei 30 ab, das Kriterium blieb in allen
+  // acht validate-Aufrufen rot. Ein Fenster ist ein Fenster.
+  const letzterKontakt = footY(Math.max(0, von - 1)) < schwelle || footY(von) < schwelle;
   // Gemeldet wird der erste Frame im Bereich [von, bis], an dem der Fuß in der
   // Luft ist:
   let erster = -1;
   for (let i = von; i <= bis; i++) {
     if (footY(i) >= schwelle) { erster = i; break; }
   }
+  const flugAb = erster >= 0 && footY(bis) >= schwelle;
   return { letzterKontakt, flugAb, erster };
 }
 
@@ -492,12 +500,19 @@ function werteKriterium(profile, timeline, k, kontext) {
       if (!Number.isInteger(k.von) || !Number.isInteger(k.bis)) {
         fehler(`${art}: erwartet von und bis als ganzzahlige Frames, bekommen ${JSON.stringify(k.von)} und ${JSON.stringify(k.bis)}`);
       }
+      if (k.bis < k.von) {
+        fehler(`${art}: bis (${k.bis}) liegt vor von (${k.von}) — das Fenster braucht von <= bis`);
+      }
       const m = messeKontaktwechsel(kontext, profile, frames, boneName, k.von, k.bis);
-      const ersterSollFrame = k.bis;
-      const ok = m.letzterKontakt && m.flugAb && m.erster >= 0 && m.erster === ersterSollFrame;
+      const ok = m.letzterKontakt && m.flugAb && m.erster >= 0;
       const gemessen = m.erster >= 0 ? m.erster : 'nicht gelöst';
-      return check(art, `frame ${ersterSollFrame}`, gemessen, 'frame', ok,
-        ok ? undefined : `Kontaktwechsel von ${k.foot}: erwartet Abheben exakt bei Frame ${ersterSollFrame}, gemessen wurde ${typeof gemessen === 'number' ? 'Frame ' + gemessen : 'kein Abheben'}`);
+      const grund = !m.letzterKontakt
+        ? `der Fuß war schon vor Frame ${k.von} in der Luft`
+        : m.erster < 0
+          ? `der Fuß bleibt in Frames ${k.von}..${k.bis} am Boden`
+          : `der Fuß ist bei Frame ${k.bis} wieder am Boden`;
+      return check(art, `frame ${k.von}..${k.bis}`, gemessen, 'frame', ok,
+        ok ? undefined : `Kontaktwechsel von ${k.foot}: erwartet Abheben zwischen Frame ${k.von} und ${k.bis}, gemessen wurde ${typeof gemessen === 'number' ? 'Frame ' + gemessen : 'kein Abheben'} — ${grund}`);
     }
     case 'clearance': {
       if (!k.partA || !k.partB) fehler(`${art}: erwartet partA und partB, bekommen ${JSON.stringify(k.partA)} und ${JSON.stringify(k.partB)}`);

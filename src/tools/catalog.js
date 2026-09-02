@@ -243,8 +243,8 @@ export const KATALOG = [
               minHoehe: { type: 'number', description: 'Untergrenze in Koerperhoehen. travel: minHoehe oder maxHoehe.' },
               maxHoehe: { type: 'number', description: 'Obergrenze in Koerperhoehen. travel: minHoehe oder maxHoehe.' },
               foot: { type: 'string', description: 'Fussrolle, z. B. foot_l. Pflicht bei contact_change.' },
-              von: { type: 'integer', description: 'Startframe. Pflicht bei contact_change.' },
-              bis: { type: 'integer', description: 'Endframe. Pflicht bei contact_change.' },
+              von: { type: 'integer', description: 'Fruehester Frame, in dem der Fuss abheben darf. Pflicht bei contact_change.' },
+              bis: { type: 'integer', description: 'Spaetester Frame, in dem der Fuss abheben darf; von..bis ist ein Fenster. Pflicht bei contact_change.' },
               partA: { type: 'string', description: 'erstes Segment. Pflicht bei clearance.' },
               partB: { type: 'string', description: 'zweites Segment. Pflicht bei clearance.' },
               minAnteil: { type: 'number', description: 'Untergrenze als Anteil der Koerperhoehe.' },
@@ -407,8 +407,11 @@ export const KATALOG = [
             + '"auf dem Boden" (der Loeser rechnet die Hoehe), eine Zahl in y ist eine feste Hoehe. '
             + '{turnGrad: Zahl} dreht die ganze Figur um die Hochachse. '
             + 'Ein Schritt: pos [x, null, z] wandert entlang der Blickrichtung, die Hoehe bleibt am Boden. '
-            + 'Ein Sprung: Absprung- und Landeframe OHNE Hoehe (sie stehen), der Scheitel mit '
-            + 'einer Zahl in y und ease "wurf" - die Parabel laeuft dann vom Boden zum Scheitel und zurueck. '
+            + 'Ein Sprung: Absprungframe mit ease "wurf" (y = null: vom Boden weg, oder eine Zahl), '
+            + 'Landeframe mit y = null. Flugdauer und Scheitelhoehe haengen zusammen: der Abstand der '
+            + 'beiden Frames bestimmt, wie hoch die Parabel steigt. Flugposen dazwischen (Tuck, Drehung) '
+            + 'OHNE pos setzen - sie folgen der Wurfbahn; drehGrad darf dabei stehen. Eine Hoehe im Flug '
+            + 'teilt die Parabel in zwei Boegen mit Knick, den validate als Ballistikfehler meldet. '
             + 'Zwischen gesetzten Frames wird die Wurzel wie alles andere ueberblendet.',
           properties: {
             pos: {
@@ -718,7 +721,10 @@ export const KATALOG = [
       + 'wandert, der andere schwingt frei - und den haeltst DU ueber dem Boden (Knie beugen, Huefte '
       + 'heben); steckt er im Boden, wird die Figur angehoben und der Anker verfehlt, die Antwort sagt es. '
       + 'Ohne Anker rutschen die Fuesse mit dem Becken mit und validate meldet es. Mehrere Anker sind '
-      + 'erlaubt; foot "beide" nagelt beide Fuesse fest. Setze sie ERST, wenn die Haltungen stehen: sie '
+      + 'erlaubt; foot "beide" nagelt beide Fuesse fest. EINE SPANNE AENDERST DU MIT EINEM AUFRUF: '
+      + 'ruf hold_foot mit demselben Fuss und der neuen Spanne, sie ersetzt jede alte, die sie beruehrt - '
+      + 'kein remove noetig. Der Fuss bleibt dabei an dem Ort, an dem der alte Anker ihn hielt, auch wenn '
+      + 'der Anfang wandert. Setze sie ERST, wenn die Haltungen stehen: sie '
       + 'wirken nach den Haltungen. Deine gesetzten Beinwinkel bleiben dabei stehen; reicht der Rest '
       + 'der Kette nicht bis zum Anker, gibt die Huefte nach und der Bericht nennt den Fuss mit dem '
       + 'Betrag in Metern, der fehlt.',

@@ -281,12 +281,22 @@ test('contact_change: Fuß hebt exakt bei Frame 15 — erfüllt', () => {
   assert.equal(r.checks[0].passed, true);
 });
 
-test('contact_change: geforderter Abhebe-Frame 30 weicht vom gemessenen ab', () => {
+test('contact_change: Abheben bei 15 liegt im Fenster 10..20 — erfüllt (Lauf 9: Fenster 30..35, Abheben 30)', () => {
   const t = saltoTimeline();
   const r = pruefeAbsicht(RIG, t, [
-    { kind: 'contact_change', foot: 'foot_r', von: 14, bis: 30 }]);
+    { kind: 'contact_change', foot: 'foot_r', von: 10, bis: 20 }]);
+  assert.equal(r.checks[0].passed, true, JSON.stringify(r.checks[0]));
+  assert.equal(r.checks[0].measured, 15);
+  assert.equal(r.checks[0].required, 'frame 10..20');
+});
+
+test('contact_change: Fenster 20..30 liegt nach dem Abheben bei 15 — nicht erfüllt, mit Grund', () => {
+  const t = saltoTimeline();
+  const r = pruefeAbsicht(RIG, t, [
+    { kind: 'contact_change', foot: 'foot_r', von: 20, bis: 30 }]);
   assert.equal(r.checks[0].passed, false);
   assert.match(r.checks[0].message, /Frame \d+/);
+  assert.match(r.checks[0].message, /schon vor Frame 20 in der Luft/);
 });
 
 // 5. clearance

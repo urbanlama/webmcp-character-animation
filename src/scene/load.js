@@ -47,6 +47,15 @@ export async function loadGLB(buffer) {
     bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
     ''
   );
+  // Ein SkinnedMesh wird von three.js anhand der Huelle seiner BIND-Pose
+  // gecullt, nicht anhand der aktuellen Knochenstellung. Die Huelle bleibt am
+  // Ursprung, waehrend die Figur laeuft und springt: von der Seite betrachtet
+  // liegt sie ab etwa 1,4 m Weg ausserhalb des Bildes, und der Renderer
+  // laesst das Mesh weg — es bleibt nur das Skelett. Agentenlauf 9 vom
+  // 2. September 2026: im Flug (Frame 40) und nach der Landung (Frame 61)
+  // "nur Skelett", von schraeg vorn wieder mit Mesh; der Agent hielt das fuer
+  // ein Kameraartefakt. Deshalb: die Figur wird immer gezeichnet.
+  gltf.scene.traverse((o) => { if (o.isSkinnedMesh) o.frustumCulled = false; });
   return gltf;
 }
 

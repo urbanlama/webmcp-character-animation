@@ -74,17 +74,24 @@ test('Flughöhe: ein Gelenknachtrag ohne Höhe folgt der gesetzten Bahn, statt a
     + `gemessen ${jetzt.toFixed(3)} m`);
 });
 
-test('Flughöhe: der Bericht nennt den Frame, dessen Bodenhöhe verworfen wurde', async () => {
+test('Flughöhe: der Bericht nennt den Frame, der im Flug der Wurfbahn folgt', async () => {
   const { profil, skel } = await aufbau();
   const { bericht } = loeseBewegung(profil, skel,
     sprung({ 55: { joints: { elbow_l: { bend: 70 } }, ease: 'smooth' } }), {});
 
-  const treffer = (bericht.lucken ?? []).filter((l) => /Frame 55 hat Gelenke, aber keine Höhe/.test(l.meldung ?? ''));
+  // Seit dem 2. September 2026 ist ein Gelenknachtrag zwischen wurf-Schlüssel
+  // und nächstem Höhenschlüssel keine Lücke mehr, sondern eine Flugpose: er
+  // folgt der Parabel und steht als Hinweis im Bericht, nicht als Lücke — die
+  // alte Lücken-Meldung riet zu einer Höhe, und eine Höhe im Flug knickt die Bahn.
+  const treffer = (bericht.hinweise ?? []).filter((h) => /Frame 55 hat Gelenke, aber keine Wurzelposition/.test(h));
   assert.equal(treffer.length, 1,
-    `genau eine Meldung zu Frame 55 erwartet, ${treffer.length} gefunden: `
-    + JSON.stringify((bericht.lucken ?? []).map((l) => l.meldung)));
-  assert.match(treffer[0].meldung, /set_pose mit root\.pos/,
-    'die Meldung muss sagen, wie der Agent die Höhe doch setzt');
+    `genau ein Hinweis zu Frame 55 erwartet, ${treffer.length} gefunden: `
+    + JSON.stringify(bericht.hinweise ?? []));
+  assert.match(treffer[0], /zwischen 50 \(wurf\) und 60/);
+  assert.match(treffer[0], /root\.pos/,
+    'der Hinweis muss sagen, wie der Agent die Figur doch auf den Boden stellt');
+  assert.equal((bericht.lucken ?? []).filter((l) => /Frame 55/.test(l.meldung ?? '')).length, 0,
+    'Frame 55 ist keine Lücke mehr');
 });
 
 test('Flughöhe, Negativfall: am Boden bleibt der Gelenknachtrag ein Boden-Schlüssel', async () => {

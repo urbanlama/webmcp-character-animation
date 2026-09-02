@@ -78,3 +78,14 @@ test('Laden, Negativfall: leerer Puffer wird abgelehnt', async () => {
     }
   );
 });
+
+test('Laden: gehäutete Meshes werden nie gecullt — die Figur bleibt auch weit vom Ursprung sichtbar', async () => {
+  const gltf = await loadGLB(alsArrayBuffer(XBOT_PFAD));
+  const meshes = [];
+  gltf.scene.traverse((o) => { if (o.isSkinnedMesh) meshes.push(o); });
+  assert.ok(meshes.length > 0, `Xbot.glb sollte gehäutete Meshes haben, gefunden: ${meshes.length}`);
+  for (const m of meshes) {
+    assert.equal(m.frustumCulled, false,
+      `${m.name}: frustumCulled muss aus sein, sonst verschwindet das Mesh, sobald die Figur die Bind-Huelle verlaesst (Lauf 9, Frame 40)`);
+  }
+});

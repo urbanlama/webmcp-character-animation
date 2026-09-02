@@ -281,3 +281,33 @@ test('Ballistik: unsinnige Framerate wird mit Zahl abgelehnt', () => {
   const frames = nFrames(5, STEH, { contact: 'flug', com: [0, 2.0, 0.05] });
   assert.throws(() => pruefePhysik(RIG, frames, 0), /fps = 0/);
 });
+
+// ── 3b. Balance bei Fortbewegung ──────────────────────────────────────────────
+//
+// Agentenlauf 9 vom 2. September 2026: sieben Balance-Befunde bis 58 cm in
+// den Anlaufschritten. Beim Laufen liegt der Schwerpunkt vor dem Standfuß —
+// das ist Vortrieb. Der Agent hat fünf Minuten lang "Hüfte über die Füße"
+// versucht, ohne dass sich ein Befund geändert hat.
+
+test('Balance: derselbe Überstand bei 1,5 m/s Vortrieb wird nicht beanstandet, sondern benannt', () => {
+  // Schwerpunkt 30 cm neben der Stützfläche, wandert 5 cm je Frame = 1,5 m/s.
+  const frames = Array.from({ length: 5 }, (_, i) => stehFrame(STEH, { com: [0.42, 0.98, 0.05 + i * 0.05] }));
+  const r = pruefePhysik(RIG, frames, FPS);
+  assert.equal(r.issues.filter((i) => i.kind === 'balance').length, 0);
+  assert.equal(r.ausgelassen.length, 1);
+  assert.match(r.ausgelassen[0], /^balance in 5 Frames mit Fortbewegung/);
+  assert.match(r.ausgelassen[0], /1,0 m\/s/);
+});
+
+test('Balance, Negativfall: bei 0,6 m/s (langsame Gewichtsverlagerung) wird weiter geprüft', () => {
+  const frames = Array.from({ length: 5 }, (_, i) => stehFrame(STEH, { com: [0.42, 0.98, 0.05 + i * 0.02] }));
+  const r = pruefePhysik(RIG, frames, FPS);
+  assert.equal(r.issues.filter((i) => i.kind === 'balance').length, 5);
+  assert.deepEqual(r.ausgelassen, []);
+});
+
+test('Balance: ohne fps ist keine Geschwindigkeit bekannt — geprüft wird wie bisher', () => {
+  const frames = Array.from({ length: 5 }, (_, i) => stehFrame(STEH, { com: [0.42, 0.98, 0.05 + i * 0.05] }));
+  const r = pruefePhysik(RIG, frames);
+  assert.equal(r.issues.filter((i) => i.kind === 'balance').length, 5);
+});
