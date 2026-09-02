@@ -571,31 +571,43 @@ export const KATALOG = [
   },
     {
     name: 'trace',
-    description: 'Zeigt den VERLAUF der ganzen Bewegung in EINEM Bild: die Bahnen von Haenden, '
-      + 'Fuessen und Becken ueber alle Frames, dazu die Figur an einem Frame deiner Wahl. '
-      + 'Die Bahn zeigt die Form der Bewegung, der Abstand der Punkte das Timing - eng ist '
-      + 'langsam, weit ist schnell, ein Knaeuel ist Stillstand. Ein Knick in der Bahn ist ein '
-      + 'Richtungswechsel. Damit siehst du, ob eine Bewegung flieszt, ohne Frame fuer Frame '
-      + 'durchzugehen. Kamera wie bei look. RUFE DAS AUF, BEVOR DU EINE BEWEGUNG ABGIBST: '
-      + 'ein einzelner Frame sagt nichts darueber, wie die Bewegung laeuft.',
+    description: 'Zeigt den ABLAUF der Bewegung als Folge von drei GROSSEN Einzelbildern in '
+      + 'einer Antwort - gleichmaessig ueber die Timeline verteilt, in derselben Kamera, wie '
+      + 'ein Daumenkino zu lesen. Damit siehst du, ob eine Bewegung flieszt, ohne jeden Frame '
+      + 'einzeln anzufordern. Willst du einen Abschnitt genauer sehen, gib von und bis an - '
+      + 'dann liegen die drei Bilder enger beieinander. Kamera wie bei look. RUFE DAS AUF, '
+      + 'BEVOR DU EINE BEWEGUNG ABGIBST: ein einzelner Frame sagt nichts darueber, wie die '
+      + 'Bewegung laeuft.',
     inputSchema: {
       type: 'object',
       properties: {
-        frame: {
+        von: {
           type: 'integer', minimum: 0,
-          description: 'Welcher Frame als Figur im Bild steht. Die Bahnen laufen immer ueber '
-            + 'die GANZE Timeline, unabhaengig davon. Ohne Angabe die Mitte.'
+          description: 'Erster Frame des Abschnitts. Ohne Angabe der Anfang der Timeline.'
+        },
+        bis: {
+          type: 'integer', minimum: 0,
+          description: 'Letzter Frame des Abschnitts. Ohne Angabe das Ende der Timeline.'
         },
         richtung_grad: {
           type: 'number', minimum: 0, maximum: 359,
           description: `Woher die Kamera blickt: 0 von vorn, 90 von links, 180 von hinten, `
-            + `270 von rechts. Standard ${RICHTUNG_STANDARD_GRAD}. Eine Bahn, die auf die `
-            + `Kamera zulaeuft, ist verkuerzt - dann von der Seite schauen.`
+            + `270 von rechts. Standard ${RICHTUNG_STANDARD_GRAD}. In allen drei Bildern gleich.`
         },
         hoehe_grad: {
           type: 'number', minimum: -89, maximum: 90,
           description: `Wie hoch die Kamera steht: 0 auf Augenhoehe, 90 von oben. `
-            + `Standard ${HOEHE_STANDARD_GRAD}. Fuer Schritte und Fussbahnen ist 90 gut.`
+            + `Standard ${HOEHE_STANDARD_GRAD}. Fuer Schritte und Fussstellung ist 90 gut.`
+        },
+        ziel: {
+          type: 'string',
+          description: 'Worauf die Kamera zielt: "figur" (Standard) oder ein Gelenk aus '
+            + 'describe_rig. Mit weite "nah" verfolgst du ein Gelenk durch die Zeit.'
+        },
+        weite: {
+          type: 'string', enum: WEITEN,
+          description: 'Wie viel im Bild ist: "ganz" die Figur (Standard), "halb" ein '
+            + 'Koerperteil, "nah" ein Gelenk.'
         }
       }
     }

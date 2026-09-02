@@ -23,6 +23,7 @@ import { alsTimeline } from './state.js';
 import { PFLICHTROLLEN, priorisiereFragen, offenerRest } from './rollen-priorisierung.js';
 import { ANTWORT_MAX_BYTES, AUFRUF_MAX_MS } from './registry.js';
 import { pruefeKriterien } from '../validate/intent.js';
+import { folgeFrames, FOLGE_BILDER, FOLGE_SKALA } from '../render/bildfolge.js';
 import { pruefePhysik } from '../validate/physics.js';
 
 /**
@@ -1687,51 +1688,80 @@ export function baueWerkzeuge({ store, ask, ports }) {
     },
 
     /**
-     * trace — der Verlauf der ganzen Bewegung in EINEM Bild.
+     * trace — der Ablauf als Folge GROSSER Einzelbilder.
      *
-     * Warum es das gibt: `look` und `validate` zeigen je einen Moment in voller
-     * Groesse. Der Verlauf fehlte damit ganz — der Agent haette ihn Frame fuer
-     * Frame zusammensuchen muessen, und was er vergisst, sieht er nie
-     * (docs/buehne-befunde-2026-09-02.md, Punkt 1). Der alte Bildstreifen legte
-     * dafuer Standbilder nebeneinander; bei sechs Kacheln war jede Figur
-     * fingernagelgross und nichts darauf zu erkennen.
+     * Zwei Wege dahin waren falsch (docs/buehne-befunde-2026-09-02.md): der
+     * alte Bildstreifen klebte sechs Frames in ein PNG und machte jede Figur
+     * fingernagelgross; die Bewegungsspur legte alle Bahnen in ein Bild und
+     * verlangte Deutung — bei drei Rueckwaertssaltos ueberlagern sich die
+     * Bahnen zu einem Knaeuel. Eine MCP-Antwort traegt beliebig viele Bilder;
+     * sie muessen nicht in eines gezwungen werden.
      */
     async trace(args) {
       const a = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
       const z0 = store.roh();
       brauchtLaenge('trace', z0.frameCount);
 
-      // Ohne Frame die Mitte: die Figur soll IN der Bewegung stehen, nicht an
-      // ihrem Anfang, wo sie meist noch in der Ruhelage ist.
-      let frame = Math.floor(z0.frameCount / 2);
-      if (a.frame !== undefined) {
-        pruefeFrame('trace', 'frame', a.frame, z0.frameCount);
-        frame = Number(a.frame);
+      let von = 0;
+      let bis = z0.frameCount - 1;
+      if (a.von !== undefined) { pruefeFrame('trace', 'von', a.von, z0.frameCount); von = Number(a.von); }
+      if (a.bis !== undefined) { pruefeFrame('trace', 'bis', a.bis, z0.frameCount); bis = Number(a.bis); }
+      if (von > bis) {
+        throw new WerkzeugMeldung({
+          tool: 'trace', param: 'von', value: von,
+          range: `kleiner oder gleich bis (${bis})`,
+          next: 'vertausche von und bis',
+          message: `von ${von} liegt hinter bis ${bis}: der Bereich ist 0 Frames lang`
+        });
       }
 
       const kamera = {
         richtung_grad: pruefeGradOptional('trace', 'richtung_grad', a.richtung_grad, 0, 359),
         hoehe_grad: pruefeGradOptional('trace', 'hoehe_grad', a.hoehe_grad, -89, 90),
+        ziel: a.ziel === undefined ? undefined
+          : pruefeText('trace', 'ziel', a.ziel, 'ein Körperteil aus describe_rig oder "figur"', 60),
+        weite: a.weite === undefined ? undefined
+          : pruefeAuswahl('trace', 'weite', a.weite, WEITEN,
+            'ganz zeigt die Figur, halb ein Körperteil, nah ein Gelenk'),
       };
       if (!ports.renderer) {
-        throw nichtAngeschlossen('trace', 'AP9 (Bildstreifen)', 'Das Bild');
+        throw nichtAngeschlossen('trace', 'AP9 (Bildstreifen)', 'Die Bildfolge');
       }
-      if (ports.solver) ports.solver.loese(alsTimeline(z0));
+      let loeserBericht = null;
+      if (ports.solver) loeserBericht = ports.solver.loese(alsTimeline(z0)).bericht ?? null;
 
-      const bild = ports.renderer.spur({ frame, ...kamera });
-      const k = bild.kamera || {};
+      const frames = folgeFrames(von, bis, FOLGE_BILDER);
+
+      // Die Kamera FOLGT der Figur, sie steht nicht still. Beides wurde
+      // gemessen: bei fester Kamera lief die Figur eines Standweitsprungs
+      // (1,45 m weit) aus dem 2,26 m breiten Bildfeld — die Pose war dann
+      // halb abgeschnitten. Fuer die Frage 'flieszt die Bewegung' zaehlt die
+      // Haltung; die Ortsveraenderung steht in describe_pose und validate, und
+      // das Bodengitter steht weltfest, zeigt sie also mit.
+      const bilder = frames.map((f) => ports.renderer.bild({
+        frame: f, skala: FOLGE_SKALA, sparsam: true, ...kamera,
+      }));
+      const k = bilder[0]?.kamera || {};
+
+      // Wie es weitergeht: ohne diesen Satz sieht der Agent drei Bilder und
+      // weiss nicht, dass zwischen ihnen noch Bewegung liegt.
+      const luecke = frames.length > 1 ? frames[1] - frames[0] : 0;
+      const weiter = luecke > 1
+        ? ` Zwischen den gezeigten Frames liegen je ${luecke - 1} weitere. Willst du einen `
+          + `Abschnitt genauer sehen, ruf trace mit von und bis auf, z. B. von ${frames[0]} `
+          + `bis ${frames[1]}.`
+        : '';
 
       return textMitBildern(
-        `Verlauf über alle ${z0.frameCount} Frames, ein Bild in voller Größe. `
-        + `Die Figur steht auf Frame ${frame}, die Bahnen laufen über die ganze Timeline. `
-        + `Kamera: richtung ${k.richtungGrad}°, hoehe ${k.hoeheGrad}°. `
-        + 'Jede farbige Linie ist die Bahn eines Körperteils, jeder Punkt darauf ein Frame: '
-        + 'eng beieinander heißt langsam, weit auseinander schnell, ein Knäuel heißt Stillstand. '
-        + 'Ein Knick in der Bahn ist ein Richtungswechsel. '
-        + 'Eine Bahn, die auf die Kamera zuläuft, ist verkürzt — dann mit richtung_grad 90 von '
-        + 'der Seite schauen; für Fußbahnen ist hoehe_grad 90 (von oben) am deutlichsten.'
-        + (bild.warnung ? ` ${bild.warnung}` : ''),
-        [bild]
+        `${bilder.length} Bilder in voller Größe, Frames ${frames.join(', ')} `
+        + `von ${z0.frameCount} — in dieser Reihenfolge zu lesen wie ein Daumenkino. `
+        + `Kamera in allen Bildern gleich: richtung ${k.richtungGrad}°, hoehe ${k.hoeheGrad}°, `
+        + `ziel ${k.ziel}, weite ${k.weite} — der Maßstab ist in allen Bildern derselbe. Die `
+        + 'Kamera folgt der Figur; wie weit sie sich bewegt hat, siehst du am weltfesten '
+        + 'Bodengitter und in den Zahlen von describe_pose.'
+        + weiter
+        + standMeldung(z0, loeserBericht),
+        bilder
       );
     },
 

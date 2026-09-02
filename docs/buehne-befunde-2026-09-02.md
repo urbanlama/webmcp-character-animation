@@ -592,23 +592,42 @@ Textzeilen des Fußblocks, die acht Sohlennamen, der Ansichtsname und die
 Körperhöhe — alles davon steht im Berichtstext und verdeckte im Bild genau die
 Stellen, auf die man schauen muss.
 
-## `trace`: der Verlauf in einem Bild
+## `trace`: der Ablauf als Folge grosser Einzelbilder
 
-Neues Werkzeug. Es legt die BAHNEN von Händen, Füßen und Becken über die ganze
-Timeline in ein Bild, dazu die Figur an einem Frame.
+Neues Werkzeug. Es liefert DREI grosse Bilder in EINER Antwort, gleichmaessig
+ueber die Timeline verteilt, in derselben Kamera — wie ein Daumenkino zu lesen.
+Mit `von` und `bis` ruecken die drei Bilder enger zusammen.
 
-    die Bahn      zeigt die FORM der Bewegung — Bogen, Zickzack, Rückschlag
-    der Abstand   zeigt das TIMING — eng ist langsam, weit ist schnell,
-                  ein Knäuel ist Stillstand
-    ein Knick     zeigt den Richtungswechsel, den man sonst in Zahlen sucht
+### Zwei verworfene Wege davor
 
-Das löst, was der alte Streifen versprach und nicht hielt: Standbilder
-nebeneinander zeigen keinen Verlauf, weil zwischen zwei Bildern nicht steht, was
-dazwischen passiert ist — und bei sechs Kacheln erkennt man ohnehin nichts.
+**Der Bildstreifen** klebte bis zu sechs Frames in EIN PNG. Jede Figur wurde
+fingernagelgross; am Bild belegt, dass darauf nichts zu erkennen ist.
 
-Eigene Sichtweite `verlauf` (2,4 × Körperhöhe), damit die Bahnen vollständig ins
-Bild passen. Am Standweitsprung belegt: Sprungbogen des Beckens, Armschwung und
-Fußbahnen sind mit Frame-Nummern lesbar.
+**Die Bewegungsspur** legte die Bahnen von Haenden, Fuessen und Becken ueber die
+ganze Timeline in ein Bild. Sie zeigte einen Standweitsprung brauchbar — der
+Sprungbogen war lesbar — scheiterte aber an zwei Punkten, und beide wiegen
+schwer:
 
-Dateien: `src/render/spur.js` (Geometrie, ohne three.js), `zeichneSpur` in
-`src/render/strip.js`, Werkzeug in `catalog.js` und `handlers.js`.
+1. Sie verlangt Deutung statt Anschauung. Die Zeitrichtung steht nur in den
+   Frame-Zahlen; ohne sie ist eine Bahn eine Linie, keine Bewegung.
+2. Bei einer Bewegung, die denselben Weg mehrfach laeuft — drei
+   Rueckwaertssaltos — ueberlagern sich die Bahnen zu einem Knaeuel, aus dem
+   sich nichts mehr lesen laesst.
+
+Eine MCP-Antwort traegt beliebig viele image-Bloecke. Der Zwang, alles in EIN
+Bild zu pressen, war nie noetig.
+
+### Gemessen
+
+    3 Bilder, je 544 x 680 px (Skala 0,85)   397 KB von 512 KB Antwortbudget
+
+Volle Groesse waeren 550 KB gewesen und damit abgewiesen. 544 x 680 ist immer
+noch das Vierfache der alten Rasterkachel (300 x 380).
+
+Die Kamera FOLGT der Figur, sie steht nicht still. Beides wurde ausprobiert: bei
+fester Kamera lief die Figur eines Standweitsprungs (1,45 m weit) aus dem 2,26 m
+breiten Bildfeld, die Pose war halb abgeschnitten. Fuer die Frage „flieszt die
+Bewegung" zaehlt die Haltung; die Ortsveraenderung steht in `describe_pose` und
+zeigt sich am weltfesten Bodengitter.
+
+Dateien: `src/render/bildfolge.js`, Werkzeug in `catalog.js` und `handlers.js`.

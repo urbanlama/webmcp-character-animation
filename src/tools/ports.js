@@ -576,9 +576,6 @@ export function echtePorts(opt = {}) {
     bild(anfrage) {
       return rendererPort.bauen('look').bild(anfrage);
     },
-    spur(anfrage) {
-      return rendererPort.bauen('trace').bild({ weite: 'verlauf', ...anfrage, spur: true, sparsam: true });
-    },
     streifen({ frames, views }) {
       return rendererPort.bauen('look').streifen({ frames, views });
     }

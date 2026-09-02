@@ -35,7 +35,6 @@
 
 import * as THREE from 'three';
 import { validateRigProfile } from '../contracts/rig-profile.js';
-import { spurPunkte, spurMarken, SPUR_FARBEN } from './spur.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BENANNTE VERFAHRENSPARAMETER (keine Körpermaße — AGENTS.md, Regel 1)
@@ -171,11 +170,8 @@ export const BILD_HOEHE_PX = 800;
  *    ganz — die Figur ganz im Bild, mit Luft für erhobene Arme (wie SICHT_HOEHE_FAKTOR)
  *    halb — Oberkörper oder ein Bein füllen das Bild
  *    nah  — ein Gelenk mit seinen Nachbarn, für Durchdringung und Überbeugung */
-export const WEITE_ANTEILE = { verlauf: 2.4, ganz: 1.25, halb: 0.6, nah: 0.3 };
-/** Die Weiten, die `look` anbietet. `verlauf` steht nicht darin: es ist die
- *  Sicht der Bewegungsspur, die den ganzen Bahnenbereich zeigt, und waere fuer
- *  einen einzelnen Moment nur weit weg. */
-export const WEITEN = Object.keys(WEITE_ANTEILE).filter((w) => w !== 'verlauf');
+export const WEITE_ANTEILE = { ganz: 1.25, halb: 0.6, nah: 0.3 };
+export const WEITEN = Object.keys(WEITE_ANTEILE);
 
 /** Blickrichtung, wenn der Aufrufer keine nennt: leicht schräg von vorn, leicht
  *  von oben. Frontal deckt eine Seite die andere; schräg zeigt beide Beine und
@@ -213,7 +209,7 @@ export const PFLICHT_ANNOTATIONEN = [
 const EBENEN_REIHENFOLGE = [
   // Die Spur liegt direkt ueber dem Boden und UNTER allem anderen: sie ist der
   // Hintergrund, vor dem die Figur des Referenzframes steht.
-  'bodengitter', 'spur', 'stuetzflaeche', 'kontaktpunkte', 'achsenkreuz', 'schwerpunkt',
+  'bodengitter', 'stuetzflaeche', 'kontaktpunkte', 'achsenkreuz', 'schwerpunkt',
 ];
 
 /** Harte, ungemischte Farbtöne: der Agent unterscheidet Gruppen nach Farbton. */
@@ -575,7 +571,11 @@ function pruefeKamera(kamera) {
     fehler(`weite '${weite}' ist unbekannt: erlaubt sind ${WEITEN.length} Stück — `
       + WEITEN.map((w) => `${w} (${WEITE_ANTEILE[w]} × Körperhöhe)`).join(', '));
   }
-  return { richtungGrad, hoeheGrad, ziel, weite };
+  // Ein festes Weltziel [x, y, z] wird unveraendert durchgereicht: es haelt die
+  // Kamera ueber eine Bildfolge still, statt der Figur zu folgen.
+  const zielWelt = Array.isArray(kamera.zielWelt) && kamera.zielWelt.length === 3
+    && kamera.zielWelt.every(Number.isFinite) ? kamera.zielWelt.slice() : null;
+  return { richtungGrad, hoeheGrad, ziel, weite, ...(zielWelt ? { zielWelt } : {}) };
 }
 
 /** Der Ansichtsname eines Einzelbildes. Es hat keine der vier festen Ansichten —
@@ -875,7 +875,13 @@ export const ZIEL_FIGUR = 'figur';
 function einzelbildKamera(profile, system, frame, kamera, panelHoehe) {
   const sichtHoeheMeter = WEITE_ANTEILE[kamera.weite] * system.height;
   return {
-    ziel: zielPunkt(profile, frame, kamera.ziel),
+    // Ein festes Weltziel haelt die Kamera ueber mehrere Bilder STILL. Ohne das
+    // folgt sie dem Schwerpunkt, die Figur steht in jedem Bild in der Mitte und
+    // die Bewegung ist nicht zu sehen — gemessen an einer trace-Folge, dort
+    // zeigte Bild 1 den Bereich 0,40 bis 1,60 m und Bild 2 dieselbe Figur bei
+    // 0,40 bis 2,40 m.
+    ziel: Array.isArray(kamera.zielWelt) ? kamera.zielWelt
+      : zielPunkt(profile, frame, kamera.ziel),
     pxProMeter: panelHoehe / sichtHoeheMeter,
     sichtHoeheMeter,
   };
@@ -1276,53 +1282,6 @@ function zeichneStuetzflaeche(pan, system, frame) {
     FARBE.stuetzflaeche, 9);
 }
 
-/**
- * Bewegungsspur: die Bahn der Endeffektoren ueber die ganze Timeline.
- *
- * Gezeichnet wird UNTER dem Koerper, damit die Figur des Referenzframes lesbar
- * bleibt und die Bahnen sie nicht durchkreuzen. Die Linie traegt die Form, die
- * Punkte das Timing: je Frame einer, eng heisst langsam, weit heisst schnell.
- */
-function zeichneSpur(pan, profile, frames) {
-  const g = pan.annotationen.spur;
-  const rollen = {};
-  for (const [name, r] of Object.entries(profile.roles ?? {})) {
-    if (r && typeof r.bone === 'string') rollen[name] = r.bone;
-  }
-  // Fallback auf die Gelenktabelle: `roles` fuehrt am Xbot nur drei Namen,
-  // die Haende haengen an den Gelenken (docs/buehne-befunde, Kapitel 2.1).
-  for (const [name, j] of Object.entries(profile.joints ?? {})) {
-    if (!rollen[name] && j && typeof j.bone === 'string') rollen[name] = j.bone;
-  }
-  // Das Rig fuehrt kein Handgelenk (docs/buehne-befunde, Punkt 2.1) — die
-  // Haende haengen als SEGMENT dran. Ohne diesen Griff fehlten genau die zwei
-  // Bahnen, die eine Bewegung am staerksten zeichnen.
-  for (const seg of profile.segments ?? []) {
-    if (!rollen[seg.id] && typeof seg.from === 'string') rollen[seg.id] = seg.from;
-  }
-
-  const bahnen = spurPunkte(frames, rollen);
-  for (const bahn of bahnen) {
-    const farbe = SPUR_FARBEN[bahn.rolle] ?? FARBE.text;
-    const bild = bahn.punkte.map((p) => ({ ...p, px: projiziere(pan, p.welt) }));
-    for (let i = 1; i < bild.length; i++) {
-      linie(g, bild[i - 1].px, bild[i].px, farbe, 1.6);
-    }
-    const marken = spurMarken(bild.map((p) => p.frame));
-    for (const p of bild) {
-      const markiert = marken.has(p.frame);
-      punkt(g, p.px, markiert ? 3.2 : 1.8, farbe);
-      if (markiert) {
-        text(g, [p.px[0] + 5, p.px[1] - 4], String(p.frame), farbe, 8);
-      }
-    }
-    // Der Name der Bahn steht an ihrem ENDE — dort, wo die Bewegung aufhoert,
-    // und nicht mitten im Knaeuel des Anfangs.
-    const letzter = bild[bild.length - 1];
-    text(g, [letzter.px[0] + 6, letzter.px[1] + 9], bahn.rolle, farbe, 9);
-  }
-}
-
 /** Kontaktpunkte: alle gemessenen Sohlenpunkte; belastete gefüllt, freie hohl. */
 function zeichneKontaktpunkte(pan, system, frame) {
   const g = pan.annotationen.kontaktpunkte;
@@ -1443,7 +1402,6 @@ export function planeStreifen(opts) {
 
   const skala = Number.isFinite(opts.skala) && opts.skala > 0 ? opts.skala : 1;
   const sparsam = opts.sparsam === true;
-  const mitSpur = Array.isArray(opts.spurFrames) && opts.spurFrames.length > 1;
   const grundBreite = kamera ? BILD_BREITE_PX : PANEL_BREITE_PX;
   const grundHoehe = kamera ? BILD_HOEHE_PX : PANEL_HOEHE_PX;
   const panelBreite = Math.max(40, Math.round(grundBreite * skala));
@@ -1493,12 +1451,7 @@ export function planeStreifen(opts) {
     kameras.set(EINZELBILD_ANSICHT,
       einzelbildKamera(profile, system, aufgestellt[0], kamera, panelHoehe));
   } else {
-    // Bei einer Spur muss die Kamera die BAHNEN rahmen, nicht nur die Figur des
-    // gezeigten Frames. Sonst laufen Fuss- und Handbahnen aus dem Bild und der
-    // Anfang der Bewegung fehlt — gemessen am Standweitsprung, dort war die
-    // ganze Absprungphase unter dem unteren Bildrand.
-    const rahmenBereich = bewegungsBereich(
-      mitSpur ? [...aufgestellt, ...opts.spurFrames] : aufgestellt, system);
+    const rahmenBereich = bewegungsBereich(aufgestellt, system);
     for (const ansicht of views) {
       kameras.set(ansicht, panelKamera(
         [rahmenBereich, { min: anker, max: anker }], basen.get(ansicht),
@@ -1548,9 +1501,6 @@ export function planeStreifen(opts) {
         annotationen: {
           achsenkreuz: [], bodengitter: [], schwerpunkt: [],
           stuetzflaeche: [], kontaktpunkte: [],
-          // Nur wenn eine Spur verlangt ist: der Abnahmetest fordert, dass
-          // jede vorhandene Gruppe im Bild auch etwas zeichnet.
-          ...(mitSpur ? { spur: [] } : {}),
         },
         koerper: [],
         beschriftung: [],
@@ -1580,7 +1530,6 @@ export function planeStreifen(opts) {
       zeichneKontaktpunkte(pan, system, frame);
       zeichneAchsenkreuz(pan, system, anker);
       zeichneSchwerpunkt(pan, system, frame);
-      if (mitSpur) zeichneSpur(pan, profile, opts.spurFrames);
       zeichneKoerper(pan, profile, frame, mitMesh);
       zeichneBeschriftung(pan, system, frame, schritt, sparsam);
       panels.push(pan);
@@ -2211,19 +2160,9 @@ export function createStripRenderer(opts = {}) {
      * @returns {object} EIN Bildeintrag, mit `kamera` in Zahlen
      */
     bild(anfrage = {}) {
-      const { frame, skala, sparsam, spur, ...kamera } = anfrage;
-      // Spur: alle Frames der Timeline aufloesen, damit die Bahnen ueber die
-      // GANZE Bewegung laufen und nicht nur ueber den gezeigten Moment.
-      let spurFrames = null;
-      if (spur === true && Number.isInteger(opts.frameCount)) {
-        spurFrames = [];
-        for (let i = 0; i < opts.frameCount; i++) {
-          const f = hole(i);
-          if (f && typeof f === 'object') spurFrames.push({ ...f, index: i });
-        }
-      }
+      const { frame, skala, sparsam, ...kamera } = anfrage;
       return bildeStreifen({
-        scene, profile, frames: [frameHolen(frame, 'frame')], kamera, skala, sparsam, spurFrames,
+        scene, profile, frames: [frameHolen(frame, 'frame')], kamera, skala, sparsam,
         frameCount: opts.frameCount, canvas: opts.canvas, renderer: opts.renderer,
       });
     },
