@@ -230,7 +230,11 @@ export const JOINT_CATALOG = [
       swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-130, 90],
                richtung: 'swing: + schwingt den linken Arm nach vorn, - nach hinten' },
       twist: { axis: 'x', want: +1, mirror: false, limit: [-90, 90], twist: true,
-               richtung: 'twist: + dreht den linken Arm um seine eigene Achse (vorwärts rollend), - rückwärts. WICHTIG bei lift: in der T-Pose zeigt die Handfläche nach unten, und sie dreht einfach mit. Senkst du den Arm nur mit lift, zeigt sie danach nach vorn; hebst du ihn nur mit lift, zeigt sie nach hinten — in beiden Fällen steht die Hand unnatürlich ab. Ein Mensch dreht dabei mit. Faustregel am haengenden Arm: links twist +75, rechts twist -75.' } } },
+               richtung: 'twist: + dreht die Handflaeche am haengenden linken Arm nach HINTEN, - nach VORN; am vorgestreckten Arm '
+                 + '+ nach UNTEN, - nach OBEN. Die Hand dreht mit dem Arm, ein eigenes Handgelenk gibt es nicht. GEMESSEN am Xbot, '
+                 + 'gleiches Vorzeichen auf beiden Seiten. OHNE twist liegt die Handflaeche am haengenden Arm (lift -80) schon am '
+                 + 'Koerper und zeigt am vorgestreckten Arm (swing +80) nach innen - das ist die natuerliche Stellung. Nimm twist nur, '
+                 + 'wenn die Handflaeche bewusst woandershin soll.' } } },
   { joint: 'arm_r',      bone: 'arm_r',     end: 'ende_hand_r', dofs: {
       lift:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-95, 100],
                richtung: 'lift: + hebt den rechten Arm nach oben, - senkt ihn. '
@@ -238,7 +242,11 @@ export const JOINT_CATALOG = [
       swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-130, 90],
                richtung: 'swing: + schwingt den rechten Arm nach vorn, - nach hinten' },
       twist: { axis: 'x', want: +1, mirror: false, limit: [-90, 90], twist: true,
-               richtung: 'twist: + dreht den rechten Arm um seine eigene Achse (vorwärts rollend), - rückwärts. WICHTIG bei lift: in der T-Pose zeigt die Handfläche nach unten, und sie dreht einfach mit. Senkst du den Arm nur mit lift, zeigt sie danach nach vorn; hebst du ihn nur mit lift, zeigt sie nach hinten — in beiden Fällen steht die Hand unnatürlich ab. Ein Mensch dreht dabei mit. Faustregel am haengenden Arm: links twist +75, rechts twist -75.' } } },
+               richtung: 'twist: + dreht die Handflaeche am haengenden rechten Arm nach HINTEN, - nach VORN; am vorgestreckten Arm '
+                 + '+ nach UNTEN, - nach OBEN. Die Hand dreht mit dem Arm, ein eigenes Handgelenk gibt es nicht. GEMESSEN am Xbot, '
+                 + 'gleiches Vorzeichen auf beiden Seiten. OHNE twist liegt die Handflaeche am haengenden Arm (lift -80) schon am '
+                 + 'Koerper und zeigt am vorgestreckten Arm (swing +80) nach innen - das ist die natuerliche Stellung. Nimm twist nur, '
+                 + 'wenn die Handflaeche bewusst woandershin soll.' } } },
   { joint: 'elbow_l',    bone: 'forearm_l', end: 'ende_hand_l', dofs: {
       // ACHSE GEMESSEN, nicht katalogisiert. Am Xbot durchprobiert: die alte
       // Achse 'z' bewegte die Hand bei bend=+60 um 24,5 cm nach OBEN und 0,0 cm
@@ -249,7 +257,8 @@ export const JOINT_CATALOG = [
       bend:  { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [0, 150],
                richtung: 'bend: + beugt den linken Ellbogen, die Hand kommt nach VORN zur Schulter. 0 ist der gestreckte Arm und die Untergrenze - ein Ellbogen laesst sich nicht ueberstrecken.' },
       twist: { axis: 'x', want: +1, mirror: false, limit: [-90, 90], twist: true,
-               richtung: 'twist: + dreht den linken Unterarm (Handfläche nach oben), - nach unten' } } },
+               richtung: 'twist: + dreht die Handflaeche des linken Unterarms nach UNTEN (Pronation), - nach OBEN (Supination). '
+                 + 'GEMESSEN am Xbot bei gebeugtem Ellbogen; ohne twist zeigt sie nach innen. Die Hand dreht mit, ein Handgelenk gibt es nicht.' } } },
   { joint: 'elbow_r',    bone: 'forearm_r', end: 'ende_hand_r', dofs: {
       // ACHSE GEMESSEN, nicht katalogisiert. Am Xbot durchprobiert: die alte
       // Achse 'z' bewegte die Hand bei bend=+60 um 24,5 cm nach OBEN und 0,0 cm
@@ -260,7 +269,8 @@ export const JOINT_CATALOG = [
       bend:  { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [0, 150],
                richtung: 'bend: + beugt den rechten Ellbogen, die Hand kommt nach VORN zur Schulter. 0 ist der gestreckte Arm und die Untergrenze - ein Ellbogen laesst sich nicht ueberstrecken.' },
       twist: { axis: 'x', want: +1, mirror: false, limit: [-90, 90], twist: true,
-               richtung: 'twist: + dreht den rechten Unterarm (Handfläche nach oben), - nach unten' } } },
+               richtung: 'twist: + dreht die Handflaeche des rechten Unterarms nach UNTEN (Pronation), - nach OBEN (Supination). '
+                 + 'GEMESSEN am Xbot bei gebeugtem Ellbogen; ohne twist zeigt sie nach innen. Die Hand dreht mit, ein Handgelenk gibt es nicht.' } } },
   { joint: 'hip_l',      bone: 'thigh_l',   end: 'ende_fuss_l', dofs: {
       flex:   { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-30, 130],
                 richtung: 'flex: + zieht das linke Bein nach vorn, - führt es nach hinten' },
