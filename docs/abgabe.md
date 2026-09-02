@@ -90,7 +90,7 @@ its 9 steps run through in one pass:
 2. **Measure** — 18 joints, 14 segments, 8 sole points, 0 warnings.
 3. **Recognize roles** — 21 role assignments found by name and position.
 4. **Ask the human** — uncertain roles go to the person at the screen.
-5. **Intent and phases** — 22 registered tools (18 visible to the agent), 4 motion
+5. **Intent and phases** — 23 tools in the catalog (18 visible to the agent), 4 motion
    phases, 60 frames.
 6. **Solve** — 60 frames produced.
 7. **Validate and report** — 19 physics messages, 2 intent checks, 1 image.
@@ -119,8 +119,10 @@ requests.
 ## 5. How is it implemented?
 
 A web page that loads any rigged humanoid GLB, measures it, and exposes a fixed
-catalog of 22 MCP tools (18 visible to the agent via `document.modelContext.registerTool`;
-three prefabricated-motion tools stay hidden so the agent sets its own poses) covering
+catalog of 23 MCP tools (18 visible to the agent via `document.modelContext.registerTool`;
+five stay hidden: three prefabricated-motion tools so the agent sets its own poses, the
+human question, and the role confirmation, which has nothing to confirm while every
+mandatory role is measured at confidence 1) covering
 three action levels: motion phases, end-effector targets, and single joint angles.
 The human watches the agent's work in two views: the **Editor** holds the figure at
 the origin in a dry run (all information, no travel), the **World** view shows the
@@ -163,7 +165,7 @@ Stated plainly, with numbers:
 - **The recorded demo run is missing.** Real WebMCP works — in Chrome 152 with
   `chrome://flags/#enable-webmcp-testing`, `document.modelContext` is present and an
   outside
-  agent drives the 19 visible tools through it. What is not yet recorded is one
+  agent drives the 18 visible tools through it. What is not yet recorded is one
   complete, convincing clip built that way.
 - **7 of 10 foreign models are still rejected.** The measuring layer accepts
   mandatory bone roles only at high confidence, and the human fallback does not

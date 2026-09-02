@@ -35,7 +35,7 @@ import { validateRigProfile } from '../contracts/rig-profile.js';
 import { validateTimeline } from '../contracts/timeline.js';
 import { schwerpunkt, sohlenWelt } from './kinematik.js';
 import { G, KONTAKT_SCHWELLE_ANTEIL } from '../validate/physics.js';
-import { poseZuFk, kopierePose, optimiere } from './ik.js';
+import { poseZuFk, kopierePose, optimiere, ANKER_TOLERANZ_ANTEIL } from './ik.js';
 import {
   vermesseAusgangslage, startZustand,
   phaseCrouch, phaseTakeoff, phaseAirborne, phaseLand,
@@ -655,8 +655,20 @@ function wendeOverridesAn(ctx, z, tl, frames, bericht) {
     if (dx !== null || dy !== null || dz !== null) {
       // pose.waxis ist Achse mal Winkel in Grad um pose.pivot. Die drei
       // Eulerwinkel werden dafuer in eine Achse-Winkel-Darstellung gebracht.
+      //
+      // Der Drehpunkt liegt im BIND-Raum (poseKnochen in kinematik.js dreht
+      // die Bind-Positionen um den Pivot und addiert erst danach die
+      // Wurzelverschiebung; verben.js rechnet seinen Schwerpunkt-Pivot
+      // genauso zurueck). Das Bind-Becken ist damit „ums Becken drehen".
+      //
+      // Vorher stand hier pose.wpos, die WELT-Position. Gemessen im Lauf vom
+      // 1. September 2026 (Session 5c6a601a): bei root.pos [0, 1.5, 0] und
+      // −90° landete das Becken bei y = 1,98 m statt 1,5 m, bei z = 2 stand der
+      // Kopf 2 m tiefer als bei z = 0 — die Figur drehte um die Weltachse und
+      // hob sich um (I−R)·(wpos − p0). Der Agent hat daraufhin den Anlauf
+      // 4 m hinter den Ursprung verlegt.
       pose.waxis = eulerZuAchsenwinkel(dx ?? 0, dy ?? 0, dz ?? 0);
-      pose.pivot = [...pose.wpos];
+      pose.pivot = [...skel.byId.get(skel.rollenKnochen.pelvis).wPos];
       getroffen += 1;
     }
     if (getroffen === 0) continue;
@@ -780,6 +792,9 @@ function halteAnker(ctx, tl, frames, bericht) {
 
     let groesster = 0;
     let verbogeneFrames = 0;
+    let anGrenze = [];          // Kanäle, die im schlimmsten Frame an der Grenze standen
+    let schlimmsterFrame = a.von;
+    let geprueft = 0;           // Kanäle, die dort überhaupt beweglich waren
     for (const f of inSpanne) {
       // Die gesetzte Haltung ist die WEICHE Vorgabe, gegen die optimiert wird.
       //
@@ -814,10 +829,14 @@ function halteAnker(ctx, tl, frames, bericht) {
         const kn = poseZuFk(skel, erg.pose);
         const ist = kn.get(knochen)?.pos;
         const rest = ist ? Math.hypot(ist[0] - soll[0], ist[1] - soll[1], ist[2] - soll[2]) : Infinity;
-        return { erg, kn, rest };
+        return { erg, kn, rest, kanaele };
       };
 
-      const toleranz = skel.height * 0.02;
+      // Schwelle für Durchgang 2 ist DIESELBE, ab der ein Anker als gehalten
+      // gilt (ANKER_TOLERANZ_ANTEIL, ik.js). Vorher standen hier 2 % der
+      // Körperhöhe (3,6 cm am Xbot) — Durchgang 2 sprang damit erst an, wenn
+      // der Fuß fünfmal weiter weg war, als der Bericht „gehalten" nennt.
+      const toleranz = skel.height * ANKER_TOLERANZ_ANTEIL;
       let treffer = lauf(frei);
       if (!treffer || treffer.rest > toleranz) {
         const voll = lauf(beinKanaele);
@@ -828,7 +847,22 @@ function halteAnker(ctx, tl, frames, bericht) {
       }
       if (!treffer) continue;
       ueberschreibeFrame(ctx, skel, f, treffer.erg.pose, treffer.kn);
-      groesster = Math.max(groesster, treffer.rest);
+      if (treffer.rest > groesster) {
+        groesster = treffer.rest;
+        // Warum das mitgeschleppt wird: der Konfliktgrund darf nicht geraten
+        // werden. „Beinkette reicht nicht" gilt nur, wenn ein Kanal der Kette
+        // WIRKLICH an seiner Gelenkgrenze klebt — das misst vermessen() in
+        // ik.js als an_grenze. Vorher stand der Satz pauschal in jedem
+        // Konflikt; am Xbot war er bei 22 cm Wurzelfahrt schlicht falsch
+        // (hip_l.flex stand bei −1,8° von −30° Grenze, das Bein reichte
+        // mühelos — die Ursache war ein Gewichtsfehler in der IK).
+        anGrenze = treffer.erg.fehler.an_grenze ?? [];
+        schlimmsterFrame = f.frame;
+        // Wie viele Kanäle im GEWINNENDEN Durchgang überhaupt beweglich waren.
+        // Durchgang 1 prüft nur die freien; „0 von 6 an der Grenze" wäre dort
+        // falsch gezählt, weil 1 Kanal gar nicht mitgerechnet wurde.
+        geprueft = treffer.kanaele.length;
+      }
     }
 
     bericht.hinweise.push(`Anker ${a.foot} über Frames ${a.von}–${a.bis} gehalten `
@@ -841,14 +875,35 @@ function halteAnker(ctx, tl, frames, bericht) {
         + 'Willst du deine Winkel unangetastet, verkürze die Ankerspanne oder '
         + 'stelle die Wurzel näher an den Fuß.');
     }
-    if (groesster > skel.height * 0.02) {
+    if (groesster > skel.height * ANKER_TOLERANZ_ANTEIL) {
+      // Der Grund wird GEMESSEN, nicht behauptet. Zwei Fälle, die sich am
+      // Xbot beide zeigen lassen:
+      //
+      //   an_grenze nicht leer → die Kette ist wirklich am Anschlag. Gemessen:
+      //     50 cm Wurzelfahrt, hip_l.flex an der Grenze −30°, 14,5 cm Rest.
+      //   an_grenze leer → die Gelenke haben Luft, die Optimierung kommt
+      //     trotzdem nicht näher heran. Gemessen: 25 cm Wurzelfahrt,
+      //     hip_l.flex bei −15,0° von −30° Grenze, 2,3 cm Rest. Hier wäre
+      //     „Beinkette reicht nicht" eine Fehldiagnose.
+      const amAnschlag = anGrenze.length > 0;
+      const alleFrei = geprueft >= beinKanaele.length;
+      const grund = amAnschlag
+        ? `Beinkette am Anschlag: ${anGrenze.map((g) => `${g.key} steht bei `
+          + `${g.wert.toFixed(1)}° an der Grenze ${g.grenze}°`).join(', ')}`
+        : `kein Gelenk an der Grenze (0 von ${geprueft} beweglichen Kanälen), `
+          + `die Optimierung blieb ${(groesster * 100).toFixed(1)} cm vor dem Anker stehen`;
+      const rat = amAnschlag || alleFrei
+        ? 'setze die Wurzel näher an den Fuß oder verkürze die Ankerspanne'
+        : `gib der Kette mehr Spielraum: nur ${frei.length} von ${beinKanaele.length} `
+          + 'Beinkanälen sind frei, die übrigen hast du auf Schlüsselbildern festgelegt';
       bericht.konflikt.push({
-        frame: a.von, verb: 'anker', bedingung: 'fussanker', einheit: 'm',
+        frame: schlimmsterFrame, verb: 'anker', bedingung: 'fussanker', einheit: 'm',
         soll: 0, erreicht: +groesster.toFixed(4), betrag: +groesster.toFixed(4),
-        grund: 'Beinkette reicht nicht bis zum Ankerpunkt',
-        meldung: `Anker ${a.foot} über Frames ${a.von}–${a.bis} um bis zu `
-          + `${(groesster * 100).toFixed(1)} cm verfehlt — die Wurzel steht zu weit weg, `
-          + 'setze sie näher oder verkürze die Ankerspanne',
+        an_grenze: anGrenze.map((g) => g.key),
+        grund,
+        meldung: `Anker ${a.foot} über Frames ${a.von}–${a.bis} auf Frame ${schlimmsterFrame} `
+          + `um ${(groesster * 100).toFixed(1)} cm verfehlt (erlaubt sind `
+          + `${(skel.height * ANKER_TOLERANZ_ANTEIL * 100).toFixed(1)} cm) — ${grund}; ${rat}`,
       });
     }
   }

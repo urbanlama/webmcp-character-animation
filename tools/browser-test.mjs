@@ -66,15 +66,38 @@ function serverStart() {
 
 /**
  * Legt eine Datei ins Eingabefeld und wartet auf die Antwort der Seite.
+ *
+ * Warum vorher ein Merkzeichen in die Statuszeile geschrieben wird: Die Seite
+ * laedt das Beispielmodell beim Start von selbst und schreibt dabei
+ * "Xbot.glb — 67 bones" in #status. Die alte Wartebedingung lautete "Status
+ * enthaelt bones ODER Fehlerfeld sichtbar" — die war damit schon erfuellt,
+ * bevor die eigene Datei ueberhaupt im Eingabefeld lag. Der Helfer las den
+ * Stand VOR seinem eigenen Upload zurueck; der Wuerfel-Negativfall scheiterte
+ * daran mit "Fehlerfeld muss sichtbar sein, Status war: Xbot.glb — 67 bones".
+ *
+ * Das Merkzeichen wird von jedem Ausgang von loadFile() ueberschrieben:
+ * Erfolg (presentModel setzt Name und Knochenzahl), Ablehnung (catch setzt
+ * "No model loaded") und Messfehler (haengt " — not measured" an). Gewartet
+ * wird also darauf, dass die Seite auf DIESE Datei geantwortet hat.
+ *
  * @returns {Promise<{status: string, fehler: string}>}
  */
 async function hochladen(page, pfad) {
+  // Erst das Startladen der Seite abwarten (index.html setzt das Flag im
+  // finally des Beispielmodell-Ladens). Sonst kann dessen Ergebnis nach dem
+  // eigenen Upload eintreffen und die Statuszeile ueberschreiben — der
+  // Wuerfel-Negativfall wurde dadurch unter CPU-Last sporadisch rot.
+  await page.waitForFunction(() => window.__boot?.startmodellFertig === true,
+    undefined, { timeout: 30000 });
+
+  const MERKZEICHEN = '(Testmarke: Upload laeuft)';
+  await page.evaluate((m) => { document.getElementById('status').textContent = m; }, MERKZEICHEN);
   await page.setInputFiles('#file', pfad);
-  await page.waitForFunction(() => {
+  await page.waitForFunction((m) => {
     const s = document.getElementById('status');
     const e = document.getElementById('error');
-    return !!s && (s.textContent.indexOf('bones') >= 0 || e.style.display === 'block');
-  }, null, { timeout: 30000 });
+    return !!s && (s.textContent !== m || e.style.display === 'block');
+  }, MERKZEICHEN, { timeout: 30000 });
 
   return page.evaluate(() => ({
     status: document.getElementById('status').textContent,
@@ -209,12 +232,39 @@ test(`Browser, Werkzeugschicht: Mock-Kontext vor dem Laden beweist genau ${KATAL
   await page.close();
 });
 
-// --- Rueckfrage (plan.md 6.7) -------------------------------------------------
+// --- Rueckfrage und Rollenbestaetigung: sechs Tests entfernt ------------------
 //
-// Der Broker src/ui/ask-human.js ist in Node geprueft (src/ui/rueckfrage.test.mjs).
-// Hier wird die andere Haelfte geprueft, die es dort nicht gibt: dass die Frage
-// in der echten Seite auch erscheint und dass ein echter Klick den wartenden
-// Aufruf aufloest.
+// Hier standen sechs Browser-Tests: "Rueckfrage sichtbar", "zwei Varianten",
+// "Rueckfrage Negativfall", "Panel und Figur ueberlappen sich nicht", "Rollen:
+// der fragliche Knochen leuchtet", "Rollen Negativfall". Sie sind geloescht,
+// nicht uebersprungen. Der Befund, der dazu gefuehrt hat (Stand 1. September
+// 2026, Commit de77965):
+//
+//   index.html hat kein Element #frage mehr — das Fragefenster ist nicht
+//     ausgeblendet, es wird gar nicht erst gebaut.
+//   window.__ui.rollenAbfragen ist ausdruecklich null gesetzt.
+//   ask_human traegt kiste:true in src/tools/catalog.js und wird deshalb nicht
+//     bei document.modelContext registriert; der Agent sieht 18 Werkzeuge,
+//     nicht 23 (auch confirm_role liegt in der Kiste).
+//
+// Ein uebersprungener Test waere hier eine Luege in Vorrat: die Oberflaeche
+// soll zwar wiederkommen, aber ANDERS. Der Kommentar am Abschaltpunkt legt sie
+// fest als "Frage, die ein Mensch beantworten kann: zum leuchtenden
+// Koerperteil, in ganzen Saetzen, ohne eine einzige Zahl". Genau die Zahlen
+// haben diese Tests eingefordert — Budgetstand "2 of 3 questions",
+// Knochenname mixamorigLeftFoot, Konfidenz 0.62. Wieder eingeschaltet waeren
+// sie rot, obwohl der Neubau richtig ist.
+//
+// Was von der Abdeckung bleibt, in Node und ohne Browser:
+//   src/ui/rueckfrage.test.mjs  9 Tests auf den Broker ask-human.js
+//   src/ui/rollen.test.mjs      7 Tests auf rollen-bestaetigung.js
+//   src/rig/fragetexte.test.mjs auf die Fragetexte aus detect.js
+//
+// Was ohne Abdeckung DASTEHT und beim Neubau nicht als geprueft gelten darf:
+// src/ui/frage-panel.js. Das Modul wird von keiner Datei mehr importiert —
+// nur ein CSS-Kommentar in index.html erwaehnt es noch. Seine einzige Pruefung
+// waren die sechs Tests hier. Wer das Fragefenster neu baut, faengt bei diesem
+// Modul bei null an.
 
 /** Laedt die Seite mit Mock-Kontext und wartet, bis die Werkzeugschicht steht. */
 async function seiteMitWerkzeugen() {
@@ -227,456 +277,32 @@ async function seiteMitWerkzeugen() {
 }
 
 /**
- * Räumt eine Frage weg, die die Seite von sich aus gestellt hat. Nach dem
- * Upload kann die Rollenerkennung eine Bestätigung offen haben (plan.md 6.7,
- * Moment 1); es wartet immer nur eine Frage, also muss sie erst vom Tisch.
+ * Wartet, bis der Autostart der Seite durch ist.
+ *
+ * Warum kein festes Warten: hier stand `await page.waitForTimeout(600)`. Der
+ * Autostart laedt das Beispielmodell, vermisst es und ordnet die Rollen zu und
+ * schreibt dabei ZWEI Zeilen in die Agentenspur ("Measurement",
+ * "Rollenerkennung"). Brauchte er laenger als 600 ms, landeten seine Zeilen
+ * zwischen den beiden Messpunkten des Tests und wurden dem eigenen Aufruf
+ * zugerechnet: "genau 1 Zeile mehr erwartet (vorher 1), es sind 3". Eine
+ * groessere Zahl waere dieselbe Wette mit hoeherem Einsatz.
+ *
+ * Gewartet wird stattdessen auf das ENDE des Autostarts. Seine letzte Handlung
+ * steht in index.html, loadFile(): presentModel, dann messeFuerWerkzeuge, dann
+ * bestaetigeUnsichereRollen. Steht deren Zeile in der Spur, kommt von selbst
+ * keine weitere mehr. Schlaegt das Laden fehl, schreibt der Autostart eine
+ * Zeile "Start" — auch dann ist er fertig, und der Test darf messen statt
+ * still in ein Zeitlimit zu laufen.
  */
-async function keineFrageOffen(page) {
-  const wartet = await page.evaluate(() => window.__tools?.ask.stand().wartet === true);
-  if (!wartet) return false;
-  await page.click('#frage-abbruch');
-  await page.waitForFunction(() => window.__tools.ask.stand().wartet === false,
-    null, { timeout: 5000 });
-  return true;
-}
-
-/**
- * Startet ask_human in der Seite und wartet, bis das Panel die Frage zeigt.
- * Der Aufruf bleibt offen; sein Ergebnis landet spaeter in window.__antwort.
- */
-async function frageStellen(page, question, options) {
-  await page.evaluate(({ q, o }) => {
-    window.__antwort = null;
-    window.__fertig = false;
-    window.__tools.rufe('ask_human', { question: q, options: o })
-      .then((a) => { window.__antwort = a; window.__fertig = true; });
-  }, { q: question, o: options });
-
+async function warteAufAutostart(page) {
   await page.waitForFunction(() => {
-    const p = document.getElementById('frage');
-    return p && !p.hidden && p.querySelectorAll('#frage-optionen button').length > 0;
-  }, null, { timeout: 5000 });
+    const namen = [...document.querySelectorAll('#spur .spur-zeile')]
+      .map((z) => z.dataset.werkzeug);
+    return namen.includes('Rollenerkennung')
+      || namen.includes('Role detection')
+      || namen.includes('Start');
+  }, null, { timeout: 30000 });
 }
-
-/** Liest, was der Mensch sieht: Text, Beschriftungen, Lage der Knoepfe. */
-function panelLesen(page) {
-  return page.evaluate(() => {
-    const panel = document.getElementById('frage');
-    const knoepfe = [...panel.querySelectorAll('#frage-optionen button')];
-    return {
-      sichtbar: !panel.hidden && getComputedStyle(panel).display !== 'none',
-      frage: document.getElementById('frage-text').textContent,
-      spalten: document.getElementById('frage-optionen').className,
-      budget: document.getElementById('frage-budget').textContent,
-      knoepfe: knoepfe.map((k) => {
-        const r = k.getBoundingClientRect();
-        return {
-          text: k.textContent,
-          marke: k.querySelector('.marke')?.textContent ?? '',
-          klasse: k.className,
-          index: Number(k.dataset.index),
-          oben: Math.round(r.top), links: Math.round(r.left),
-          breite: Math.round(r.width), hoehe: Math.round(r.height),
-        };
-      }),
-    };
-  });
-}
-
-test('Browser, Rückfrage sichtbar: gestellte Frage erscheint, der Klick liefert die Antwort an den wartenden Aufruf', async () => {
-  const page = await seiteMitWerkzeugen();
-  const frage = 'Soll die Figur mit dem linken oder dem rechten Fuß landen?';
-  await frageStellen(page, frage, ['linker Fuß', 'rechter Fuß']);
-
-  const vorher = await panelLesen(page);
-  assert.equal(vorher.sichtbar, true, 'das Panel muss sichtbar sein, solange die Frage wartet');
-  assert.equal(vorher.frage, frage,
-    `die gestellte Frage muss wortgleich stehen, war: "${vorher.frage}"`);
-  assert.equal(vorher.knoepfe.length, 2,
-    `2 Antwortmöglichkeiten müssen klickbar sein, es sind ${vorher.knoepfe.length}`);
-  assert.match(vorher.knoepfe[0].text, /linker Fuß/);
-  assert.match(vorher.knoepfe[1].text, /rechter Fuß/);
-  assert.match(vorher.budget, /2 of 3 questions/,
-    `die Budgetanzeige muss den Stand nennen, war: "${vorher.budget}"`);
-
-  // Der Klick des Menschen — kein antworte() aus dem Testcode.
-  await page.click('#frage-optionen button[data-index="1"]');
-  await page.waitForFunction(() => window.__fertig === true, null, { timeout: 5000 });
-
-  const antwort = await page.evaluate(() => window.__antwort);
-  assert.notEqual(antwort.isError, true,
-    `der Aufruf muss ohne Fehler enden, war: "${antwort.content[0].text}"`);
-  assert.match(antwort.content[0].text, /rechter Fuß/,
-    `derselbe Aufruf muss die geklickte Antwort liefern, war: "${antwort.content[0].text}"`);
-  assert.match(antwort.content[0].text, /Möglichkeit 2 von 2/,
-    `die Antwort muss die geklickte Position nennen, war: "${antwort.content[0].text}"`);
-
-  const nachher = await panelLesen(page);
-  assert.equal(nachher.sichtbar, false, 'nach der Antwort wartet nichts mehr, das Panel ist weg');
-
-  await page.close();
-});
-
-test('Browser, zwei Varianten: beide stehen nebeneinander, ein Klick wählt eine', async () => {
-  const page = await seiteMitWerkzeugen();
-  await frageStellen(page, 'Welcher Absprung gefällt dir besser?',
-    ['Variante mit tiefer Hocke', 'Variante mit flachem Absprung']);
-
-  const panel = await panelLesen(page);
-  const [a, b] = panel.knoepfe;
-  assert.equal(panel.spalten, 'varianten',
-    `2 Möglichkeiten sind eine Geschmacksfrage und stehen als Varianten, war: "${panel.spalten}"`);
-  assert.equal(panel.knoepfe.length, 2, `genau 2 Varianten, es sind ${panel.knoepfe.length}`);
-  // Nebeneinander heisst messbar: gleiche Oberkante, verschiedene linke Kante,
-  // beide sichtbar breit. Untereinander waeren a.oben und b.oben verschieden.
-  assert.equal(a.oben, b.oben,
-    `beide Varianten müssen auf gleicher Höhe stehen, ${a.oben} px gegen ${b.oben} px`);
-  assert.ok(b.links >= a.links + a.breite,
-    `Variante 2 muss rechts neben Variante 1 liegen: links ${a.links} + ${a.breite} px breit, rechts beginnt bei ${b.links} px`);
-  assert.ok(a.breite > 100 && b.breite > 100,
-    `beide Varianten müssen sichtbar breit sein, ${a.breite} px und ${b.breite} px`);
-  assert.equal(a.marke, '1', `die erste Karte trägt die Nummer 1, war "${a.marke}"`);
-  assert.equal(b.marke, '2', `die zweite Karte trägt die Nummer 2, war "${b.marke}"`);
-  assert.match(a.klasse, /variante/, `beide Karten stehen als Variante, war: "${a.klasse}"`);
-  assert.match(a.text, /tiefer Hocke/);
-  assert.match(b.text, /flachem Absprung/);
-
-  // Negativfall: ohne Klick wird nichts stillschweigend gewählt.
-  await page.waitForTimeout(300);
-  const zwischenstand = await page.evaluate(() => ({
-    fertig: window.__fertig,
-    antwort: window.__antwort,
-    wartet: window.__tools.ask.stand().wartet,
-  }));
-  assert.equal(zwischenstand.fertig, false,
-    'ohne Klick darf keine Antwort entstehen; der Aufruf wartet weiter');
-  assert.equal(zwischenstand.antwort, null, 'ohne Klick liegen 0 Antworten vor');
-  assert.equal(zwischenstand.wartet, true, 'nach 300 ms wartet die Frage unverändert');
-
-  await page.click('#frage-optionen button[data-index="0"]');
-  await page.waitForFunction(() => window.__fertig === true, null, { timeout: 5000 });
-  const antwort = await page.evaluate(() => window.__antwort);
-  assert.match(antwort.content[0].text, /tiefer Hocke/,
-    `der Klick muss genau die geklickte Variante wählen, war: "${antwort.content[0].text}"`);
-  assert.match(antwort.content[0].text, /Möglichkeit 1 von 2/,
-    `die Antwort muss die gewählte Position nennen, war: "${antwort.content[0].text}"`);
-
-  await page.close();
-});
-
-test('Browser, Rückfrage Negativfall: Abbruch und Neuladen lassen die Timeline bitgleich', async () => {
-  const page = await seiteMitWerkzeugen();
-
-  // Eine Timeline, die Schaden nehmen könnte. add_phase steht in der
-  // Werkzeugkiste und sieht der Agent nicht mehr (KISTE), für den
-  // Aufbau hier zählt das nicht — rufe() ist der Weg ohne Katalogsicht.
-  const aufbau = await page.evaluate(async () => {
-    const t = window.__tools;
-    const a = await t.rufe('set_duration', { frameCount: 90 });
-    const b = await t.rufe('add_phase', { verb: 'takeoff', from: 12, to: 18, params: { vy: 4.2 } });
-    const { fingerabdruck } = await import(new URL('src/tools/index.js', document.baseURI).href);
-    return {
-      fehler: [a, b].filter((r) => r.isError).map((r) => r.content[0].text),
-      abdruck: fingerabdruck(t.store.lies()),
-      tiefe: t.store.tiefe(),
-      zustand: t.store.lies(),
-    };
-  });
-  assert.deepEqual(aufbau.fehler, [], `Aufbau muss durchlaufen: ${aufbau.fehler.join(' | ')}`);
-
-  await frageStellen(page, 'Weiter mit der Drehung?', ['ja', 'nein']);
-
-  // Der Mensch bricht ab, statt zu klicken.
-  await page.click('#frage-abbruch');
-  await page.waitForFunction(() => window.__fertig === true, null, { timeout: 5000 });
-
-  const nachAbbruch = await page.evaluate(async () => {
-    const { fingerabdruck } = await import(new URL('src/tools/index.js', document.baseURI).href);
-    return {
-      antwort: window.__antwort,
-      abdruck: fingerabdruck(window.__tools.store.lies()),
-      tiefe: window.__tools.store.tiefe(),
-      panelSichtbar: !document.getElementById('frage').hidden,
-    };
-  });
-
-  assert.equal(nachAbbruch.antwort.isError, true,
-    'der abgebrochene Aufruf muss als Fehler enden, nicht stillschweigend');
-  assert.match(nachAbbruch.antwort.content[0].text, /\d/,
-    `die Meldung muss eine Zahl nennen (AGENTS.md), war: "${nachAbbruch.antwort.content[0].text}"`);
-  assert.equal(nachAbbruch.abdruck, aufbau.abdruck,
-    'die Timeline muss nach dem Abbruch bitgleich sein');
-  assert.equal(nachAbbruch.tiefe, aufbau.tiefe,
-    `der Abbruch darf keinen Schritt auf den Undo-Stapel legen, ${aufbau.tiefe} gegen ${nachAbbruch.tiefe}`);
-  assert.equal(nachAbbruch.panelSichtbar, false, 'nach dem Abbruch ist das Panel weg');
-
-  // Neuladen während der Wartezeit: erst wieder fragen, dann die Seite neu laden.
-  await frageStellen(page, 'Noch weiter mit der Drehung?', ['ja', 'nein']);
-  await page.reload({ waitUntil: 'load' });
-
-  const nachNeuladen = await page.evaluate(async (gesichert) => {
-    const { createToolLayer, fingerabdruck } = await import(new URL('src/tools/index.js', document.baseURI).href);
-    const wiederhergestellt = await createToolLayer({ zustand: gesichert });
-    return {
-      panelSichtbar: !document.getElementById('frage').hidden,
-      fehlerfeldSichtbar: getComputedStyle(document.getElementById('error')).display !== 'none',
-      schichtSteht: !!window.__tools,
-      wartet: window.__tools.ask.stand().wartet,
-      phasenFrisch: window.__tools.store.lies().phases.length,
-      abdruck: fingerabdruck(wiederhergestellt.store.lies()),
-      phasen: wiederhergestellt.store.lies().phases.length,
-    };
-  }, aufbau.zustand);
-
-  assert.equal(nachNeuladen.panelSichtbar, false,
-    'nach dem Neuladen darf keine Frage von vorher hängen bleiben');
-  assert.equal(nachNeuladen.fehlerfeldSichtbar, false,
-    'das Neuladen selbst ist kein Fehlerfall der Seite');
-  assert.equal(nachNeuladen.schichtSteht, true, 'die Werkzeugschicht steht nach dem Neuladen wieder');
-  assert.equal(nachNeuladen.wartet, false, 'die neue Seite hat 0 offene Fragen');
-  assert.equal(nachNeuladen.phasenFrisch, 0,
-    `die frische Schicht startet mit 0 Phasen, hatte ${nachNeuladen.phasenFrisch}`);
-  assert.equal(nachNeuladen.abdruck, aufbau.abdruck,
-    'aus dem gesicherten Zustand gebaut ist die Timeline bitgleich zu vor der Frage');
-  assert.equal(nachNeuladen.phasen, 1,
-    `die wiederhergestellte Timeline muss ihre 1 Phase behalten, hatte ${nachNeuladen.phasen}`);
-
-  await page.close();
-});
-
-/**
- * Misst, wo die Figur im Fenster steht und wo das Panel liegt. Die Figur wird
- * aus ihrer Bounding Box ueber die echte Kamera projiziert — dieselbe Rechnung
- * wie in src/scene/view.test.mjs, nur in Fensterkoordinaten statt in NDC.
- */
-function lageMessen(page) {
-  return page.evaluate(async () => {
-    const { getBounds } = await import(new URL('src/scene/load.js', document.baseURI).href);
-    const { camera, model } = window.__scene;
-    const box = getBounds(model);
-    const leinwand = document.getElementById('view').getBoundingClientRect();
-
-    let links = Infinity, rechts = -Infinity, oben = Infinity, unten = -Infinity;
-    for (const x of [box.min.x, box.max.x]) {
-      for (const y of [box.min.y, box.max.y]) {
-        for (const z of [box.min.z, box.max.z]) {
-          const p = box.min.clone().set(x, y, z).project(camera);
-          const px = leinwand.left + (p.x * 0.5 + 0.5) * leinwand.width;
-          const py = leinwand.top + (-p.y * 0.5 + 0.5) * leinwand.height;
-          links = Math.min(links, px); rechts = Math.max(rechts, px);
-          oben = Math.min(oben, py); unten = Math.max(unten, py);
-        }
-      }
-    }
-
-    const r = document.getElementById('frage').getBoundingClientRect();
-    const rund = (v) => Math.round(v);
-    return {
-      figur: {
-        links: rund(links), rechts: rund(rechts), oben: rund(oben), unten: rund(unten),
-        breite: rund(rechts - links), hoehe: rund(unten - oben),
-      },
-      leinwand: {
-        links: rund(leinwand.left), rechts: rund(leinwand.right),
-        oben: rund(leinwand.top), unten: rund(leinwand.bottom),
-      },
-      // Die unteren 20 % der Figur: Bodenkontakt, Standfläche, Fußanker.
-      fuesse: {
-        links: rund(links), rechts: rund(rechts),
-        oben: rund(unten - (unten - oben) * 0.2), unten: rund(unten),
-      },
-      panel: { links: rund(r.left), rechts: rund(r.right), oben: rund(r.top), unten: rund(r.bottom) },
-    };
-  });
-}
-
-/** Ueberlappende Flaeche zweier Rechtecke in Quadratpixeln. 0 heisst: frei. */
-function ueberlappung(a, b) {
-  const breite = Math.min(a.rechts, b.rechts) - Math.max(a.links, b.links);
-  const hoehe = Math.min(a.unten, b.unten) - Math.max(a.oben, b.oben);
-  return breite > 0 && hoehe > 0 ? breite * hoehe : 0;
-}
-
-/** Menschenlesbare Lage eines gemessenen Rechtecks. */
-const alsText = (r) => `${r.links}..${r.rechts} px waagerecht, ${r.oben}..${r.unten} px senkrecht`;
-
-test('Browser, Rückfrage: Panel und Figur überlappen sich weder bei 1440 noch bei 1024 px', async () => {
-  const page = await seiteMitWerkzeugen();
-  await page.setViewportSize({ width: 1440, height: 900 });
-
-  const befund = await hochladen(page, XBOT_PFAD);
-  assert.equal(Number((befund.status.match(/(\d+)\s+bones/) || [])[1]), 67,
-    `für die Messung muss Xbot stehen, Status war: "${befund.status}"`);
-  await keineFrageOffen(page);
-
-  await frageStellen(page, 'Welcher Absprung gefällt dir besser?',
-    ['Variante mit tiefer Hocke', 'Variante mit flachem Absprung']);
-
-  // 1440 px ist der bequeme Fall, 1024 px der enge: die Seite muss laut
-  // challenge.md im eingebauten Browser der ChatGPT-Desktop-App laufen, und
-  // dessen Fenster ist regelmäßig schmaler als 1440 px.
-  for (const breite of [1440, 1024]) {
-    await page.setViewportSize({ width: breite, height: 900 });
-    const lage = await lageMessen(page);
-
-    assert.ok(lage.figur.rechts > lage.figur.links && lage.figur.unten > lage.figur.oben,
-      `bei ${breite} px muss die Figur eine messbare Fläche haben, war: ${alsText(lage.figur)}`);
-    assert.ok(lage.figur.breite > 200 && lage.figur.hoehe > 200,
-      `bei ${breite} px muss die Figur groß bleiben, war ${lage.figur.breite}×${lage.figur.hoehe} px`);
-    assert.equal(ueberlappung(lage.figur, lage.panel), 0,
-      `bei ${breite} px darf das Panel die Figur nicht verdecken: Figur ${alsText(lage.figur)}, `
-      + `Panel ${alsText(lage.panel)}, ${ueberlappung(lage.figur, lage.panel)} px² überlappen`);
-    assert.equal(ueberlappung(lage.leinwand, lage.panel), 0,
-      `bei ${breite} px muss das Panel neben der Leinwand stehen, nicht darüber: `
-      + `Leinwand ${alsText(lage.leinwand)}, Panel ${alsText(lage.panel)}`);
-    assert.ok(lage.panel.oben >= 0 && lage.panel.unten <= 900,
-      `bei ${breite} px muss das Panel ganz im Fenster stehen, war: ${alsText(lage.panel)}`);
-  }
-
-  // Gegenprobe im engen Fall: das Panel wird absichtlich genau über die Füße
-  // gelegt. Meldet die Messung auch dann 0 px², misst sie nichts und die beiden
-  // Durchläufe oben beweisen nichts.
-  // Erst schweben lassen, dann zielen: aus dem Fluss genommen gibt das Panel
-  // seinen Platz frei, die Leinwand wächst zurück und die Füße stehen woanders.
-  await page.evaluate(() => {
-    const p = document.getElementById('frage');
-    p.style.position = 'fixed'; p.style.left = '-9999px'; p.style.top = '0';
-  });
-  const schwebend = await lageMessen(page);
-  await page.evaluate((ziel) => {
-    const p = document.getElementById('frage');
-    p.style.boxSizing = 'border-box';
-    p.style.left = `${ziel.links}px`; p.style.top = `${ziel.oben}px`;
-    p.style.width = `${ziel.rechts - ziel.links}px`;
-    p.style.height = `${ziel.unten - ziel.oben}px`;
-    p.style.right = 'auto'; p.style.bottom = 'auto'; p.style.transform = 'none';
-  }, schwebend.fuesse);
-
-  const gegenprobe = await lageMessen(page);
-  assert.ok(ueberlappung(gegenprobe.fuesse, gegenprobe.panel) > 0,
-    `die Gegenprobe muss greifen: über die Füße (${alsText(gegenprobe.fuesse)}) gelegt, `
-    + `muss das Panel (${alsText(gegenprobe.panel)}) als Überlappung gemeldet werden`);
-
-  await page.close();
-});
-
-// --- Mensch-Moment 1: unsichere Rollen bestätigen (plan.md 6.7) --------------
-
-/** Attrappe im Format von detectRig(), plan.md 5.1: eine unsichere Rolle. */
-const PROFIL_UNSICHER = {
-  schemaVersion: 1,
-  roles: {
-    pelvis: { bone: 'mixamorigHips', confidence: 1.0 },
-    foot_l: { bone: 'mixamorigLeftFoot', confidence: 0.62 },
-    foot_r: { bone: 'mixamorigRightFoot', confidence: 0.58 },
-  },
-  questions: [{
-    art: 'rollenbestaetigung', rolle: 'foot_l',
-    frage: 'Ist „mixamorigLeftFoot“ die Rolle foot_l? Vorschlag mit Konfidenz 0.62, sicher ab 0.9.',
-    optionen: [
-      { text: 'ja, „mixamorigLeftFoot“', bone: 'mixamorigLeftFoot', confidence: 0.62 },
-      { text: 'nein, sondern „mixamorigRightFoot“', bone: 'mixamorigRightFoot', confidence: 0 },
-    ],
-  }],
-};
-
-test('Browser, Rollen: der fragliche Knochen leuchtet, der Klick legt die Rolle fest', async () => {
-  const page = await seiteMitWerkzeugen();
-  const befund = await hochladen(page, XBOT_PFAD);
-  assert.equal(Number((befund.status.match(/(\d+)\s+bones/) || [])[1]), 67,
-    `Xbot muss stehen, Status war: "${befund.status}"`);
-  await keineFrageOffen(page);
-
-  await page.evaluate((profil) => {
-    window.__rollen = null;
-    window.__ui.rollenAbfragen(profil).then((r) => { window.__rollen = r; });
-  }, PROFIL_UNSICHER);
-  await page.waitForFunction(() => {
-    const p = document.getElementById('frage');
-    return p && !p.hidden && p.querySelectorAll('#frage-optionen button').length > 0;
-  }, null, { timeout: 5000 });
-
-  const panel = await panelLesen(page);
-  assert.match(panel.frage, /mixamorigLeftFoot/,
-    `die Frage muss den fraglichen Knochen nennen, war: "${panel.frage}"`);
-  assert.match(panel.frage, /0\.62/,
-    `die Frage muss die gemessene Konfidenz nennen, war: "${panel.frage}"`);
-  assert.equal(panel.knoepfe.length, 2,
-    `Vorschlag und Gegenvorschlag ergeben 2 Karten, es sind ${panel.knoepfe.length}`);
-
-  // Der fragliche Knochen leuchtet — sonst weiß niemand, worüber geredet wird.
-  const marker = await page.evaluate(() => {
-    const gruppe = window.__scene.scene.getObjectByName('knochen-leuchten');
-    const meshes = gruppe.children.filter((k) => k.isMesh);
-    const ziel = window.__scene.model.getObjectByName('mixamorigLeftFoot');
-    const ort = ziel ? ziel.getWorldPosition(new (ziel.position.constructor)()) : null;
-    return {
-      knochen: window.__ui.leuchten.stand(),
-      anzahl: meshes.length,
-      abstand: ort ? meshes[0].position.distanceTo(ort) : -1,
-      radius: meshes[0]?.geometry?.parameters?.radius ?? 0,
-    };
-  });
-  assert.deepEqual(marker.knochen, ['mixamorigLeftFoot', 'mixamorigRightFoot'],
-    'es leuchten genau die beiden Knochen, zwischen denen der Mensch wählt');
-  assert.ok(marker.abstand >= 0 && marker.abstand < 1e-6,
-    `der Marker muss auf dem Knochen sitzen, Abstand ${marker.abstand} m`);
-  assert.ok(marker.radius > 0.02 && marker.radius < 0.2,
-    `der Marker muss zur 1,6-m-Figur passen, Radius war ${marker.radius} m`);
-
-  await page.click('#frage-optionen button[data-index="0"]');
-  await page.waitForFunction(() => window.__rollen !== null, null, { timeout: 5000 });
-
-  const ergebnis = await page.evaluate(() => ({
-    lauf: window.__rollen,
-    bestaetigt: window.__tools.store.lies().roleConfirmations,
-    leuchtetNoch: window.__ui.leuchten.stand(),
-    panelSichtbar: !document.getElementById('frage').hidden,
-  }));
-
-  assert.equal(ergebnis.lauf.bestaetigt, 1,
-    `1 Zuordnung erwartet, ${ergebnis.lauf.bestaetigt} festgelegt`);
-  assert.equal(ergebnis.bestaetigt.foot_l, 'mixamorigLeftFoot',
-    'der Klick muss über confirm_role im Zustand landen');
-  assert.deepEqual(ergebnis.leuchtetNoch, [],
-    'nach der Antwort leuchtet 0 Knochen weiter');
-  assert.equal(ergebnis.panelSichtbar, false, 'das Panel ist nach der Antwort weg');
-
-  await page.close();
-});
-
-test('Browser, Rollen Negativfall: Abbruch legt keine Rolle fest und lässt nichts leuchten', async () => {
-  const page = await seiteMitWerkzeugen();
-  await hochladen(page, XBOT_PFAD);
-  await keineFrageOffen(page);
-
-  await page.evaluate((profil) => {
-    window.__rollen = null;
-    window.__ui.rollenAbfragen(profil).then((r) => { window.__rollen = r; });
-  }, PROFIL_UNSICHER);
-  await page.waitForFunction(() => !document.getElementById('frage').hidden, null, { timeout: 5000 });
-
-  await page.click('#frage-abbruch');
-  await page.waitForFunction(() => window.__rollen !== null, null, { timeout: 5000 });
-
-  const ergebnis = await page.evaluate(() => ({
-    lauf: window.__rollen,
-    bestaetigt: window.__tools.store.lies().roleConfirmations,
-    leuchtetNoch: window.__ui.leuchten.stand(),
-  }));
-
-  assert.equal(ergebnis.lauf.abgebrochen, true, 'der Abbruch muss gemeldet werden');
-  assert.equal(ergebnis.lauf.bestaetigt, 0,
-    `0 Zuordnungen erwartet, ${ergebnis.lauf.bestaetigt} festgelegt`);
-  assert.equal(Object.keys(ergebnis.bestaetigt).length, 0,
-    `nach dem Abbruch darf 0 Zuordnung im Zustand stehen, es sind ${Object.keys(ergebnis.bestaetigt).length}`);
-  assert.equal(ergebnis.bestaetigt.foot_l, undefined,
-    'die abgebrochene Rolle darf nicht geraten werden');
-  assert.deepEqual(ergebnis.leuchtetNoch, [], 'nach dem Abbruch leuchtet nichts weiter');
-
-  await page.close();
-});
-
 // --- Mensch-Moment: was der Agent gerade tut ---------------------------------
 
 /**
@@ -721,10 +347,10 @@ test('Browser, Agentenspur: jeder Werkzeugaufruf des Agenten wird sichtbar, ohne
   const page = await seiteMitWerkzeugen();
 
   // Ausgangsstand: die Seite laedt das Beispielmodell beim Start selbst und
-  // meldet die Vermessung in der Spur. Gezaehlt wird deshalb der ZUWACHS,
-  // nicht der absolute Stand — sonst haengt der Test daran, ob der Autostart
-  // schon durch war.
-  await page.waitForTimeout(600);
+  // meldet Vermessung und Rollenzuordnung in der Spur. Gezaehlt wird deshalb
+  // der ZUWACHS, nicht der absolute Stand — und gemessen erst, wenn der
+  // Autostart wirklich durch ist (siehe warteAufAutostart).
+  await warteAufAutostart(page);
   const vorher = await spurLesen(page);
 
   const gut = await agentRuft(page, 'set_duration', { frameCount: 90 });
@@ -841,6 +467,25 @@ async function unterpfadAusliefern(page) {
   return { abgewiesen };
 }
 
+/**
+ * Schliesst eine Seite, die unter der Umleitung lief.
+ *
+ * Warum nicht einfach page.close(): Die Umleitung oben holt jede Datei selbst
+ * beim Server ab. Das Beispielmodell ist 2,9 MB gross; wird die Seite
+ * geschlossen, waehrend so eine Abholung noch laeuft, scheitert route.fulfill
+ * mit "Fetch response has been disposed". Playwright kann diesen Fehlschlag
+ * niemandem mehr zustellen und macht daraus ein unhandledRejection — der
+ * Testlauf meldete danach 7 von 7 gruen UND Exit-Code 1.
+ *
+ * unrouteAll raeumt die Umleitung ab und laesst die letzten Abholungen ins
+ * Leere laufen, statt sie in einen Fehler zu schicken. Das ist der von
+ * Playwright dafuer vorgesehene Weg.
+ */
+async function beendeUnterpfad(page) {
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  await page.close();
+}
+
 test('Browser, Unterpfad: die Seite läuft vollständig unter …/webmcp/, ohne einen einzigen Pfad ab Wurzel', async () => {
   const page = await browser.newPage();
   const fehler = [];
@@ -861,7 +506,18 @@ test('Browser, Unterpfad: die Seite läuft vollständig unter …/webmcp/, ohne 
   assert.equal(await page.evaluate(() => window.__registrierungsaufrufe ?? 0), KATALOG_SICHTBAR.length,
     `unter dem Unterpfad müssen dieselben ${KATALOG_SICHTBAR.length} Werkzeuge registriert sein`);
 
-  // Der ganze Weg, nicht nur das Laden: Modell rein, Rollenfrage sichtbar.
+  // Der ganze Weg, nicht nur das Laden: Modell rein, Rollen zugeordnet.
+  await warteAufAutostart(page);
+  const rollenmeldungen = () => page.evaluate(() =>
+    [...document.querySelectorAll('#spur .spur-zeile')]
+      .filter((z) => z.dataset.werkzeug === 'Rollenerkennung')
+      .map((z) => z.querySelector('.ergebnis').textContent));
+  const vorUpload = (await rollenmeldungen()).length;
+  assert.equal(vorUpload, 1,
+    `der Autostart muss auch unter dem Unterpfad durchlaufen und genau 1 Rollenmeldung `
+    + `hinterlassen, es sind ${vorUpload} — das Beispielmodell kommt über einen relativen `
+    + 'Pfad, ein Fehlgriff ab Wurzel bliebe sonst unbemerkt');
+
   const befund = await hochladen(page, XBOT_PFAD);
   assert.equal(Number((befund.status.match(/(\d+)\s+bones/) || [])[1]), 67,
     `der Upload muss unter dem Unterpfad genauso laufen, Status war: "${befund.status}"`);
@@ -878,15 +534,35 @@ test('Browser, Unterpfad: die Seite läuft vollständig unter …/webmcp/, ohne 
   // ein Agent hielt das für eine Vorbedingung und begann zu bestätigen, statt
   // zu animieren. Gefragt wird jetzt nur noch bei Rigs, die sich nicht selbst
   // benennen.
-  await new Promise((r) => setTimeout(r, 1200));
-  assert.equal(await page.evaluate(() => document.getElementById('frage').hidden), true,
-    'beim Xbot darf keine Rollenrückfrage stehen: die Knochennamen benennen die Rollen');
+  //
+  // Wie das seit dem 1. September 2026 gemessen wird: Hier stand
+  // `document.getElementById('frage').hidden` nach 1200 ms fester Wartezeit.
+  // Das Fragefenster ist abgeschaltet, #frage steht nicht mehr im Dokument —
+  // die Zeile warf einen TypeError auf null, statt etwas zu prüfen. Und sie
+  // hätte auch nichts bewiesen: ein Fenster, das es nicht gibt, ist kein Beleg
+  // dafür, dass der Xbot keine unsichere Rolle hat. Gemessen wird deshalb der
+  // Befund der Rollenerkennung selbst, den die Agentenspur mitschreibt — er
+  // entsteht ERST NACH dem Upload, also wird auf ihn gewartet statt auf die Uhr.
+  await page.waitForFunction((n) => [...document.querySelectorAll('#spur .spur-zeile')]
+    .filter((z) => z.dataset.werkzeug === 'Rollenerkennung').length > n,
+  vorUpload, { timeout: 30000 });
+
+  const rollen = await rollenmeldungen();
+  assert.ok(rollen.length > vorUpload,
+    `die Rollenerkennung muss nach dem Upload gelaufen sein, `
+    + `${rollen.length} Meldungen bei ${vorUpload} vorher`);
+  for (const zeile of rollen) {
+    assert.match(zeile, /\b0 unsicher/,
+      `beim Xbot darf 0 Rolle unsicher bleiben, gemeldet wurde: "${zeile}"`);
+  }
+  assert.equal(await page.evaluate(() => document.getElementById('frage') === null), true,
+    'das Fragefenster ist abgeschaltet: #frage darf nicht im Dokument stehen');
 
   assert.deepEqual(wache.abgewiesen, [],
     `kein einziger Pfad darf ab Wurzel gehen, abgewiesen wurden: ${wache.abgewiesen.join(', ')}`);
   assert.deepEqual(fehler, [], `die Seite darf unter dem Unterpfad keinen Fehler melden`);
 
-  await page.close();
+  await beendeUnterpfad(page);
 });
 
 test('Browser, Unterpfad Negativfall: ein Pfad ab Wurzel wird von der Sperre erwischt', async () => {
@@ -907,5 +583,5 @@ test('Browser, Unterpfad Negativfall: ein Pfad ab Wurzel wird von der Sperre erw
   assert.deepEqual(wache.abgewiesen, ['/vendor/three.module.min.js'],
     'die Sperre muss den Fehlgriff beim Namen nennen');
 
-  await page.close();
+  await beendeUnterpfad(page);
 });

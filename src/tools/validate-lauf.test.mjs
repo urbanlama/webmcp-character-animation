@@ -149,12 +149,23 @@ test('validate mit Absicht ohne Ports: Antwort in Millisekunden, kein Hängen', 
 
 // ── Das Zeitlimit in registry.js (Rückfallebene zu Befund 2) ─────────────────
 
-test('Zeitlimit: ein hängender Aufruf kommt nach AUFRUF_MAX_MS mit Fehlerantwort zurück', async () => {
-  const registry = createRegistry({});
+// Geprüft wird das Verhalten, nicht die Wanduhr: der Aufruf muss mit einer
+// Fehlerantwort enden, statt ewig zu hängen. Mit dem echten Wert dauerte dieser
+// eine Test 20 s und war damit allein für zwei Drittel der Laufzeit der
+// gesamten Testsuite verantwortlich. Der Wert kommt jetzt über createRegistry
+// herein; der echte Wert wird eine Zeile weiter unten trotzdem geprüft, damit
+// niemand ihn im Produktivpfad auf Minuten stellen kann.
+const ZEITLIMIT_TEST_MS = 50;
+
+test('Zeitlimit: ein hängender Aufruf kommt nach AUFRUF_MAX_MS mit Fehlerantwort zurück',
+  // Ohne Zeitlimit in registry.js hinge dieser Test ewig — und ein Test, der
+  // hängt, meldet keinen Fehler, er meldet gar nichts. Die Grenze macht den
+  // ausgebauten Fall rot statt still.
+  { timeout: 5000 }, async () => {
+  const registry = createRegistry({ aufrufMaxMs: ZEITLIMIT_TEST_MS });
   const { AUFRUF_MAX_MS } = await import('./registry.js');
 
-  // Der Zeitlimitwert läuft über createRegistry: kein Test überschreibt ihn
-  // unbeabsichtigt — gemessen wird mit dem echten Wert.
+  // Der Produktivwert selbst: er wird hier nicht abgewartet, aber geprüft.
   assert.ok(AUFRUF_MAX_MS >= 1000 && AUFRUF_MAX_MS <= 60000,
     `AUFRUF_MAX_MS = ${AUFRUF_MAX_MS} ms liegt außerhalb des gemessenen Rahmens `
     + '(1000..60000 ms): validate dauert gemessen 0,42 s; der Wert ist also '
@@ -177,8 +188,8 @@ test('Zeitlimit: ein hängender Aufruf kommt nach AUFRUF_MAX_MS mit Fehlerantwor
 
   assert.equal(antwort.isError, true,
     `der hängende Aufruf muss als Fehler enden, war: "${antwort.content?.[0]?.text}"`);
-  assert.ok(dauerMs >= AUFRUF_MAX_MS * 0.9 && dauerMs <= AUFRUF_MAX_MS + 2000,
-    `die Antwort kam nach ${dauerMs} ms, erwartet nahe ${AUFRUF_MAX_MS} ms`);
+  assert.ok(dauerMs >= ZEITLIMIT_TEST_MS * 0.9 && dauerMs <= ZEITLIMIT_TEST_MS + 2000,
+    `die Antwort kam nach ${dauerMs} ms, erwartet nahe ${ZEITLIMIT_TEST_MS} ms`);
   laeuftNoch = false;
   assert.equal(laeuftNoch, false);
 });

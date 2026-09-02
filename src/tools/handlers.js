@@ -14,13 +14,15 @@ import {
   pruefeFrame, pruefeObjekt
 } from './errors.js';
 import {
-  KATALOG, VERBEN, INTENT_ARTEN, ANSICHTEN, KANAELE, FRAME_MIN, FRAME_MAX, KACHELN_MAX, KACHEL_KB, MESS_FRAMES_MAX,
+  KATALOG, KATALOG_SICHTBAR, VERBEN, INTENT_ARTEN, ANSICHTEN, KANAELE, FRAME_MIN, FRAME_MAX, KACHELN_MAX, KACHEL_KB, MESS_FRAMES_MAX,
   EASE_ARTEN, EASE_STANDARD
 } from './catalog.js';
 import { nichtAngeschlossen } from './ports.js';
+import { alsTimeline } from './state.js';
 import { PFLICHTROLLEN, priorisiereFragen, offenerRest } from './rollen-priorisierung.js';
 import { ANTWORT_MAX_BYTES, AUFRUF_MAX_MS } from './registry.js';
 import { pruefeKriterien } from '../validate/intent.js';
+import { pruefePhysik } from '../validate/physics.js';
 
 /**
  * Verfahrensparameter: welcher Koerperbereich von welchem Verb betroffen ist.
@@ -47,17 +49,9 @@ function bereicheKollidieren(a, b) {
 }
 
 /** Nur die Vertragsfelder der Timeline, ohne den AP7-eigenen Sitzungskram. */
-export function alsTimeline(z) {
-  return {
-    schemaVersion: z.schemaVersion,
-    fps: z.fps,
-    frameCount: z.frameCount,
-    rotationFormat: z.rotationFormat,
-    phases: z.phases,
-    overrides: z.overrides,
-    anchors: z.anchors ?? []
-  };
-}
+// alsTimeline liegt in state.js, damit auch ports.js (Live-Anzeige) denselben
+// Loeser-Eingang baut. Hier nur weitergereicht, die Aufrufer bleiben.
+export { alsTimeline };
 
 /** Text-Antwort im WebMCP-Format. */
 function text(t) {
@@ -92,7 +86,32 @@ function json(obj) {
  * @param {object|null} bericht  Loeserbericht, falls geloest wurde
  * @returns {string} Zeilen zum Anhaengen, leer wenn nichts zu sagen ist
  */
-function standMeldung(z, bericht) {
+/**
+ * Die Arbeitsebenen fuer describe_world — nur die, deren Werkzeuge der Agent
+ * auch registriert bekommt (KATALOG_SICHTBAR). Eine Empfehlung auf ein
+ * Kistenwerkzeug ist eine Sackgasse: der Aufruf endet mit "Tool not found".
+ */
+export function ebenenText() {
+  const sichtbar = new Set(KATALOG_SICHTBAR.map((t) => t.name));
+  const alle = [
+    { werkzeuge: ['set_pose', 'set_joint'],
+      text: 'set_pose / set_joint — du stellst die Gelenke selbst. Der normale Weg.' },
+    { werkzeuge: ['set_target'],
+      text: 'set_target — du sagst, wo ein Körperteil sein soll. Eingeschränkt, '
+        + 'siehe Werkzeugbeschreibung.' },
+    { werkzeuge: ['add_phase'],
+      text: 'add_phase — fertige Bewegungen. Nur, wenn eine davon genau passt.' },
+  ];
+  const out = {};
+  let stufe = 0;
+  for (const e of alle) {
+    if (!e.werkzeuge.every((n) => sichtbar.has(n))) continue;
+    out[++stufe] = e.text;
+  }
+  return out;
+}
+
+export function standMeldung(z, bericht) {
   const phasen = z.phases.length;
   const keys = Object.keys(z.overrides ?? {}).length;
   const zeilen = [`Stand: ${phasen} Phasen, ${keys} Frames mit gesetzten Posen, `
@@ -105,7 +124,8 @@ function standMeldung(z, bericht) {
       + `${b.toteFrames} von ${b.frames} Frames ohne Aenderung.`);
     if (b.schwerpunktWeg_m === 0 && b.wurzelDrehungWeg_grad === 0) {
       zeilen.push('Die Timeline steht still — alle Frames zeigen dieselbe Pose. '
-        + 'Setze Posen mit set_pose oder Phasen mit add_phase.');
+        + 'Setze Haltungen auf einzelne Frames mit set_pose; zwischen zwei gesetzten '
+        + 'Haltungen wird ueberblendet.');
     }
   }
 
@@ -219,7 +239,7 @@ function gelenkeAusDofs(dofs) {
  * am Ende statt an jedem Kanal — und die Zahl der Gelenke oben. Wiederholt
  * sich nichts mehr, faellt auch nichts mehr weg.
  */
-function rigTabelle(bericht) {
+export function rigTabelle(bericht) {
   const gelenke = bericht.joints || {};
   const namen = Object.keys(gelenke);
 
@@ -270,7 +290,7 @@ function rigTabelle(bericht) {
     `  ${rollen.join(', ')}`,
   ];
   if (unsicher.length > 0) {
-    // Ausdruecklich als OPTIONAL benannt.
+    // Ausdruecklich als OPTIONAL benannt — und ohne Werkzeugnamen.
     //
     // Befund aus dem Agentenlauf: Hier stand "bestätige sie mit confirm_role".
     // Der Agent las das als Pflicht, schloss daraus, unbestaetigte Rollen
@@ -278,10 +298,19 @@ function rigTabelle(bericht) {
     // Zuordnungen zu bestaetigen — statt die Bewegung zu bauen. Nachgemessen:
     // set_pose, describe_pose und look funktionieren mit unbestaetigten Rollen
     // vollstaendig. Blockiert wird nichts.
+    //
+    // confirm_role liegt seit dem Abschalten der Rollen-Rueckfrage in der
+    // Kiste (catalog.js) und ist dem Agenten nicht registriert. Am Xbot hat
+    // ohnehin jede Pflichtrolle Konfidenz 1; kaeme ein Modell mit unsicherer
+    // Rolle, gehoerte das Werkzeug wieder in den sichtbaren Katalog — dann
+    // nennt der Satz es auch wieder. Solange es unsichtbar ist, waere sein
+    // Name hier eine Sackgasse.
+    const nennung = KATALOG_SICHTBAR.some((t) => t.name === 'confirm_role')
+      ? ' Ist eine Zuordnung erkennbar falsch, korrigiere sie mit confirm_role.'
+      : '';
     teile.push('', `${unsicher.length} Rollen sind mit weniger als voller Sicherheit `
-      + 'zugeordnet. Das blockiert nichts — alle Werkzeuge arbeiten damit. '
-      + 'Nur wenn eine Zuordnung erkennbar falsch ist, korrigiere sie mit '
-      + `confirm_role: ${unsicher.join(', ')}`);
+      + 'zugeordnet. Das blockiert nichts — alle Werkzeuge arbeiten damit.'
+      + `${nennung} Betroffen: ${unsicher.join(', ')}`);
   }
   if (Array.isArray(bericht.warnings) && bericht.warnings.length > 0) {
     teile.push('', `${bericht.warnings.length} Warnungen: ${bericht.warnings.join(' | ')}`);
@@ -361,12 +390,13 @@ export function baueWerkzeuge({ store, ask, ports }) {
             '4. look — ansehen, was du gebaut hast. Nach jeder Änderung.',
             '5. describe_pose — nachmessen, wo Körperteile stehen.',
           ],
-          ebenen: {
-            1: 'set_pose / set_joint — du stellst die Gelenke selbst. Der normale Weg.',
-            2: 'set_target — du sagst, wo ein Körperteil sein soll. Eingeschränkt, '
-              + 'siehe Werkzeugbeschreibung.',
-            3: 'add_phase — fertige Bewegungen. Nur, wenn eine davon genau passt.',
-          },
+          // Die Ebenen werden aus dem SICHTBAREN Katalog abgeleitet, nicht
+          // aufgeschrieben. Vorher standen hier Ebene 2 (set_target) und
+          // Ebene 3 (add_phase) — beide liegen in der Kiste und sind beim
+          // Agenten nie angekommen: er las eine Empfehlung, rief das Werkzeug
+          // auf und bekam "Tool not found". Wandert eines zurueck in den
+          // sichtbaren Katalog, steht es hier von selbst wieder.
+          ebenen: ebenenText(),
           einheiten: 'Längen in Metern, Winkel in Grad, Zeit in Frames. '
             + 'Kriterien in set_intent nutzen Anteile der Körperhöhe.',
           wichtig: [
@@ -457,8 +487,16 @@ export function baueWerkzeuge({ store, ask, ports }) {
       }
       pruefeZahl('probe_joint', 'angleDeg', a.angleDeg, -90, 90, 'Grad',
         'kleinere Winkel sind sicher; Grenzwerte je Gelenk stehen in describe_rig');
+      // channel ist optional. Ist es gesetzt, muss es ein Kanal DIESES Gelenks
+      // sein; die Namen sind je Gelenk verschieden (hip_l: flex, spread,
+      // twist — arm_l: lift, swing, twist). Geprueft wird gegen das gemessene
+      // Profil, nicht gegen eine feste Liste; die Meldung nennt Zahl und Namen.
+      if (a.channel !== undefined) {
+        pruefeText('probe_joint', 'channel', a.channel,
+          'Kanalnamen dieses Gelenks liefert describe_rig');
+      }
 
-      const ergebnis = ports.rig.probe(a.joint, a.angleDeg);
+      const ergebnis = ports.rig.probe(a.joint, a.angleDeg, a.channel);
       return textMitBildern(
         ergebnis.text || `${a.joint} um ${zahl(a.angleDeg)} Grad gebeugt, Vorher/Nachher als Bild.`,
         ergebnis.bild ? [ergebnis.bild] : []
@@ -594,12 +632,15 @@ export function baueWerkzeuge({ store, ask, ports }) {
         throw new WerkzeugMeldung({
           tool: 'set_duration', param: 'frameCount', value: neu,
           range: `mindestens ${Math.max(...z0.phases.map((p) => p.to))} Frames`,
-          next: 'kürze die Phasen zuerst mit edit_phase',
+          // Kein Verweis auf edit_phase: das Werkzeug liegt in der Kiste und
+          // ist dem Agenten nicht registriert (catalog.js). Hier stand
+          // „kürze die Phasen zuerst mit edit_phase" — ein Rat, der mit
+          // „Tool not found" endet.
+          next: `wähle mindestens ${Math.max(...z0.phases.map((p) => p.to))} Frames`,
           message: `${zuLang.length} Phase${zuLang.length === 1 ? '' : 'n'} `
             + `${zuLang.length === 1 ? 'reicht' : 'reichen'} über Frame ${neu} `
             + `hinaus (${zuLang.map((p) => `${p.id} bis ${p.to}`).join(', ')}); `
-            + `verlangt sind mindestens ${Math.max(...z0.phases.map((p) => p.to))} Frames oder `
-            + 'kürze die Phasen zuerst mit edit_phase'
+            + `verlangt sind mindestens ${Math.max(...z0.phases.map((p) => p.to))} Frames`
         });
       }
       const zuSpaet = Object.keys(z0.overrides).map(Number).filter((f) => f >= neu);
@@ -1744,11 +1785,108 @@ function wirkung(z, frame, ports) {
     const com = hier.com;
     if (com) zeilen.push(`Schwerpunkt ${zahl(com[1] - boden)} m über dem Boden`);
 
+    // Gesetzt ist nicht gleich geloest: Fussanker (hold_foot) und Gelenkgrenzen
+    // biegen gesetzte Winkel um. Der Agent muss den Betrag sehen — sonst baut
+    // er auf einer Haltung auf, die es so nie gab. Gemessen im Lauf vom
+    // 1. September 2026 (Session 5c6a601a, Frame 134): gesetzt hip_l.flex −26°
+    // bei pelvis.tilt 24°, der Anker bog das Bein auf die Senkrechte zurueck;
+    // measure zeigte dem Agenten 11° Beinneigung, die Rohhaltung hatte 58°.
+    zeilen.push(...verbogeneWinkel(z, frame, hier));
+
+    // Steckt ein Koerperteil im anderen? Bis zum 2. September 2026 erfuhr der
+    // Agent das erst in validate — also nach einem Dutzend weiterer Haltungen.
+    zeilen.push(...steckendeGliedmassen(ports.rig.profil?.() ?? null, hier));
+
     return zeilen.length ? `\nWirkung: ${zeilen.join('. ')}.` : '';
   } catch {
     // Der Löser kam nicht durch. Die Haltung steht trotzdem.
     return '';
   }
+}
+
+/**
+ * Welche Koerperteile in diesem Frame ineinander stecken, als ein Satz.
+ *
+ * Die Selbstdurchdringung ist in src/validate/physics.js gemessen und an vier
+ * Referenzclips kalibriert — sie lief aber nur in `validate`. Der Agent setzte
+ * also eine Haltung mit der Hand im Rumpf, bekam "2 Gelenke, 2 Winkel,
+ * Bodenkontakt" zurueck und baute ein Dutzend Haltungen darauf. Am Xbot
+ * gemessen (2. September 2026): arm_l.swing 90 mit elbow_l.bend 150 ergibt
+ * torso|hand_l 22,2 cm Ueberschneidung bei 13,7 cm erlaubt — vom Werkzeug
+ * unbemerkt.
+ *
+ * Genau wie beim Fussrutschen weiter oben wird der Befund an die Stelle
+ * gezogen, an der der Agent noch handelt.
+ *
+ * @param {object} profile  RigProfile mit segments und restDistances
+ * @param {object} frame    geloester Frame mit `positions`
+ * @returns {string[]}      0 oder 1 Satz
+ */
+export function steckendeGliedmassen(profile, frame) {
+  if (!profile || !frame || !frame.positions) return [];
+  let befunde;
+  try {
+    befunde = pruefePhysik(profile, [frame], 30).issues
+      .filter((b) => b.kind === 'durchdringung');
+  } catch {
+    return [];   // ohne Segmente oder Ruheabstaende ist das keine Aussage
+  }
+  if (befunde.length === 0) return [];
+
+  // Der tiefste Befund zuerst: er beschreibt, was ein Mensch im Bild sieht.
+  befunde.sort((a, b) => b.value - a.value);
+  const cm = (m) => (m * 100).toFixed(1).replace('.', ',');
+  const teile = befunde.map((b) => `${b.part.replace('|', ' und ')} ${cm(b.value)} cm`);
+  return [`${befunde.length} Körperteilpaar${befunde.length === 1 ? '' : 'e'} stecken ineinander: `
+    + `${teile.join('; ')} — das meldet validate später als Durchdringung`];
+}
+
+/**
+ * Ab wie viel Grad Abweichung zwischen gesetztem und geloestem Winkel die
+ * Rueckmeldung den Kanal nennt. Unter 2° liegt die Klemmung an Gelenkgrenzen
+ * bei glatten Zahlen (describe_rig rundet auf ganze Grad); alles darueber hat
+ * eine Ursache, die der Agent kennen muss.
+ */
+export const WINKEL_ABWEICHUNG_MELDEN_GRAD = 2;
+
+/**
+ * Welche gesetzten Winkel eines Frames der Loeser anders gefahren hat, mit
+ * Betrag und Ursache (Fussanker oder Gelenkgrenze). Leer, wenn alles so steht,
+ * wie es gesetzt wurde.
+ *
+ * @param {object} z      Sitzungszustand (overrides, anchors)
+ * @param {number} frame  gesetzter Frame
+ * @param {object} hier   geloester Frame mit `dofs` (gefahrene Winkel je Kanal)
+ * @returns {string[]}    0 oder 1 Satz
+ */
+export function verbogeneWinkel(z, frame, hier) {
+  const gesetzt = z.overrides?.[String(frame)]?.joints;
+  const dofs = hier?.dofs;
+  if (!gesetzt || !dofs) return [];
+  const anker = (z.anchors || []).filter((a) => a.von <= frame && frame <= a.bis);
+  const abweichungen = [];
+  for (const [gelenk, kanaele] of Object.entries(gesetzt)) {
+    for (const [kanal, soll] of Object.entries(kanaele || {})) {
+      const ist = dofs[`${gelenk}.${kanal}`];
+      if (!Number.isFinite(ist) || !Number.isFinite(soll)) continue;
+      const diff = Math.abs(ist - soll);
+      if (diff >= WINKEL_ABWEICHUNG_MELDEN_GRAD) {
+        abweichungen.push({ kanal: `${gelenk}.${kanal}`, soll, ist, diff, seite: gelenk.endsWith('_l') ? 'foot_l' : gelenk.endsWith('_r') ? 'foot_r' : null });
+      }
+    }
+  }
+  if (abweichungen.length === 0) return [];
+  abweichungen.sort((a, b) => b.diff - a.diff);
+  const liste = abweichungen.slice(0, 6)
+    .map((a) => `${a.kanal} ${zahl(a.soll)}° → ${zahl(a.ist)}°`).join(', ');
+  const rest = abweichungen.length > 6 ? ` und ${abweichungen.length - 6} weitere` : '';
+  const durchAnker = abweichungen.filter((a) => anker.some((k) => a.seite === null || k.foot === a.seite));
+  const ursache = anker.length > 0 && durchAnker.length > 0
+    ? ` — der Fußanker (hold_foot ${anker.map((k) => `${k.foot} ${k.von}–${k.bis}`).join(', ')}) `
+      + 'biegt die Beinkette, damit der Fuß stehen bleibt; willst du deine Winkel, verkürze die Ankerspanne '
+      + 'oder stelle die Wurzel so, dass der Fuß mit deinen Winkeln erreichbar ist'
+    : ' — Gelenkgrenzen aus describe_rig haben geklemmt';
+  return [`${abweichungen.length} gesetzte Winkel wurden anders gelöst: ${liste}${rest}${ursache}`];
 }
 
 /**

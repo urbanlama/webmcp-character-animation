@@ -39,8 +39,12 @@ const NAME_MUSTER = /^[a-z][a-z0-9_]*$/;
  * @param {object} opt
  * @param {object} [opt.modelContext] `document.modelContext`; fehlt es, laeuft
  *        die Registrierung nur intern (Node-Test).
+ * @param {number} [opt.aufrufMaxMs] Zeitlimit eines Werkzeugaufrufs in
+ *        Millisekunden. Standard ist AUFRUF_MAX_MS; herabgesetzt wird er nur
+ *        vom Test, der die Rueckfallebene selbst prueft — sonst wartet der
+ *        Testlauf 20 s auf eine Stoppuhr.
  */
-export function createRegistry({ modelContext = null } = {}) {
+export function createRegistry({ modelContext = null, aufrufMaxMs = AUFRUF_MAX_MS } = {}) {
   /** @type {Map<string, {name, description, inputSchema, execute}>} */
   const werkzeuge = new Map();
 
@@ -160,7 +164,7 @@ export function createRegistry({ modelContext = null } = {}) {
    * damit es gar nicht zwei Fehlerformen geben kann. Sie wirft nicht: was
    * irgendwo drinnen fliegt — abgelehnte Eingabe, Programmfehler, sogar eine
    * kaputte Antwort — wird hier zu einer Fehlerantwort. Sie hängt auch nicht:
-   * läuft `execute` länger als AUFRUF_MAX_MS, kommt die Fehlerantwort, und die
+   * läuft `execute` länger als aufrufMaxMs, kommt die Fehlerantwort, und die
    * Ausführung läuft trotzdem weiter (siehe die Begründung an AUFRUF_MAX_MS).
    */
   async function ausfuehre(def, args) {
@@ -168,7 +172,7 @@ export function createRegistry({ modelContext = null } = {}) {
     // hier das kleinere Übel gegenüber einem Aufruf, der nie zurückkommt.
     let timeoutId = null;
     const zeitlimit = new Promise((resolve) => {
-      timeoutId = setTimeout(() => resolve(zeitlimitAntwort(def.name, AUFRUF_MAX_MS)), AUFRUF_MAX_MS);
+      timeoutId = setTimeout(() => resolve(zeitlimitAntwort(def.name, aufrufMaxMs)), aufrufMaxMs);
     });
     try {
       const antwort = await Promise.race([

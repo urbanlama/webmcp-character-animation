@@ -4,8 +4,8 @@
 //
 // Die fünf Prüfungen, alle phasenabhängig (plan.md 6.6):
 //   1. Bodendurchdringung   — kein Körperteil unter der Bodenebene
-//   2. Selbstdurchdringung  — über Bind-Pose-Ruheabstände (restDistances), nicht
-//                             über geschätzte Kapselradien (plan.md 3.4)
+//   2. Selbstdurchdringung  — Kapseloberflächen gegen Kapseloberflächen, mit
+//                             der Bind-Pose als Untergrenze (plan.md 3.4)
 //   3. Balance              — Schwerpunkt über der Stützfläche, nur bei Kontakt
 //   4. Fußrutschen          — verankerte Füße bleiben stehen
 //   5. Ballistik            — im Flug folgt der Schwerpunkt einer Parabel
@@ -37,11 +37,30 @@ export const BALANCE_TOLERANZ_ANTEIL = 0.08;
  *  verschieben darf. 1,5 %: Sampling-Rauschen in Referenzclips liegt darunter. */
 export const RUTSCH_TOLERANZ_ANTEIL = 0.015;
 
-/** Anteil der Körperhöhe, um den sich zwei Segmente gegenüber ihrer Bind-Pose
- *  genähert dürfen, bevor Selbstdurchdringung gemeldet wird. Die Bind-Pose ist
- *  die entspannte Referenz: jede Verengung über diesen Betrag hinaus ist eine
- *  echte Durchdringung. */
+/** Anteil der Körperhöhe, um den zwei Kapseln tiefer ineinander stecken
+ *  dürfen, als das Kapselmodell selbst erlaubt (siehe
+ *  KAPSEL_UEBERDECKUNG_ANTEIL), bevor Selbstdurchdringung gemeldet wird.
+ *  0,5 % = 0,9 cm am Xbot: unter dem Rauschen der Kapselnäherung, weit unter
+ *  jeder Durchdringung, die ein Mensch im Bild sieht. */
 export const DURCHDRINGUNG_TOLERANZ_ANTEIL = 0.005;
+
+/** Anteil der Radiensumme zweier Kapseln, um den sie sich überschneiden
+ *  dürfen, ohne dass das eine Durchdringung wäre.
+ *
+ *  Warum es diesen Parameter braucht: die Kapselradien sind das 90. Perzentil
+ *  der Hüllpunkte (plan.md Kap. 4). Sie decken den Körper großzügig ab, und
+ *  zwei Kapseln schneiden sich bereits, wenn sich die echten Oberflächen nur
+ *  berühren. Am Xbot gemessen: der hängend am Körper liegende Arm ergibt für
+ *  hand_l|thigh_l eine Kapselüberschneidung von 7,3 cm bei 15,8 cm
+ *  Radiensumme (47 %) — dort steckt keine Hand im Bein.
+ *
+ *  Gemessen über die vier Entwicklungsclips (idle, walk, agree, sad_pose,
+ *  AGENTS.md Regel 3): 47 % ist der größte Wert, den die Kapselgeometrie ohne
+ *  echte Durchdringung erzeugt (agree, Frame 17). Eine Hand, die wirklich im
+ *  Rumpf steckt, liegt bei 74 % (torso|hand_l, 17,0 cm bei 22,9 cm
+ *  Radiensumme). 60 % liegt dazwischen, mit 13 Prozentpunkten Abstand nach
+ *  beiden Seiten. */
+export const KAPSEL_UEBERDECKUNG_ANTEIL = 0.60;
 
 /** Anteil der Erdbeschleunigung, um den die gemessene Senkrechtbeschleunigung
  *  des Schwerpunkts im Flug von -g abweichen darf, bevor Ballistik gemeldet
@@ -99,7 +118,11 @@ export const EPS_DEGENERIERT_QUAD = 1e-12;
 //   roles.pelvis.bone      — Knochen des Beckens (Balance-Negativfall nennt ihn)
 //   roles.foot_l.bone, roles.foot_r.bone — Fußknochen (Rutschen, Boden)
 //   segments[].id/from/to  — Segment-Endpunkte (Knochen-ids) für Ruheabstände
-//   restDistances["a|b"]   — Bind-Pose-Ruheabstand je Segmentpaar in Metern
+//   segments[].radius      — Kapselradius in Metern (Durchdringung)
+//   restDistances["a|b"]   — Bind-Pose-OBERFLÄCHENABSTAND je Segmentpaar in
+//                            Metern; negativ, wenn sich die Kapseln schon in
+//                            der Bind-Pose überschneiden (Rumpf/Oberschenkel
+//                            am Xbot: -0,16 m)
 //   soles[]                — Sohlenpunkte {id, bone, local} als Kontaktpunkte
 //   params.soleTolerance   — Anteil, optional; Fallback KONTAKT_SCHWELLE_ANTEIL
 //
@@ -111,6 +134,12 @@ export const EPS_DEGENERIERT_QUAD = 1e-12;
 // frames: Array mit einem Eintrag je Frame, fortlaufend:
 //   {
 //     positions: { <Knochen-id>: [x, y, z] in Metern, Weltkoordinaten },
+//     solePositions: { <Sohlen-id>: [x, y, z] } — Weltpositionen der
+//                    Sohlenpunkte, vom Löser mitgeschrieben. Sie sind die
+//                    echten Kontaktpunkte: am Xbot liegt der Fußknochen
+//                    7,2 cm über der tiefsten Sohle. Boden, Phase und Balance
+//                    rechnen damit, wenn das Feld da ist; fehlt es (ältere
+//                    Frames), fallen alle drei auf den Fußknochen zurück.
 //     com: [x, y, z] — Schwerpunkt in Metern (aus dem Löser oder aus Segmenten),
 //     contact: 'kontakt' | 'flug',  — Phase (plan.md 5.3); optional:
 //     anchored: ['sole_l_front_out', ...] — verankerte Sohlen-ids in diesem Frame
@@ -217,6 +246,11 @@ export function pruefePhysik(profile, frames, fps) {
 
   // Segmente für Ruheabstände: id -> [endpunktA_id, endpunktB_id]
   const segById = new Map((profile.segments ?? []).map((s) => [s.id, [s.from, s.to]]));
+  // Kapselradien, gemessen (plan.md Kap. 4). Fehlt einer, zählt er als 0 —
+  // dann ist die Kapsel eine Strecke, und die Prüfung wird strenger, nicht
+  // großzügiger.
+  const radiusById = new Map((profile.segments ?? [])
+    .map((s) => [s.id, Number.isFinite(s.radius) ? s.radius : 0]));
   const restPairs = [];
   for (const [key, dist] of Object.entries(profile.restDistances ?? {})) {
     const [a, b] = key.split('|');
@@ -224,11 +258,52 @@ export function pruefePhysik(profile, frames, fps) {
     restPairs.push({ a, b, dist, key });
   }
 
+  // ── Sohlen: die echten Kontaktpunkte ──────────────────────────────────────
+  //
+  // Ein Fuß berührt den Boden mit der Sohle, nicht mit dem Fußknochen. Am Xbot
+  // liegt der Knochen 7,2 cm über der tiefsten Sohle. Wer mit ihm rechnet,
+  // misst am falschen Punkt: eine um 10 cm abgesenkte Wurzel steckt mit allen
+  // ACHT Sohlen im Boden, gemeldet wurden vorher nur die beiden Zehenknochen —
+  // und ein Rig ohne Zehenknochen hätte gar nichts gemeldet.
+  //
+  // Der Löser schreibt solePositions an jeden Frame (src/solver/loeser.js,
+  // sohlenVerzeichnis). Fehlt das Feld (ältere Frames, fremde Erzeuger),
+  // fallen Boden, Phase und Balance auf den Fußknochen zurück — wie bisher.
+  const solesByBone = new Map();
+  for (const s of profile.soles ?? []) {
+    if (!solesByBone.has(s.bone)) solesByBone.set(s.bone, []);
+    solesByBone.get(s.bone).push(s.id);
+  }
+  const auflageSchwelle = height * AUFLAGE_SCHWELLE_ANTEIL;
+
+  /** Sohlenpunkte eines Frames als [{id, bone, p, hoehe}], hoehe über der
+   *  Bodenebene. Leeres Array, wenn der Frame kein Sohlenverzeichnis hat. */
+  const sohlenAus = (f) => {
+    const pts = f.solePositions;
+    if (!pts || typeof pts !== 'object') return [];
+    const out = [];
+    for (const s of profile.soles ?? []) {
+      const q = pts[s.id];
+      if (!Array.isArray(q) || !Number.isFinite(q[1])) continue;
+      out.push({ id: s.id, bone: s.bone, p: q, hoehe: q[1] - groundY });
+    }
+    return out;
+  };
+
+  /** Sohlen, die in diesem Frame TRAGEN: höchstens auflageSchwelle über dem
+   *  Boden. Eine Antwort für Balance und Rutschen — ein angehobener Fuß trägt
+   *  nicht, und was er tut, ist kein Rutschen. */
+  const tragendeSohlen = (f) => sohlenAus(f).filter((x) => x.hoehe < auflageSchwelle);
+
   // ── Phase je Frame: 'kontakt' oder 'flug' (phasenabhängige Prüfungen) ──────
   // Vorgabe aus dem Auftrag: contact-Feld, wenn gesetzt; sonst gemessen über
   // die Sohlenpunkte (Kontaktschwelle, plan.md Kap. 4: 3,5 % Körperhöhe).
   function phaseOf(f) {
     if (f.contact === 'kontakt' || f.contact === 'flug') return f.contact;
+    const sohlen = sohlenAus(f);
+    if (sohlen.length > 0) {
+      return sohlen.some((x) => x.hoehe < kontaktSchwelle) ? 'kontakt' : 'flug';
+    }
     const pts = (profile.soles ?? [])
       .map((s) => bonesOf(f)[s.bone])
       .filter(Boolean);
@@ -263,6 +338,20 @@ export function pruefePhysik(profile, frames, fps) {
     : null;
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i];
+    // Erst die Sohlen: sie sind die tiefsten Punkte des Fußes und der einzige
+    // Ort, an dem der Betrag stimmt. Ohne sie meldete die Prüfung am Xbot bei
+    // einem um 25 Grad gekippten Fuß 3,7 cm (Zehenknochen), während die Sohle
+    // 6,0 cm im Boden steckte.
+    for (const x of sohlenAus(f)) {
+      const tiefe = -x.hoehe;
+      if (tiefe > bodenTol) {
+        issues.push(issue(
+          'boden', i, +tiefe.toFixed(4), 'm', x.id,
+          `Sohlenpunkt ${x.id} steckt ${(tiefe * 100).toFixed(1).replace('.', ',')} cm im Boden`,
+          'Wurzel anheben, Fuß weniger kippen oder Bein strecken'
+        ));
+      }
+    }
     for (const [bone, p] of Object.entries(f.positions)) {
       if (hatHaut && !hatHaut.has(bone)) continue;
       const tiefe = groundY - p[1];
@@ -276,22 +365,45 @@ export function pruefePhysik(profile, frames, fps) {
     }
   }
 
-  // ── 2. Selbstdurchdringung über Bind-Pose-Ruheabstände ─────────────────────
-  // plan.md 3.4: Zylinder um Knochen sind zu grob. Gemessen wird, wie viel
-  // ENGER sich zwei Segmente gekommen sind als in der entspannten Bind-Pose.
-  // Betrag: Differenz Ruheabstand - Ist-Abstand. Nur Paare mit Eintrag.
+  // ── 2. Selbstdurchdringung: Kapseloberfläche gegen Kapseloberfläche ────────
+  //
+  // Gemessen wird die ÜBERSCHNEIDUNG der beiden Kapseln:
+  //     Überschneidung = rA + rB - Achsabstand der beiden Segmente
+  // Positiv heißt: die Kapseln stecken ineinander.
+  //
+  // Vorher stand hier „enger als in der Bind-Pose", mit zwei Fehlern. Der eine
+  // war ein Einheitenbruch: measure.js speichert den OBERFLÄCHENabstand,
+  // verglichen wurde er mit dem ACHSabstand der Pose — die Prüfung war um
+  // rA + rB zu großzügig (am Xbot 22,9 cm bei Rumpf und Hand).
+  //
+  // Der andere ist grundsätzlich: der Ruheabstand taugt nicht als Referenz.
+  // In der Bind-Pose (T-Pose) hängt die Hand 62,8 cm neben dem Oberschenkel;
+  // lässt der Agent den Arm einfach hängen, sind es 0 cm — eine „Verengung"
+  // von 62,8 cm, die niemand als Durchdringung bezeichnen würde. Umgekehrt
+  // stecken Rumpf und Oberschenkel schon in der Bind-Pose 16,0 cm ineinander,
+  // weil die Radien das 90. Perzentil der Hüllpunkte sind; „enger als Bind"
+  // hätte dort nie angeschlagen, „Kapseln schneiden sich" jeden Frame.
+  //
+  // Richtig ist deshalb: erlaubt ist so viel Überschneidung, wie das
+  // Kapselmodell ohnehin erzeugt — der GRÖSSERE der beiden Werte aus
+  //   (a) der Überschneidung in der Bind-Pose (restDistances, negativ) und
+  //   (b) KAPSEL_UEBERDECKUNG_ANTEIL der Radiensumme.
+  // Was darüber hinaus geht, um mehr als die Toleranz, ist eine Meldung.
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i];
-    for (const { a, b, dist, key } of restPairs) {
+    for (const { a, b, dist } of restPairs) {
       const pa = bonesOf(f), A = segById.get(a), B = segById.get(b);
       const a1 = pa[A[0]], a2 = pa[A[1]], b1 = pa[B[0]], b2 = pa[B[1]];
       if (!a1 || !a2 || !b1 || !b2) continue;   // Knochen fehlt: Intention, kein physikalischer Befund
-      const d = segSegDist(a1, a2, b1, b2);
-      const verengung = dist - d;
-      if (verengung > durchdringTol) {
+      const rSumme = (radiusById.get(a) ?? 0) + (radiusById.get(b) ?? 0);
+      const ueberschneidung = rSumme - segSegDist(a1, a2, b1, b2);
+      const inBind = Math.max(0, -dist);
+      const erlaubt = Math.max(inBind, KAPSEL_UEBERDECKUNG_ANTEIL * rSumme);
+      if (ueberschneidung - erlaubt > durchdringTol) {
         issues.push(issue(
-          'durchdringung', i, +verengung.toFixed(4), 'm', `${a}|${b}`,
-          `${a} und ${b} sind um ${(verengung * 100).toFixed(1).replace('.', ',')} cm enger als in der Bind-Pose`,
+          'durchdringung', i, +ueberschneidung.toFixed(4), 'm', `${a}|${b}`,
+          `${a} und ${b} stecken ${(ueberschneidung * 100).toFixed(1).replace('.', ',')} cm ineinander, `
+          + `zulässig sind ${(erlaubt * 100).toFixed(1).replace('.', ',')} cm bei ${(rSumme * 100).toFixed(1).replace('.', ',')} cm Radiensumme`,
           'Gliedmaßen auseinander bewegen'
         ));
       }
@@ -306,12 +418,36 @@ export function pruefePhysik(profile, frames, fps) {
     const f = frames[i];
     const com = f.com;
     if (!com || !Number.isFinite(com[0])) continue;   // ohne Schwerpunkt keine Balance-Aussage
-    const pts = (profile.soles ?? [])
-      .map((s) => ({ s, p: bonesOf(f)[s.bone] }))
-      .filter(({ p }) => p);
-    if (pts.length === 0) continue;
-    // Stützfläche = konvexe Hülle der Sohlenpunkte, gesehen von oben (x/z).
-    const punkte = pts.map(({ s, p }) => { void s; return [p[0], p[2]]; });
+    // Stützfläche = konvexe Hülle der TRAGENDEN Sohlenpunkte, von oben (x/z).
+    //
+    // Tragend heißt: höchstens auflageSchwelle über dem Boden (1 % Körperhöhe
+    // = 1,8 cm am Xbot). Vorher war die Stützfläche die Strecke zwischen den
+    // beiden FUSSKNOCHEN, gleichgültig ob ein Fuß überhaupt am Boden stand.
+    // Gemessen am Xbot: linkes Bein angehoben (Fuß auf 42 cm), Wurzel und
+    // Schwerpunkt auf x = 0,25 über den angehobenen Fuß geschoben — null
+    // Balancefehler, obwohl die Figur auf einem Bein steht und das Lot 25 cm
+    // neben dem Standfuß liegt.
+    let punkte;
+    const sohlen = sohlenAus(f);
+    if (sohlen.length > 0) {
+      // Sohlenverzeichnis vorhanden: nur was trägt, zählt. Steht die Figur
+      // laut Phase in Kontakt, ohne dass eine Sohle die Auflageschwelle
+      // erreicht (Zehenstand, kurz vor dem Aufsetzen), sind die Sohlen
+      // innerhalb der Kontaktschwelle die einzigen Kandidaten.
+      const tragend = tragendeSohlen(f);
+      const naeher = tragend.length > 0
+        ? tragend
+        : sohlen.filter((x) => x.hoehe < kontaktSchwelle);
+      if (naeher.length === 0) continue;   // nichts trägt: keine Balanceaussage
+      punkte = naeher.map((x) => [x.p[0], x.p[2]]);
+    } else {
+      // Ältere Frames ohne Sohlenverzeichnis: wie bisher über die Fußknochen.
+      const pts = (profile.soles ?? [])
+        .map((s) => bonesOf(f)[s.bone])
+        .filter(Boolean);
+      if (pts.length === 0) continue;
+      punkte = pts.map((q) => [q[0], q[2]]);
+    }
     const huelle = konvexeHuelle(punkte);
     const d = abstandZuPolygon([com[0], com[2]], huelle);
     if (d > balanceTol) {
@@ -372,11 +508,6 @@ export function pruefePhysik(profile, frames, fps) {
   // des Frames steht. Fehlt das Feld ganz, genügt der Kontakt (phasenabhängig
   // bereits geprüft); steht das Feld und nennt die Sohle nicht, darf der Fuß
   // sich bewegen.
-  const solesByBone = new Map();
-  for (const s of profile.soles ?? []) {
-    if (!solesByBone.has(s.bone)) solesByBone.set(s.bone, []);
-    solesByBone.get(s.bone).push(s.id);
-  }
   const fussVerankert = (f, bone) => {
     if (!Array.isArray(f.anchored)) return true;
     return (solesByBone.get(bone) ?? []).some((id) => f.anchored.includes(id));
@@ -388,17 +519,16 @@ export function pruefePhysik(profile, frames, fps) {
   // Fuesse. Beim Gehen steht immer einer — damit galt der Schwungfuss als
   // aufliegend und seine Vorwaertsbewegung als Rutschen. Der Anlauf war
   // durchgehend rot, ohne dass etwas rutschte.
-  const auflageSchwelle = height * AUFLAGE_SCHWELLE_ANTEIL;
+  // Dieselbe Antwort wie bei der Balance: tragendeSohlen(f), nach Fuss
+  // gefiltert. Was traegt, darf nicht rutschen; was in der Luft haengt, geht.
   const liegtAuf = (f, bone) => {
-    const pts = f.solePositions ?? null;
-    const ids = solesByBone.get(bone) ?? [];
-    if (pts && ids.length) {
-      return ids.some((id) => pts[id] && (pts[id][1] - groundY) < auflageSchwelle);
+    if (sohlenAus(f).length > 0) {
+      return tragendeSohlen(f).some((x) => x.bone === bone);
     }
     // Kein Sohlenverzeichnis im Frame: auf den Fussknochen zurueckfallen. Er
     // liegt hoeher als die Sohle, deshalb die Sohlentoleranz obendrauf.
     const p = bonesOf(f)[bone];
-    return !!p && (p[1] - groundY) < auflageSchwelle + (profile.params?.soleTolerance ?? KONTAKT_SCHWELLE_ANTEIL) * height;
+    return !!p && (p[1] - groundY) < auflageSchwelle + kontaktSchwelle;
   };
 
   for (let i = 1; i < frames.length; i++) {

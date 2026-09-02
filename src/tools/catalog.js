@@ -130,20 +130,41 @@ export const KATALOG = [
   },
   {
     name: 'probe_joint',
-    description: 'Probiert ein einzelnes Gelenk aus: beugt es um den angegebenen Winkel und liefert Vorher '
-      + 'und Nachher als Bild. Zum Nachsehen, in welche Richtung ein Kanal wirkt, wenn die Angabe '
-      + 'aus describe_rig nicht reicht. Aendert die Timeline nicht.',
+    description: 'Probiert einen einzelnen Gelenkkanal aus: beugt ihn um den angegebenen Winkel und liefert '
+      + 'Vorher und Nachher als Bild. Zum Nachsehen, in welche Richtung ein Kanal wirkt, wenn die '
+      + 'Angabe aus describe_rig nicht reicht. Ohne channel wird der erste gemessene Kanal des '
+      + 'Gelenks genommen; die Antwort sagt, welcher es war und welche es sonst noch gibt. Aendert '
+      + 'die Timeline nicht.',
     inputSchema: {
       type: 'object',
       properties: {
         joint: { type: 'string', description: 'Gelenkname aus describe_rig, z. B. hip_l' },
-        angleDeg: { type: 'number', minimum: -90, maximum: 90, description: 'Winkel in Grad, -90 bis 90' }
+        angleDeg: { type: 'number', minimum: -90, maximum: 90, description: 'Winkel in Grad, -90 bis 90' },
+        channel: {
+          type: 'string',
+          description: 'optional: Kanalname dieses Gelenks aus describe_rig, z. B. flex. '
+            + 'Die Namen sind je Gelenk verschieden - hip_l hat flex, arm_l hat lift. '
+            + 'Fehlt die Angabe, wird der erste gemessene Kanal genommen'
+        }
       },
       required: ['joint', 'angleDeg']
     }
   },
   {
     name: 'confirm_role',
+    // In der Kiste, seit die Rollen-Rueckfrageoberflaeche abgeschaltet ist
+    // (Commit de77965). Gemessen am Xbot: alle drei Pflichtrollen (pelvis,
+    // foot_l, foot_r) haben Konfidenz 1 — es gibt nichts zu bestaetigen. Ein
+    // sichtbares Werkzeug ohne Anlass kostete im Agentenlauf echte Aufrufe:
+    // der Agent las den Hinweis in describe_rig als Pflicht und machte sich
+    // daran, Zuordnungen zu bestaetigen, statt die Bewegung zu bauen.
+    //
+    // Der Rumpf bleibt (handlers.js) und ist ueber rufe() erreichbar. Duerfen
+    // spaeter beliebige Modelle hochgeladen werden, kann eine Rolle unsicher
+    // sein — dann gehoert das Werkzeug wieder in den sichtbaren Katalog, und
+    // describe_rig nennt es wieder. Der Test dazu steht in
+    // src/tools/rollensicherheit.test.mjs.
+    kiste: true,
     description: 'Bestaetigt oder korrigiert, welcher Knochen eine Rolle traegt (foot_l, hand_r, ...). '
       + 'Noetig, wenn describe_rig eine Rolle mit Konfidenz unter 1 meldet. Danach gilt die '
       + 'Zuordnung als gemessen.',
@@ -496,9 +517,9 @@ export const KATALOG = [
   },
   {
     name: 'undo',
-    description: 'Nimmt die letzte Aenderung zurueck. Es gibt kein Loeschen einzelner Haltungen und kein '
-      + 'Verschieben: eine Haltung auf einem Frame ueberschreibt man, indem man set_pose erneut auf '
-      + 'denselben Frame aufruft.',
+    description: 'Nimmt die letzte Aenderung zurueck, egal von welchem Werkzeug. Eine einzelne Haltung '
+      + 'loescht du mit delete_pose, verschiebst sie mit move_pose und ueberschreibst sie, indem du '
+      + 'set_pose erneut auf denselben Frame aufrufst - dafuer brauchst du undo nicht.',
     inputSchema: leer
   },
   {
@@ -572,7 +593,9 @@ export const KATALOG = [
       + 'Standfuss bleibt fest, waehrend die Figur ueber ihn hinweg wandert, der andere schwingt frei. '
       + 'Ohne das rutschen die Fuesse mit dem Becken mit und validate meldet es. Mehrere Anker sind '
       + 'erlaubt, auch fuer beide Fuesse gleichzeitig. Setze sie ERST, wenn die Haltungen stehen: sie '
-      + 'wirken nach den Haltungen.',
+      + 'wirken nach den Haltungen. Deine gesetzten Beinwinkel bleiben dabei stehen; reicht der Rest '
+      + 'der Kette nicht bis zum Anker, gibt die Huefte nach und der Bericht nennt den Fuss mit dem '
+      + 'Betrag in Metern, der fehlt.',
     inputSchema: {
       type: 'object',
       properties: {

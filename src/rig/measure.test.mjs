@@ -161,6 +161,11 @@ const TWIST_DOF = [
   'hip_l.twist', 'hip_r.twist',
 ];
 
+/** Twist-Kanäle, deren Richtungstext seitenbezogen ist („nach außen") und die
+ *  deshalb auf der rechten Seite das umgekehrte Vorzeichen tragen. Kanäle mit
+ *  absoluter Richtung („vorwärts rollend", „nach links") stehen hier nicht. */
+const GESPIEGELTE_TWIST_DOF = new Set(['hip_r.twist']);
+
 function richtungsvektor(kennung) {
   const [text] = BENANNTE_RICHTUNG[kennung];
   const vorzeichen = text[0] === '-' ? -1 : 1;
@@ -788,8 +793,14 @@ test('Twist, Positivfall: nicht messbare Drehungen sind als nicht_messbar gekenn
     const spec = joints[gelenk].dof[dof];
     assert.strictEqual(spec.signSource, 'nicht_messbar',
       `${kennung}: signSource „${spec.signSource}“, erwartet „nicht_messbar“ (plan.md 3.5: Drehung um die eigene Kettenachse)`);
-    assert.strictEqual(spec.sign, 1,
-      `${kennung}: Vorzeichen ${spec.sign}, erwartet 1 — Vorzeichen bleibt unverändert, wenn es nicht gemessen ist (plan.md 6.1)`);
+    // Nicht messbar heißt: das Vorzeichen kommt nicht aus einer Messung. Es
+    // heißt NICHT, dass es 1 sein muss. Die Seitenspiegelung ist Katalogwissen
+    // und gilt auch hier — bis zum 2. September 2026 stand hier pauschal 1,
+    // und hip_r.twist drehte damit nach innen, wo sein Text „nach außen"
+    // versprach (src/rig/twist-spiegelung.test.mjs).
+    const erwartet = GESPIEGELTE_TWIST_DOF.has(kennung) ? -1 : 1;
+    assert.strictEqual(spec.sign, erwartet,
+      `${kennung}: Vorzeichen ${spec.sign}, erwartet ${erwartet} — gespiegelt sind nur Kanäle, deren Text eine seitenbezogene Richtung nennt („nach außen")`);
   }
 
   // Nachweis an den Ketten, die auf ihrer Achse liegen: die Drehung bewegt das

@@ -224,7 +224,7 @@ const JOINT_CATALOG = [
                  + '0 = waagerecht (wie in der T-Pose), -90 = am Körper, +90 = senkrecht nach oben' },
       swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-130, 90],
                richtung: 'swing: + schwingt den linken Arm nach vorn, - nach hinten' },
-      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
+      twist: { axis: 'x', want: +1, mirror: false, limit: [-90, 90], twist: true,
                richtung: 'twist: + dreht den linken Arm um seine eigene Achse (vorwärts rollend), - rückwärts. WICHTIG beim Senken: in der T-Pose zeigt die Handfläche nach unten. Senkst du den Arm nur mit lift, zeigt sie danach nach vorn und die Hand steht unnatürlich ab. Ein Mensch dreht dabei mit. Faustregel am haengenden Arm: links twist +75, rechts twist -75.' } } },
   { joint: 'arm_r',      bone: 'arm_r',     end: 'ende_hand_r', dofs: {
       lift:  { axis: 'z', moves: 'y', want: +1, mirror: false, limit: [-95, 100],
@@ -232,7 +232,7 @@ const JOINT_CATALOG = [
                  + '0 = waagerecht (wie in der T-Pose), -90 = am Körper, +90 = senkrecht nach oben' },
       swing: { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [-130, 90],
                richtung: 'swing: + schwingt den rechten Arm nach vorn, - nach hinten' },
-      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
+      twist: { axis: 'x', want: +1, mirror: false, limit: [-90, 90], twist: true,
                richtung: 'twist: + dreht den rechten Arm um seine eigene Achse (vorwärts rollend), - rückwärts. WICHTIG beim Senken: in der T-Pose zeigt die Handfläche nach unten. Senkst du den Arm nur mit lift, zeigt sie danach nach vorn und die Hand steht unnatürlich ab. Ein Mensch dreht dabei mit. Faustregel am haengenden Arm: links twist +75, rechts twist -75.' } } },
   { joint: 'elbow_l',    bone: 'forearm_l', end: 'ende_hand_l', dofs: {
       // ACHSE GEMESSEN, nicht katalogisiert. Am Xbot durchprobiert: die alte
@@ -243,8 +243,8 @@ const JOINT_CATALOG = [
       // die Armachse und wirkungslos. Das Vorzeichen ist seitenverschieden.
       bend:  { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [0, 150],
                richtung: 'bend: + beugt den linken Ellbogen, die Hand kommt nach VORN zur Schulter. 0 ist der gestreckte Arm und die Untergrenze - ein Ellbogen laesst sich nicht ueberstrecken.' },
-      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
-               richtung: 'twist: + dreht den linken Unterraum (Handfläche nach oben), - nach unten' } } },
+      twist: { axis: 'x', want: +1, mirror: false, limit: [-90, 90], twist: true,
+               richtung: 'twist: + dreht den linken Unterarm (Handfläche nach oben), - nach unten' } } },
   { joint: 'elbow_r',    bone: 'forearm_r', end: 'ende_hand_r', dofs: {
       // ACHSE GEMESSEN, nicht katalogisiert. Am Xbot durchprobiert: die alte
       // Achse 'z' bewegte die Hand bei bend=+60 um 24,5 cm nach OBEN und 0,0 cm
@@ -254,21 +254,21 @@ const JOINT_CATALOG = [
       // die Armachse und wirkungslos. Das Vorzeichen ist seitenverschieden.
       bend:  { axis: 'y', moves: 'z', want: +1, mirror: false, limit: [0, 150],
                richtung: 'bend: + beugt den rechten Ellbogen, die Hand kommt nach VORN zur Schulter. 0 ist der gestreckte Arm und die Untergrenze - ein Ellbogen laesst sich nicht ueberstrecken.' },
-      twist: { axis: 'x', want: +1, mirror: true,  limit: [-90, 90], twist: true,
+      twist: { axis: 'x', want: +1, mirror: false, limit: [-90, 90], twist: true,
                richtung: 'twist: + dreht den rechten Unterarm (Handfläche nach oben), - nach unten' } } },
   { joint: 'hip_l',      bone: 'thigh_l',   end: 'ende_fuss_l', dofs: {
       flex:   { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-30, 130],
                 richtung: 'flex: + zieht das linke Bein nach vorn, - führt es nach hinten' },
       spread: { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-30, 45],
                 richtung: 'spread: + spreizt das linke Bein nach außen, - zieht es zur Körpermitte' },
-      twist:  { axis: 'y', want: +1, mirror: false, limit: [-45, 45], twist: true,
+      twist:  { axis: 'y', want: +1, mirror: true,  limit: [-45, 45], twist: true,
                 richtung: 'twist: + dreht den linken Oberschenkel nach außen, - nach innen' } } },
   { joint: 'hip_r',      bone: 'thigh_r',   end: 'ende_fuss_r', dofs: {
       flex:   { axis: 'x', moves: 'z', want: +1, mirror: false, limit: [-30, 130],
                 richtung: 'flex: + zieht das rechte Bein nach vorn, - führt es nach hinten' },
       spread: { axis: 'z', moves: 'x', want: +1, mirror: true,  limit: [-30, 45],
                 richtung: 'spread: + spreizt das rechte Bein nach außen, - zieht es zur Körpermitte' },
-      twist:  { axis: 'y', want: +1, mirror: false, limit: [-45, 45], twist: true,
+      twist:  { axis: 'y', want: +1, mirror: true,  limit: [-45, 45], twist: true,
                 richtung: 'twist: + dreht den rechten Oberschenkel nach außen, - nach innen' } } },
   { joint: 'knee_l',     bone: 'shin_l',    end: 'ende_fuss_l', dofs: {
       bend: { axis: 'x', moves: 'z', want: -1, mirror: false, limit: [0, 150],
@@ -1139,8 +1139,15 @@ export function measureJoints(gltf, opts = {}) {
         // Twist: Drehung um die eigene Kettenachse — erzeugt am Kettenende
         // keine messbare Bewegung (plan.md 3.5). Kennzeichnung gegen das
         // stille Setzen auf 1 mit falscher Quelle.
+        //
+        // Die Spiegelung gilt trotzdem: sie ist Katalogwissen, keine Messung.
+        // Bis zum 2. September 2026 sprang dieser Zweig mit sign 1 heraus,
+        // bevor mirror ausgewertet wurde — hip_r.twist drehte damit nach
+        // innen, wo sein eigener Text „nach außen" versprach.
         dofOut[name] = {
-          axis: spec.axis, sign: 1, limit: spec.limit,
+          axis: spec.axis,
+          sign: spec.mirror && def.joint.endsWith('_r') ? -1 : 1,
+          limit: spec.limit,
           richtung: spec.richtung,
           signSource: 'nicht_messbar',
         };
@@ -1241,10 +1248,13 @@ export function applyBindPose(ctx) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Misst Bind-Pose-Ruheabstände aller nicht benachbarten Segmentpaare, deren
- * Oberflächen sich näher als ein Zwanzigstel der Körperhöhe kommen.
- * Benachbart = Segmente teilen einen Knochen — die sollen sich immer
- * berühren dürfen und werden nicht eingesammelt.
+ * Misst den Bind-Pose-Oberflächenabstand ALLER nicht benachbarten
+ * Segmentpaare, in Metern und MIT VORZEICHEN: negativ, wo sich die Kapseln
+ * schon in der Bind-Pose überschneiden. Benachbart = die Segmente teilen
+ * einen Knochen; die sollen sich immer berühren dürfen und werden nicht
+ * eingesammelt.
+ *
+ * @returns {Object<string, number>} {"segmentA|segmentB": Abstand in Metern}
  */
 export function measureRestDistances(gltf, opts = {}) {
   const ctx = contextMitKorrekturen(gltf, opts);
@@ -1260,23 +1270,35 @@ export function measureRestDistances(gltf, opts = {}) {
     }
   }
   const ids = [...caps.keys()];
-  const nearPairs = new Set();
-  for (const s of SEGMENTS) {
-    nearPairs.add(s.from + '|' + s.to);
-    nearPairs.add(s.to + '|' + s.from);
-  }
+
+  // Benachbart heißt: die beiden Segmente teilen sich einen Endpunkt, hängen
+  // also am selben Gelenk (Oberschenkel/Unterschenkel am Knie). Ihre Kapseln
+  // überschneiden sich dort konstruktiv und bei jeder Beugung mehr — sie als
+  // Durchdringung zu melden, wäre in jedem gebeugten Knie ein Fehlalarm.
+  //
+  // Die frühere Fassung prüfte nur A.from|B.to und B.from|A.to und übersah
+  // damit den häufigsten Fall A.to === B.from (Rumpf/Kopf am Hals). Solange
+  // nur nahe Paare eingetragen wurden, fiel das nicht auf.
   const isAdjacent = (a, b) => {
     const A = SEGMENTS.find((x) => x.id === a);
     const B = SEGMENTS.find((x) => x.id === b);
     if (!A || !B) return true;
-    return nearPairs.has(A.from + '|' + B.to) || nearPairs.has(B.from + '|' + A.to);
+    return A.from === B.from || A.from === B.to || A.to === B.from || A.to === B.to;
   };
 
-  // Nur Paare eintragen, deren Kapsel-Oberflächen sich merklich nah kommen.
-  // Schranke relativ zur Körperhöhe (AGENTS.md), hier ein Zwanzigstel.
-  const NEAR_FRACTION = 0.05;
-  const nearMeters = ctx.height * NEAR_FRACTION;
-
+  // ALLE nicht benachbarten Paare eintragen, nicht nur die in der Bind-Pose
+  // nahen. Die frühere Schranke (5 % Körperhöhe) ließ am Xbot 22 von 82
+  // Paaren übrig — ohne torso|hand_l und ohne torso|forearm_l. Eine Hand im
+  // Rumpf konnte deshalb gar nicht gemeldet werden: das Paar existierte in
+  // der Prüfung nicht. Die T-Pose sagt nichts darüber, welche Körperteile
+  // sich später nahe kommen; sie hält die Arme gerade weit weg.
+  //
+  // Eingetragen wird der OBERFLÄCHENabstand MIT VORZEICHEN. Negativ heißt:
+  // die Kapseln überschneiden sich schon in der Bind-Pose — am Xbot
+  // torso|thigh_r mit -0,16 m, weil die Radien das 90. Perzentil der
+  // Hüllpunkte sind. Genau dieser Betrag ist für die Physikprüfung die
+  // Untergrenze dessen, was das Kapselmodell selbst erzeugt; ein Abschneiden
+  // bei 0 hätte ihn verschwiegen (src/validate/physics.js, Prüfung 2).
   const restDistances = {};
   for (let i = 0; i < ids.length; i++) {
     for (let j = i + 1; j < ids.length; j++) {
@@ -1284,10 +1306,8 @@ export function measureRestDistances(gltf, opts = {}) {
       if (isAdjacent(a, b)) continue;
       const [a1, a2] = caps.get(a);
       const [b1, b2] = caps.get(b);
-      const gap = segSegDist(a1, a2, b1, b2) - (radiusById.get(a) + radiusById.get(b));
-      if (gap < nearMeters) {
-        restDistances[`${a}|${b}`] = r4(Math.max(0, gap));
-      }
+      restDistances[`${a}|${b}`] =
+        r4(segSegDist(a1, a2, b1, b2) - (radiusById.get(a) + radiusById.get(b)));
     }
   }
   return restDistances;

@@ -30,19 +30,28 @@ function verschiebePose(pose, dx, dz) {
 
 /**
  * Liefert eine reine Darstellungs-Kopie eines Frames fuer den Editor.
- * X/Z aller Knochen liegen relativ zum ersten Root-Frame wieder am Ursprung;
- * Y, Rotation, Gelenke und die Originaltimeline bleiben unveraendert.
+ * Das Becken steht in X/Z auf dem Ursprung, alle Knochen sind um denselben
+ * Versatz mitgeschoben; Y, Rotation, Gelenke und die Originaltimeline
+ * bleiben unveraendert.
+ *
+ * Auf den URSPRUNG, nicht auf den ersten Frame: vorher wurde jeder Frame auf
+ * die X/Z-Position des ersten Frames gelegt. Startete der Agent den Anlauf bei
+ * z = −2,48 m (Lauf vom 1. September 2026, Session 5c6a601a), stand die Figur
+ * im Editor dauerhaft 2,48 m neben der Mitte des Gitters — „aus dem Zentrum
+ * gerutscht", obwohl der Editor genau das verhindern soll.
+ *
+ * startFrame wird nicht mehr gebraucht; der Parameter bleibt, damit die
+ * Aufrufer unveraendert weiterlaufen.
  */
-export function editorFrame(frame, startFrame) {
-  const start = startFrame?.root?.pos;
+export function editorFrame(frame, _startFrame) {
   const aktuell = frame?.root?.pos;
-  if (!istPunkt(start) || !istPunkt(aktuell)) return frame;
+  if (!istPunkt(aktuell)) return frame;
 
-  const dx = start[0] - aktuell[0];
-  const dz = start[2] - aktuell[2];
+  const dx = -aktuell[0];
+  const dz = -aktuell[2];
   const editor = {
     ...frame,
-    root: { ...frame.root, pos: [start[0], aktuell[1], start[2]] },
+    root: { ...frame.root, pos: [0, aktuell[1], 0] },
   };
   if (frame.bones) editor.bones = verschiebePose(frame.bones, dx, dz);
   if (frame.pose) editor.pose = verschiebePose(frame.pose, dx, dz);

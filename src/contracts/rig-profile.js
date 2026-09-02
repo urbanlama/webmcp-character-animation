@@ -236,17 +236,31 @@ export function validateRigProfile(obj) {
     });
   }
 
-  // restDistances — Schluessel 'a|b', Werte >= 0
+  // restDistances — Schluessel 'a|b', Werte: endliche Zahlen in Metern.
+  //
+  // Die Paarzahl ist NICHT begrenzt: der Vertrag zaehlt keine Eintraege, und
+  // es waere falsch, das zu tun. Am Xbot sind es 82 nicht benachbarte
+  // Segmentpaare, ein Rig mit mehr Segmenten hat mehr.
+  //
+  // Negative Werte sind zulaessig und gewollt: der Eintrag ist der
+  // OBERFLAECHENabstand der beiden Kapseln in der Bind-Pose, und der ist
+  // negativ, wo sich die Kapseln schon dort ueberschneiden (Xbot:
+  // torso|thigh_r bei -0,16 m, weil die Radien das 90. Perzentil der
+  // Huellpunkte sind). Frueher stand hier "Zahl >= 0" und measure.js schnitt
+  // bei 0 ab — damit war die Modellueberdeckung verschwiegen, die die
+  // Durchdringungspruefung als Untergrenze braucht.
   const rd = obj.restDistances;
   if (rd === null || typeof rd !== 'object' || Array.isArray(rd)) {
-    fehler(errors, 'restDistances', rd, 'Objekt mit Schluesseln der Form "a|b" und Zahlen >= 0');
+    fehler(errors, 'restDistances', rd,
+      'Objekt mit Schluesseln der Form "a|b" und endlichen Zahlen (Meter, Bind-Pose, negativ erlaubt)');
   } else {
     for (const [key, v] of Object.entries(rd)) {
       if (!key.includes('|')) {
         fehler(errors, `restDistances["${key}"]`, key, 'Schluessel der Form "segmentA|segmentB"');
       }
-      if (!istZahl(v) || v < 0) {
-        fehler(errors, `restDistances["${key}"]`, v, 'Zahl >= 0 (Meter, Bind-Pose)');
+      if (!istZahl(v)) {
+        fehler(errors, `restDistances["${key}"]`, v,
+          'endliche Zahl in Metern (Oberflaechenabstand der Bind-Pose, negativ = Kapseln ueberschneiden sich)');
       }
     }
   }

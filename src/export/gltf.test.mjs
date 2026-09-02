@@ -150,12 +150,25 @@ test('Export, Positivfall: Gelenkverlauf im Wiedereinlesen trägt die Timeline-W
     );
   }
 
-  // Werte am Beispiel des Arms: Kanal 0 und Ende gegen die Timeline.
-  const armTrack = tracks.get(`${ARM_L}.quaternion`);
+  // Werte am Beispiel des Arms: Kanal 0 und Ende gegen die Timeline. Die
+  // Timeline traegt WELT-Ausrichtungen (so schreibt sie der Loeser), der Kanal
+  // knoten-lokale. Verglichen wird deshalb die Weltausrichtung des Knochens,
+  // nachdem die Szene aus ihren Kanaelen gestellt wurde — was ein Player zeigt.
+  const THREE = await import('three');
+  const weltNachKanal = (i) => {
+    for (const t of zurueck.animations[0].tracks) {
+      const [knoten, eig] = t.name.split('.');
+      const obj = zurueck.scene.getObjectByName(knoten);
+      if (eig === 'quaternion') obj.quaternion.fromArray(t.values, i * 4);
+      else if (eig === 'position') obj.position.fromArray(t.values, i * 3);
+    }
+    zurueck.scene.updateMatrixWorld(true);
+    return zurueck.scene.getObjectByName(ARM_L).getWorldQuaternion(new THREE.Quaternion()).toArray();
+  };
   const soll0 = timeline.solved.frames[0].joints.arm_l;
   const soll9 = timeline.solved.frames[9].joints.arm_l;
-  const ist0 = Array.from(armTrack.values.slice(0, 4));
-  const ist9 = Array.from(armTrack.values.slice(36, 40));
+  const ist0 = weltNachKanal(0);
+  const ist9 = weltNachKanal(9);
   const winkel = (qa, qb) => {
     const d = Math.abs(qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3]);
     return 2 * Math.acos(Math.min(1, d));

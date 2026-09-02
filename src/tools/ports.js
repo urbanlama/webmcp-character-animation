@@ -15,6 +15,7 @@
 // ist (AGENTS.md, Regel 1).
 
 import { WerkzeugMeldung } from './errors.js';
+import { alsTimeline } from './state.js';
 
 /** Fehler, wenn ein Werkzeug ein Paket braucht, das noch nicht angeschlossen ist. */
 export function nichtAngeschlossen(tool, paket, was) {
@@ -64,6 +65,11 @@ export function attrappenRig() {
         warnung: 'Attrappe: 0 Segmente vermessen, 0 Sohlenpunkte erkannt (AP2 fehlt)',
         segments: [], soles: [], restDistances: {}, params: {}
       };
+    },
+    // Das ungefilterte RigProfile — was die Pruefungen brauchen, nicht was der
+    // Agent liest. Die Attrappe hat keins und sagt das mit null.
+    profil() {
+      return null;
     },
     probe(joint) {
       return {
@@ -301,10 +307,13 @@ export function echtePorts(opt = {}) {
     const bind = bindPose();
     const eltern = new Map(m.profil.bones.map((b) => [b.id, b.parent]));
 
-    // 1. Ausrichtungen, die der Loeser selbst gemessen hat.
+    // 1. Ausrichtungen, die der Loeser selbst gemessen hat: je Gelenk die
+    //    WELT-Quaternion seines Knochens. Das Becken ist darunter (Gelenk
+    //    `pelvis`, samt tilt/roll/turn). f.root.quat ist NICHT die Ausrichtung
+    //    des Beckenknochens, sondern nur die Ganzkoerperdrehung (waxis) ohne
+    //    Bind-Anteil und ohne Beckenneigung — als Knochenausrichtung genommen
+    //    verliert die Anzeige die Beckenneigung.
     const quat = new Map();
-    const wurzel = m.profil.roles.pelvis?.bone;
-    if (f.root && Array.isArray(f.root.quat) && wurzel) quat.set(wurzel, f.root.quat);
     for (const [gelenk, q] of Object.entries(f.joints ?? {})) {
       const id = m.profil.joints[gelenk]?.bone;
       if (id && Array.isArray(q)) quat.set(id, q);
@@ -401,6 +410,13 @@ export function echtePorts(opt = {}) {
       };
     },
 
+    // Das ungefilterte RigProfile fuer die Pruefungen. describe_body und
+    // describe_rig schneiden fuer den Agenten zu; pruefePhysik braucht world,
+    // segments und restDistances in einem Stueck.
+    profil() {
+      return m ? m.profil : null;
+    },
+
     gelenke() {
       return m ? Object.keys(m.profil.joints) : [];
     },
@@ -414,7 +430,7 @@ export function echtePorts(opt = {}) {
      * Nachher als Frames aus derselben Szene und rendert beide nebeneinander.
      * Die Bind-Pose wird danach wiederhergestellt.
      */
-    probe(gelenk, winkelGrad) {
+    probe(gelenk, winkelGrad, kanal) {
       const s = brauchtModell('probe_joint', 'Die Gelenkprobe');
       const j = s.profil.joints[gelenk];
       if (!j) {
@@ -436,10 +452,28 @@ export function echtePorts(opt = {}) {
             + `obwohl das Profil ihn für ${gelenk} führt`
         });
       }
-      // Freiheitsgrad mit gemessenem Vorzeichen bevorzugen — sonst der erste.
+      // Der Agent darf den Kanal waehlen. Tut er es nicht, wird wie bisher
+      // der erste mit gemessenem Vorzeichen genommen — aber die Antwort sagt
+      // ihm, welcher das war und welche es sonst gaebe. Vorher war das eine
+      // stille Entscheidung: bei arm_l (lift, swing, twist) probierte er
+      // lift, ohne es zu erfahren, und konnte swing gar nicht ansehen.
       const namen = Object.keys(j.dof);
-      const dofName = namen.find((n) => j.dof[n].signSource === 'gemessen') ?? namen[0];
+      if (kanal !== undefined && kanal !== null && kanal !== '') {
+        if (!Object.prototype.hasOwnProperty.call(j.dof, kanal)) {
+          throw new WerkzeugMeldung({
+            tool: 'probe_joint', param: 'channel', value: kanal,
+            range: `einer von ${namen.length} Kanaelen des Gelenks ${gelenk}: ${namen.join(', ')}`,
+            next: 'die Kanalnamen je Gelenk stehen in describe_rig',
+            message: `Kanal "${kanal}" gibt es am Gelenk ${gelenk} nicht; `
+              + `es hat ${namen.length} Kanaele: ${namen.join(', ')}`
+          });
+        }
+      }
+      const dofName = (kanal !== undefined && kanal !== null && kanal !== '')
+        ? kanal
+        : (namen.find((n) => j.dof[n].signSource === 'gemessen') ?? namen[0]);
       const dof = j.dof[dofName];
+      const weitere = namen.filter((n) => n !== dofName);
       const achse = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }[dof.axis] ?? [1, 0, 0];
       const rad = (winkelGrad * Math.PI / 180) * (dof.sign ?? 1);
 
@@ -459,10 +493,16 @@ export function echtePorts(opt = {}) {
       s.gltf.scene.updateMatrixWorld(true);
 
       const ende = Object.keys(nachher.positions).length;
-      const text = `Gelenk ${gelenk} (${j.bone}), Freiheitsgrad ${dofName} um Achse `
-        + `${dof.axis}, Vorzeichen ${dof.sign ?? 1} (${dof.signSource}): `
+      const text = `Gelenk ${gelenk} (${j.bone}), Kanal ${dofName}`
+        + `${kanal ? ' (von dir gewaehlt)' : ' (nicht angegeben, erster gemessener genommen)'}`
+        + ` um Achse ${dof.axis}, Vorzeichen ${dof.sign ?? 1} (${dof.signSource}): `
         + `${winkelGrad} Grad angelegt, ${ende} Knochen neu ausgewertet, `
         + `Grenzen ${JSON.stringify(dof.limit)} (${j.limitSource}). `
+        + (weitere.length > 0
+          ? `${weitere.length} weitere${weitere.length === 1 ? 'r Kanal' : ' Kanaele'} `
+            + `an diesem Gelenk: ${weitere.join(', ')} `
+            + '- mit channel waehlst du einen davon. '
+          : `Dieses Gelenk hat nur diesen einen Kanal. `)
         + 'Links Bind-Pose, rechts gebeugt.';
 
       let bild = null;
@@ -678,7 +718,17 @@ export function echtePorts(opt = {}) {
      * @param {object} timeline  Timeline gemäß plan.md 5.2
      * @returns {object[]} gelöste Frames mit bones
      */
-    loeseFuerSzene(timeline) {
+    /**
+     * Loest den SITZUNGSZUSTAND (store.roh()) fuer die Live-Anzeige und gibt
+     * die Frames mit bones-Tabellen zurueck, wie stellePose sie stellt.
+     *
+     * Nimmt den rohen Zustand, nicht eine fertige Timeline: der Eingang wird
+     * hier ueber alsTimeline gebaut — derselbe Weg wie measure, look und
+     * validate. Ein Aufrufer, der die Timeline selbst zusammenstellt, laesst
+     * frueher oder spaeter ein Feld weg (index.html hatte `anchors`
+     * vergessen, siehe alsTimeline in state.js).
+     */
+    loeseFuerSzene(zustand) {
       if (!m || m.gltf == null) {
         throw new WerkzeugMeldung({
           tool: 'ports', param: 'gelöste Frames', value: 0,
@@ -688,7 +738,7 @@ export function echtePorts(opt = {}) {
             + '(loeseFuerSzene)'
         });
       }
-      const { frames } = solver.loese(timeline);
+      const { frames } = solver.loese(alsTimeline(zustand));
       return frames.map(alsStreifenFrame);
     }
   };

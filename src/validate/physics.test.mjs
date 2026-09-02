@@ -24,13 +24,15 @@ const RIG = {
     foot_l: { bone: 'foot_l' },
     foot_r: { bone: 'foot_r' },
   },
+  // Radien sind Teil des Konstrukts: die Durchdringungsprüfung misst
+  // Kapseloberflächen, nicht Achsen. Radiensumme arm_l + kopf = 0,13 m.
   segments: [
-    { id: 'arm_l', from: 'shoulder_l', to: 'hand_l' },
-    { id: 'kopf', from: 'neck', to: 'head_top' },
+    { id: 'arm_l', from: 'shoulder_l', to: 'hand_l', radius: 0.04 },
+    { id: 'kopf', from: 'neck', to: 'head_top', radius: 0.09 },
   ],
-  // Bind-Pose-Abstand der Segmente arm_l und kopf (beide vertikal,
-  // Horizontalabstand 0,30 m — der Konstrukt, nicht geraten):
-  restDistances: { 'arm_l|kopf': 0.30 },
+  // Bind-Pose-OBERFLÄCHENabstand der Segmente arm_l und kopf: beide vertikal,
+  // Achsabstand 0,30 m, minus 0,13 m Radiensumme = 0,17 m.
+  restDistances: { 'arm_l|kopf': 0.17 },
   soles: [
     { id: 'sole_l', bone: 'foot_l', local: [0, 0, 0] },
     { id: 'sole_r', bone: 'foot_r', local: [0, 0, 0] },
@@ -90,19 +92,53 @@ test('Durchdringung: Referenzpose ohne Verengung wird nicht beanstandet', () => 
   assert.equal(r.issues.filter((i) => i.kind === 'durchdringung').length, 0);
 });
 
-test('Durchdringung: Arm an den Kopf gedreht — Verengung mit Betrag gemeldet', () => {
-  // Armsegment parallel zum Kopfsegment bei x = 0,03: Ist-Abstand 0,03 m,
-  // Ruheabstand 0,30 m → Verengung exakt 0,27 m.
+test('Durchdringung: Arm im Kopf — Überschneidung mit Betrag gemeldet', () => {
+  // Armsegment parallel zum Kopfsegment bei x = 0,03: Achsabstand 0,03 m,
+  // Radiensumme 0,13 m → die Kapseln stecken exakt 0,10 m ineinander.
+  // Zulässig sind 60 % der Radiensumme = 0,078 m; der Überschuss von 0,022 m
+  // liegt über der Toleranz von 0,5 % Körperhöhe (0,009 m).
   const pose = { ...STEH, shoulder_l: [0.03, 1.50, 0], hand_l: [0.03, 1.56, 0] };
   const r = pruefePhysik(RIG, nFrames(3, pose), FPS);
   const dd = r.issues.filter((i) => i.kind === 'durchdringung');
   assert.equal(dd.length, 3);   // je Frame eine Meldung
   for (const i of dd) {
     assert.equal(i.part, 'arm_l|kopf');
-    assert.equal(i.value, 0.27);
+    assert.equal(i.value, 0.10);
     assert.equal(i.unit, 'm');
-    assert.match(i.message, /27,0 cm/);
+    assert.match(i.message, /10,0 cm ineinander/);
+    assert.match(i.message, /7,8 cm/);    // die zulässige Überschneidung
   }
+});
+
+test('Durchdringung: sich streifende Kapseln sind noch keine Durchdringung', () => {
+  // Achsabstand 0,09 m bei 0,13 m Radiensumme: die Kapseln überschneiden sich
+  // um 0,04 m — weniger als die 0,078 m, die das Modell selbst erzeugt.
+  // Genau dieser Fall ist am Xbot der hängende Arm neben dem Oberschenkel
+  // (7,3 cm Überschneidung bei 15,8 cm Radiensumme); wer ihn meldet, meldet
+  // die Kapselnäherung, nicht die Bewegung.
+  const pose = { ...STEH, shoulder_l: [0.09, 1.50, 0], hand_l: [0.09, 1.56, 0] };
+  const r = pruefePhysik(RIG, nFrames(3, pose), FPS);
+  assert.equal(r.issues.filter((i) => i.kind === 'durchdringung').length, 0);
+});
+
+test('Durchdringung: was sich schon in der Bind-Pose überschneidet, zählt nicht', () => {
+  // Rig, dessen Kapseln in der Bind-Pose 0,10 m ineinander stecken
+  // (restDistances negativ) — am Xbot ist das torso|thigh_r mit -0,16 m.
+  const bindUeberlappend = { ...RIG, restDistances: { 'arm_l|kopf': -0.10 } };
+  // Pose mit exakt derselben Überschneidung von 0,10 m: keine Meldung.
+  const gleich = { ...STEH, shoulder_l: [0.03, 1.50, 0], hand_l: [0.03, 1.56, 0] };
+  const ohne = pruefePhysik(bindUeberlappend, nFrames(3, gleich), FPS);
+  assert.equal(ohne.issues.filter((i) => i.kind === 'durchdringung').length, 0);
+
+  // Negativfall: 0,02 m tiefer als in der Bind-Pose (Achsabstand 0,01 m,
+  // Überschneidung 0,12 m) — das MUSS gemeldet werden, sonst prüft der
+  // Positivfall nichts.
+  const tiefer = { ...STEH, shoulder_l: [0.01, 1.50, 0], hand_l: [0.01, 1.56, 0] };
+  const mit = pruefePhysik(bindUeberlappend, nFrames(3, tiefer), FPS);
+  const dd = mit.issues.filter((i) => i.kind === 'durchdringung');
+  assert.equal(dd.length, 3);
+  assert.equal(dd[0].value, 0.12);
+  assert.match(dd[0].message, /12,0 cm ineinander/);
 });
 
 // ── 3. Balance, nur bei Bodenkontakt ─────────────────────────────────────────

@@ -16,8 +16,12 @@
 //
 // Rangfolge aus plan.md 6.4, als Gewichte — Gelenkgrenzen sind HART (Clamping,
 // nie verletzt), danach fällt die Weichheit:
-//   Boden  (gw 400) > Fußanker (gw 100) > Orientierung/Regularisierung (gw 4)
-//   > Schwerpunktbahn (gw 1)
+//   Boden  (gw 400) > Fußanker (gw 100) > Haltung/Nullraum (gw 1)
+//   = Schwerpunktbahn (gw 1)
+// Alle vier Reste stehen in METERN — der Haltungsrest wird dafür über
+// HALTUNG_HEBEL_JE_GRAD von Grad umgerechnet. Ohne das rechnet die Optimierung
+// Winkel gegen Strecken, und der stärkere Zahlenwert gewinnt statt der
+// höherrangigen Bedingung.
 // Was geopfert wurde, steht nach der Lösung mit BETRAG im Bericht.
 //
 // Alle Toleranzen relativ zur Körperhöhe (AGENTS.md, Regel: keine absoluten
@@ -29,11 +33,36 @@
 
 import { poseKnochen, schwerpunkt, vAdd, vSub, vScale, vLen, qRot, qFromAxisAngle } from './kinematik.js';
 
-/** Gewichte der Zielbedingungen — Verhältnis folgt der Rangfolge plan.md 6.4. */
+/**
+ * Gewichte der Zielbedingungen — Verhältnis folgt der Rangfolge plan.md 6.4.
+ *
+ * `haltung` stand auf 4 und ist auf 1 gesenkt. Warum, gemessen am Xbot
+ * (Körperhöhe 1,809 m, Anker foot_l über Frames 0–20, Wurzel von [0, 1.04, 0]):
+ *
+ *   Gewicht │ Rest bei 3 cm │ Rest bei 22 cm │ Rest bei 60 cm (unerreichbar)
+ *   ────────┼───────────────┼────────────────┼──────────────────────────────
+ *      4    │    2,30 cm    │    0,70 cm     │   20,7 cm
+ *      2    │    0,60 cm    │    0,40 cm     │   20,7 cm
+ *      1    │    0,20 cm    │    0,10 cm     │   21,9 cm
+ *      0,5  │    0,00 cm    │    0,00 cm     │   24,0 cm
+ *
+ * Ein weiches Ziel hinterlässt im Gleichgewicht immer einen Rest; die Frage ist
+ * nur, ob er unter der Schwelle bleibt, ab der ein Anker als gehalten gilt
+ * (ANKER_TOLERANZ_ANTEIL × Körperhöhe = 0,72 cm). Gewicht 4 verfehlt sie um das
+ * Dreifache, Gewicht 2 nur um 17 % Abstand. Gewicht 1 hält 0,2 cm — ein Viertel
+ * der Toleranz — und dämpft den unerreichbaren Fall noch (21,9 cm gegen 24,0 cm
+ * bei 0,5). Deshalb 1.
+ *
+ * Die Rangfolge bleibt gewahrt: plan.md 6.4 stellt Gelenkgrenzen über Boden
+ * über Fußanker über Schwerpunktbahn. Die Haltung steht dort gar nicht — sie
+ * ist ein Nullraum-Entscheider, kein Rang. Die Handschrift des Agenten schützt
+ * seit dem 1. September 2026 der Kanal-Ausschluss in halteAnker (gesetzte
+ * Kanäle kommen erst gar nicht in die freie Kette), nicht dieses Gewicht.
+ */
 export const GEWICHT = {
   boden: 400,
   anker: 100,
-  haltung: 4,
+  haltung: 1,
   schwerpunkt: 1,
 };
 
@@ -59,6 +88,33 @@ export const DAEMPfung = 1e-3;
 /** Abbruch, wenn die Bewegung unter dieser Änderung liegt: 1e-7 — die
  *  Kriterien sind in Meter und Grad angegeben, das ist Rauschen. */
 export const RUHE_SCHWELLE = 1e-7;
+
+/**
+ * Hebel, mit dem der Haltungsrest von Grad in Meter umgerechnet wird —
+ * als Anteil der gemessenen Körperhöhe, pro Grad.
+ *
+ * Warum es ihn geben MUSS (gemessen am Xbot, Körperhöhe 1,809 m, Wurzel von
+ * [0, 1.04, 0] auf [0, 1.00, 0.22], Anker foot_l):
+ * Der Ankerrest steht in Metern und wiegt 100, der Haltungsrest stand in Grad
+ * und wog 4. 14° Hüfte kosteten damit 56, ein Fußfehler von 19 cm nur 19. Die
+ * Optimierung blieb im Minimum des Haltungsziels: 3 Iterationen,
+ * hip_l.flex −1,8°, Restabstand des Fußes 18,9 cm — auch mit 300 und 1000
+ * Iterationen unverändert. Ohne Haltungsziel löste dieselbe Aufgabe in
+ * 14 Iterationen mit 0,0 cm Rest. Grad und Meter sind nicht kommensurabel.
+ *
+ * Warum 1/57,3 (= π/180) der Körperhöhe: Das ist die Bogenlänge, die ein
+ * Punkt im Abstand einer Körperhöhe vom Gelenk pro Grad zurücklegt — die
+ * größte Strecke, die ein Grad an dieser Figur überhaupt bewegen kann. Am
+ * Xbot nachgemessen bewegt hip_l.flex den Sprunggelenkspunkt um 1,37 cm/°
+ * (41 cm bei 30°, siehe Kopf dieser Datei); der Hebel liegt also mit
+ * 3,16 cm/° auf der sicheren Seite derselben Größenordnung.
+ *
+ * Damit gilt die Rangfolge aus plan.md 6.4 wieder in EINER Einheit: Anker 100
+ * gegen Haltung 4, also 25 zu 1 zugunsten des Ankers, unabhängig davon, wie
+ * groß der Hebel genau ist. Die Absicht des Haltungsziels bleibt erhalten —
+ * freie Kanäle, die den Anker nicht bewegen, werden nicht grundlos verdreht.
+ */
+export const HALTUNG_HEBEL_JE_GRAD = Math.PI / 180;
 
 /** Anteil der Körperhöhe, unter dem ein Fußanker als „steht" gilt. */
 export const ANKER_TOLERANZ_ANTEIL = 0.004;
@@ -181,11 +237,15 @@ export function restvektor(skel, pose, ziele, gelenke) {
     const tiefe = (skel.groundY + bodenTol) - p.pos[1];
     if (tiefe > 0) r.push({ art: 'boden', teil: b.knochen, vektor: [0, -tiefe, 0], gewicht: GEWICHT.boden });
   }
+  // Haltungsrest in METER, nicht in Grad: sonst rechnet die Optimierung
+  // Winkel gegen Strecken und bleibt im Minimum des Haltungsziels stehen
+  // (siehe HALTUNG_HEBEL_JE_GRAD — 18,9 cm Fußfehler gegen 14° Hüfte).
+  const haltungHebel = skel.height * HALTUNG_HEBEL_JE_GRAD;
   for (const [name, wert] of Object.entries(ziele.haltung ?? {})) {
     const d = skel.dofs[name];
     if (!d) continue;
     const ist = pose.dofs[name] ?? 0;
-    r.push({ art: 'haltung', teil: name, vektor: [ist - wert], gewicht: GEWICHT.haltung });
+    r.push({ art: 'haltung', teil: name, vektor: [(ist - wert) * haltungHebel], gewicht: GEWICHT.haltung });
   }
   void gelenke;
   return { r, kn };

@@ -113,6 +113,11 @@ async function seiteMitModell() {
   await page.goto(basis, { waitUntil: 'load' });
   assert.equal(await page.evaluate(() => !!window.__boot?.bereit), true,
     'Seitenmodul wurde nicht ausgeführt — ohne geladene Seite gibt es keinen Weg');
+  // Das Startladen des Beispielmodells laeuft NACH __boot.bereit weiter. Wer
+  // vorher eine Datei einlegt, bekommt dessen Ergebnis mitten in den eigenen
+  // Lauf geschoben (index.html setzt startmodellFertig im finally).
+  await page.waitForFunction(() => window.__boot?.startmodellFertig === true,
+    null, { timeout: 30000 });
   await page.setInputFiles('#file', XBOT);
   // Die Statuszeile zaehlt auf Englisch ("N bones"), siehe index.html;
   // "Knochen" steht dort nicht.
@@ -304,6 +309,9 @@ test('Browser, Negativfall: die ausgelieferte Seite hängt keine Attrappen mehr 
     };
   });
   await page.goto(basis, { waitUntil: 'load' });
+  // Siehe seiteMitModell: erst das Startladen zu Ende, dann die eigene Datei.
+  await page.waitForFunction(() => window.__boot?.startmodellFertig === true,
+    null, { timeout: 30000 });
   await page.setInputFiles('#file', XBOT);
   // Nicht "Knochen" abwarten — das schreibt presentModel VOR der Vermessung.
   // Gewartet wird das ENDE der Vermessung: bei Erfolg haengt zeigeMesswerte

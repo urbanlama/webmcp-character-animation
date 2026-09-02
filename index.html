@@ -834,14 +834,11 @@ const abspieler = mounteAbspieler({
     }
     // Dieselbe Umsetzung wie look und validate (alsStreifenFrame, ports.js):
     // die Frames kommen MIT bones-Tabellen zurück, die stellePose stellt.
-    const frames = werkzeugPorts.loeseFuerSzene({
-      schemaVersion: z.schemaVersion,
-      fps: z.fps,
-      frameCount: z.frameCount,
-      rotationFormat: z.rotationFormat,
-      phases: z.phases,
-      overrides: z.overrides,
-    });
+    // Der Zustand geht ROH hinein; den Löser-Eingang baut ports über
+    // alsTimeline (state.js) — derselbe wie bei measure/look/validate. Die
+    // handgebaute Fassung hier hatte `anchors` vergessen: die Anzeige zeigte
+    // eine andere Bewegung als die Werkzeuge (Lauf vom 1. September 2026).
+    const frames = werkzeugPorts.loeseFuerSzene(z);
     if (!Array.isArray(frames) || frames.length === 0) {
       throw new Error('0 geloeste Frames: der Loeser hat nichts geliefert, '
         + 'es gibt nichts abzuspielen');
@@ -1191,6 +1188,14 @@ mounteAnleitung({ spalte: document.getElementById('einstieg-spalte') });
         text: `Beispielmodell nicht geladen: ${e.message}`,
       });
     }
+  } finally {
+    // Dieses Laden ist der einzige Vorgang der Seite, der die Statuszeile
+    // schreibt, ohne dass jemand etwas angefasst hat — und er ist erst nach
+    // window.__boot.bereit fertig. Wer danach eine eigene Datei einlegt, muss
+    // hier warten koennen, sonst ueberschreibt der Nachzuegler sein Ergebnis.
+    // Genau das machte den Wuerfel-Negativfall in tools/browser-test.mjs
+    // sporadisch rot, sobald die Maschine unter Last stand.
+    window.__boot.startmodellFertig = true;
   }
 })();
 

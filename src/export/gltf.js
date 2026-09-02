@@ -37,9 +37,21 @@
 //
 // Bedeutung der Frame-Werte (dokumentierte Vereinbarung dieser Stelle):
 //   frame.root.pos    absolute WELTPOSITION der Wurzel in Metern
-//   frame.root.quat   absolute WELTAUSRICHTUNG der Wurzel als Quaternion
-//   frame.joints[id]  LOKALE Quaternion des Knochenknotens; Identität lässt
-//                     den Knochen in seiner Ausgangslage
+//   frame.joints[id]  absolute WELTAUSRICHTUNG des Knochens als Quaternion —
+//                     so schreibt sie der Löser (poseKnochen, kinematik.js).
+//                     Die Datei braucht KNOTEN-LOKALE Werte; die Umrechnung
+//                     passiert hier, Eltern vor Kindern.
+//   frame.root.quat   Weltausrichtung des Wurzelknochens, falls kein Gelenk
+//                     auf dem Wurzelknochen liegt. Liegt eines darauf (Xbot:
+//                     `pelvis` auf mixamorigHips), gilt dessen joints-Wert —
+//                     der Löser trägt in root.quat nur die Ganzkörperdrehung,
+//                     ohne Bind-Anteil und ohne Beckenneigung.
+//
+// Bis zum 1. September 2026 nahm der Export frame.joints als lokale Werte und
+// root.quat als Beckenausrichtung. Gemessen am Xbot (Verbeugung, 20 Frames):
+// der linke Fuß stand in der Datei 70 cm neben der gelösten Position, die
+// Beckenneigung fehlte ganz. look, measure und Anzeige zeigten die richtige
+// Figur, die Datei eine andere.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as THREE from 'three';
@@ -157,6 +169,29 @@ function wurzelKnochen(name, mesh) {
   return bone;
 }
 
+/** Tiefe eines Knotens im Szenenbaum — Eltern haben die kleinere Zahl. */
+function tiefe(obj) {
+  let t = 0;
+  for (let o = obj; o.parent; o = o.parent) t++;
+  return t;
+}
+
+/** Die Gelenk-id, deren Knochen der Wurzelknochen selbst ist, sonst null. */
+function wurzelGelenkId(jointKnochen, wurzelName) {
+  for (const [id, name] of jointKnochen) if (name === wurzelName) return id;
+  return null;
+}
+
+/**
+ * Welt-Sollausrichtung des Wurzelknochens eines Frames: das Gelenk auf dem
+ * Wurzelknochen, sonst root.quat (siehe Dateikopf).
+ */
+function wurzelWeltQuat(frame, wurzelGelenk) {
+  const ausGelenk = wurzelGelenk ? frame.joints?.[wurzelGelenk] : null;
+  if (Array.isArray(ausGelenk)) return ausGelenk;
+  return Array.isArray(frame.root?.quat) ? frame.root.quat : null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Export
 // ─────────────────────────────────────────────────────────────────────────────
@@ -248,10 +283,22 @@ export async function exportiereClip(gltf, timeline, rigProfile) {
   const zeiten = [];
   const werteWurzelPos = [];
   const werteWurzelRot = [];
-  const jointWerte = new Map([...jointIds].map((id) => [id, []]));
+  // Das Gelenk, das auf dem Wurzelknochen selbst liegt (Xbot: `pelvis` auf
+  // mixamorigHips), laeuft ueber den Wurzelkanal — sonst gaebe es zwei Kanaele
+  // mit demselben Knotennamen, und der Loader naehme irgendeinen.
+  const wurzelGelenk = wurzelGelenkId(jointKnochen, wurzel.name);
+  const gelenkeOhneWurzel = [...jointIds].filter((id) => id !== wurzelGelenk);
+  const jointWerte = new Map(gelenkeOhneWurzel.map((id) => [id, []]));
+  // Eltern vor Kindern: die lokale Ausrichtung eines Knochens haengt von der
+  // WELT-Ausrichtung seines Elternknochens ab, und die steht erst, wenn der
+  // Elternknochen gestellt ist.
+  const gelenkeNachTiefe = gelenkeOhneWurzel
+    .map((id) => ({ id, bone: byName.get(jointKnochen.get(id)) }))
+    .sort((a, b) => tiefe(a.bone) - tiefe(b.bone));
 
   // Zweiter Durchlauf: je Frame den Knochenbaum in die Zielstellung bringen
   // und die Kanalwerte abgreifen.
+  const _q = new THREE.Quaternion();
   for (let i = 0; i < frames.length; i++) {
     const frame = frames[i];
 
@@ -260,17 +307,6 @@ export async function exportiereClip(gltf, timeline, rigProfile) {
       const b0 = bind.get(b.name);
       b.position.copy(b0.p);
       b.quaternion.copy(b0.q);
-    }
-
-    // Gelenke: Werte sind LOKALE Quaternionen des Knochenknotens. Ein Gelenk,
-    // das in diesem Frame fehlt, bleibt in der Ausgangslage (Identität im
-    // Channel; der Track bekommt ausdrücklich [0,0,0,1], kein Stillschweigen).
-    for (const [id, quat] of Object.entries(frame.joints ?? {})) {
-      byName.get(jointKnochen.get(id)).quaternion.set(quat[0], quat[1], quat[2], quat[3]);
-    }
-    for (const id of jointIds) {
-      const quat = frame.joints?.[id] ?? [0, 0, 0, 1];
-      jointWerte.get(id).push(quat[0], quat[1], quat[2], quat[3]);
     }
 
     // Wurzel: Position UND Rotation in WELTkoordinaten (plan.md 6.9). Fehlt
@@ -284,9 +320,10 @@ export async function exportiereClip(gltf, timeline, rigProfile) {
       weltPos = bindWeltPos.slice();
       warnungen.push(`Frame ${i}: root.pos fehlt — Wurzel bleibt auf der Bind-Pose-Position [${bindWeltPos.map((v) => dez(v, 3)).join(', ')}] m, die Ortsveränderung dieses Frames geht verloren`);
     }
-    if (frame.root && Array.isArray(frame.root.quat)) {
-      pruefeQuat(frame.root.quat, `Frame ${i}, root.quat`);
-      weltQuat = frame.root.quat.slice();
+    const wurzelSoll = wurzelWeltQuat(frame, wurzelGelenk);
+    if (wurzelSoll) {
+      pruefeQuat(wurzelSoll, `Frame ${i}, Wurzelausrichtung`);
+      weltQuat = wurzelSoll.slice();
     } else {
       weltQuat = bindWeltQuat.slice();
       if (frame.root) {
@@ -302,6 +339,20 @@ export async function exportiereClip(gltf, timeline, rigProfile) {
     const lokalQuat = new THREE.Quaternion(weltQuat[0], weltQuat[1], weltQuat[2], weltQuat[3]).premultiply(elternQuatInv);
     wurzel.position.copy(lokalPos);
     wurzel.quaternion.copy(lokalQuat);
+
+    // Gelenke: Welt-Ausrichtung des Knochens → lokal gegen den bereits
+    // gestellten Elternknochen. Ein Gelenk, das in diesem Frame fehlt, bleibt
+    // in der Ausgangslage; sein Kanal bekommt ausdruecklich den Bind-Wert,
+    // kein Stillschweigen.
+    for (const { id, bone } of gelenkeNachTiefe) {
+      const quat = frame.joints?.[id];
+      if (quat) {
+        bone.parent.getWorldQuaternion(_q);           // aktualisiert die Elternkette
+        bone.quaternion.set(quat[0], quat[1], quat[2], quat[3]).premultiply(_q.invert());
+      }
+      const l = bone.quaternion;
+      jointWerte.get(id).push(l.x, l.y, l.z, l.w);
+    }
 
     zeiten.push(i / timeline.fps);
     werteWurzelPos.push(lokalPos.x, lokalPos.y, lokalPos.z);
@@ -348,6 +399,14 @@ function winkelRad(qa, qb) {
 
 function dist3(a, b) {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+/** Wie wurzelGelenkId, aber aus dem RigProfile statt aus der Export-Zuordnung. */
+function wurzelGelenkIdAusProfil(rigProfile, wurzelName) {
+  for (const [id, j] of Object.entries(rigProfile.joints ?? {})) {
+    if (j?.bone === wurzelName) return id;
+  }
+  return null;
 }
 
 /**
@@ -403,7 +462,6 @@ export async function pruefeExport(timeline, bytes, rigProfile) {
   const clip = anims[0];
   const trackByName = new Map(clip.tracks.map((t) => [t.name, t]));
   const posTrack = trackByName.get(`${wurzelName}.position`);
-  const quatTrack = trackByName.get(`${wurzelName}.quaternion`);
 
   const wurzelNode = gltf.scene.getObjectByName(wurzelName);
   let knotenCount = 0;
@@ -430,27 +488,43 @@ export async function pruefeExport(timeline, bytes, rigProfile) {
     }
   }
 
-  // 4. Frame-für-Frame-Vergleich: Wurzel in WELT-Metern, Gelenke lokal.
+  // 4. Frame-für-Frame-Vergleich: Wurzel in WELT-Metern, Gelenke als
+  //    WELT-Ausrichtung — dafür wird die neu eingelesene Szene je Frame aus
+  //    ihren Kanälen gestellt, so wie ein fremder Player es täte.
   const abstandToleranz = koerperHoehe * WURZEL_ABSTAND_TOLERANZ_ANTEIL;
   const eltern = wurzelNode.parent;
   eltern.updateWorldMatrix(true, false);
   const elternMatrix = eltern.matrixWorld.clone();
-  // Quaternion sauber aus der Matrix lösen: die Matrix enthält die Skalierung
-  // der Zwischenknoten (Xbot: 0,01); setFromRotationMatrix würde sie in die
-  // Rotation mischen. decompose trennt Translation, Rotation, Skalierung.
-  const elternQuat = new THREE.Quaternion();
-  eltern.matrixWorld.decompose(new THREE.Vector3(), elternQuat, new THREE.Vector3());
   const bindLokalPos = wurzelNode.position.toArray();
-  const bindLokalQuat = wurzelNode.quaternion.toArray();
+  const kanalKnoten = clip.tracks.map((track) => {
+    const punkt = track.name.lastIndexOf('.');
+    return { track, knoten: gltf.scene.getObjectByName(track.name.slice(0, punkt)), eigenschaft: track.name.slice(punkt + 1) };
+  });
+  const stelleFrame = (i) => {
+    for (const { track, knoten, eigenschaft } of kanalKnoten) {
+      if (!knoten) continue;
+      const n = eigenschaft === 'quaternion' ? 4 : 3;
+      const at = i < track.times.length ? i * n : 0;
+      if (eigenschaft === 'quaternion') knoten.quaternion.fromArray(track.values, at);
+      else if (eigenschaft === 'position') knoten.position.fromArray(track.values, at);
+    }
+    gltf.scene.updateMatrixWorld(true);
+  };
+  const wurzelGelenk = wurzelGelenkIdAusProfil(rigProfile, wurzelName);
+  const _wq = new THREE.Quaternion();
 
   let maxPos = { abw: -1, frame: -1 }, maxRot = { abw: -1, frame: -1 };
   let posFaelle = 0, rotFaelle = 0;
   const weltausWiedereinlesen = [];
   let ersterWeltGemessen = null;
+  const fehlendeKanaele = new Map();   // Gelenk-id → betroffene Frames
+  let maxGelenk = { abw: -1, id: null, frame: -1 };
+  let gelenkFaelle = 0;
 
   for (let i = 0; i < frameCount; i++) {
     const frame = frames[i] ?? {};
     const t = i / fps;
+    stelleFrame(i);
 
     // Wurzelposition: Kanalwert (oder bei fehlendem Kanal die statische
     // Ausgangslage des Knotens — genau der Negativfall „stehengebliebene
@@ -472,16 +546,31 @@ export async function pruefeExport(timeline, bytes, rigProfile) {
       weltausWiedereinlesen.push(null);
     }
 
-    if (Array.isArray(frame.root?.quat)) {
-      pruefeQuat(frame.root.quat, `Timeline, Frame ${i}, root.quat`);
-      const lokal = quatTrack && i < quatTrack.times.length
-        ? Array.from(quatTrack.values.slice(i * 4, i * 4 + 4))
-        : (quatTrack ? Array.from(quatTrack.values.slice(0, 4)) : bindLokalQuat);
-      const weltQ = new THREE.Quaternion(...lokal).premultiply(elternQuat).toArray();
-      const abw = winkelRad(weltQ, frame.root.quat);
+    const wurzelSoll = wurzelWeltQuat(frame, wurzelGelenk);
+    if (wurzelSoll) {
+      pruefeQuat(wurzelSoll, `Timeline, Frame ${i}, Wurzelausrichtung`);
+      const weltQ = wurzelNode.getWorldQuaternion(_wq).toArray();
+      const abw = winkelRad(weltQ, wurzelSoll);
       if (abw > WURZEL_WINKEL_TOLERANZ_RAD) {
         rotFaelle++;
         if (abw > maxRot.abw) maxRot = { abw, frame: i };
+      }
+    }
+
+    // Gelenke: Weltausrichtung des gestellten Knochens gegen den Timeline-Wert.
+    for (const [id, quat] of Object.entries(frame.joints ?? {})) {
+      if (id === wurzelGelenk) continue;                // oben als Wurzel geprüft
+      pruefeQuat(quat, `Timeline, Frame ${i}, Gelenk „${id}“`);
+      const knochenName = rigProfile.joints?.[id]?.bone ?? id;
+      const knoten = gltf.scene.getObjectByName(knochenName);
+      if (!knoten || !trackByName.has(`${knochenName}.quaternion`)) {
+        fehlendeKanaele.set(id, (fehlendeKanaele.get(id) ?? 0) + 1);
+        continue;
+      }
+      const abw = winkelRad(knoten.getWorldQuaternion(_wq).toArray(), quat);
+      if (abw > WURZEL_WINKEL_TOLERANZ_RAD) {
+        gelenkFaelle++;
+        if (abw > maxGelenk.abw) maxGelenk = { abw, id, frame: i };
       }
     }
   }
@@ -521,30 +610,7 @@ export async function pruefeExport(timeline, bytes, rigProfile) {
     }
   }
 
-  // 5. Gelenkverläufe: Kanäle müssen existieren und die Timeline-Werte tragen.
-  const fehlendeKanaele = new Map();   // Gelenk-id → betroffene Frames
-  let maxGelenk = { abw: -1, id: null, frame: -1 };
-  let gelenkFaelle = 0;
-  for (let i = 0; i < frameCount; i++) {
-    const frame = frames[i] ?? {};
-    for (const [id, quat] of Object.entries(frame.joints ?? {})) {
-      pruefeQuat(quat, `Timeline, Frame ${i}, Gelenk „${id}“`);
-      const knochenName = rigProfile.joints?.[id]?.bone ?? id;
-      const track = trackByName.get(`${knochenName}.quaternion`);
-      if (!track) {
-        fehlendeKanaele.set(id, (fehlendeKanaele.get(id) ?? 0) + 1);
-        continue;
-      }
-      const lokal = i < track.times.length
-        ? Array.from(track.values.slice(i * 4, i * 4 + 4))
-        : Array.from(track.values.slice(0, 4));
-      const abw = winkelRad(lokal, quat);
-      if (abw > WURZEL_WINKEL_TOLERANZ_RAD) {
-        gelenkFaelle++;
-        if (abw > maxGelenk.abw) maxGelenk = { abw, id, frame: i };
-      }
-    }
-  }
+  // 5. Gelenkverläufe: Kanäle müssen existieren (geprüft in der Schleife oben).
   if (fehlendeKanaele.size > 0) {
     const namen = [...fehlendeKanaele.keys()].join(', ');
     fehler.push({

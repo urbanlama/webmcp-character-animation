@@ -57,6 +57,16 @@ function bodenTeile(profil, frames) {
     .map((i) => i.teil ?? i.part ?? i.bone ?? '?');
 }
 
+/** Nur die gemeldeten KNOCHEN. Die Bodenprüfung meldet seit der Umstellung auf
+ *  Sohlenpunkte zwei Sorten von Teilen: Knochen mit Haut und Sohlen-ids
+ *  (sole_l_front_in und die sieben anderen). Um die Frage dieses Tests —
+ *  „meldet die Prüfung Knochen, an denen nichts hängt?" — geht es nur bei den
+ *  Knochen; eine Sohle ist kein Knochen und hat keine Skin-Gewichte. */
+function bodenKnochen(profil, frames) {
+  const sohlenIds = new Set((profil.soles ?? []).map((s) => s.id));
+  return bodenTeile(profil, frames).filter((t) => !sohlenIds.has(t));
+}
+
 test('Vermessung: skinnedBones nennt nur Knochen mit Haut', async () => {
   const { profil } = await aufbau();
   assert.ok(Array.isArray(profil.skinnedBones) && profil.skinnedBones.length > 0,
@@ -69,7 +79,7 @@ test('Vermessung: skinnedBones nennt nur Knochen mit Haut', async () => {
 
 test('Bodenprüfung: ein Schritt mit Abrollen meldet keinen Knochen ohne Haut', async () => {
   const { profil, frames } = await aufbau();
-  const gemeldet = bodenTeile(profil, frames);
+  const gemeldet = bodenKnochen(profil, frames);
   const haut = new Set(profil.skinnedBones);
   const phantom = [...new Set(gemeldet.filter((t) => !haut.has(t)))];
   assert.deepStrictEqual(phantom, [],
@@ -81,7 +91,7 @@ test('Bodenprüfung, Negativfall: ohne das Feld taucht Toe_End auf', async () =>
   const { profil, frames } = await aufbau();
   const ohne = { ...profil };
   delete ohne.skinnedBones;
-  const gemeldet = bodenTeile(ohne, frames);
+  const gemeldet = bodenKnochen(ohne, frames);
   assert.ok(gemeldet.includes('mixamorigLeftToe_End'),
     'ohne skinnedBones müsste Toe_End gemeldet werden — sonst misst der Positivfall nichts');
 });

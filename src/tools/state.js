@@ -154,3 +154,27 @@ export function createStore(start = leererZustand()) {
     }
   };
 }
+
+/**
+ * Der Loeser-Eingang aus dem Sitzungszustand: genau die Felder des
+ * Timeline-Vertrags (plan.md 5.2) plus die Fussanker.
+ *
+ * EINE Stelle fuer alle Wege — measure, look, validate, describe_pose, export
+ * UND die Live-Anzeige (index.html ueber ports.loeseFuerSzene). Vorher baute
+ * index.html den Eingang von Hand und vergass `anchors`: die Anzeige loeste
+ * ohne Fussanker, die Werkzeuge mit. Gemessen im Lauf vom 1. September 2026
+ * (Session 5c6a601a, Frame 134): fuer den Agenten stand der Fuss am Boden
+ * (0,14 m Knochenhoehe, Bein 11° zur Senkrechten), fuer den Menschen hing er
+ * 0,40 m in der Luft bei 58°. Zwei Wahrheiten, und der Agent sah nur eine.
+ */
+export function alsTimeline(z) {
+  return {
+    schemaVersion: z.schemaVersion,
+    fps: z.fps,
+    frameCount: z.frameCount,
+    rotationFormat: z.rotationFormat,
+    phases: z.phases,
+    overrides: z.overrides,
+    anchors: z.anchors ?? []
+  };
+}
