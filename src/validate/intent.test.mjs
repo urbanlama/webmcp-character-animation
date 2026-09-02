@@ -508,3 +508,37 @@ test('leere Absichtsliste ist keine Absicht', () => {
   const t = saltoTimeline();
   assert.throws(() => pruefeAbsicht(RIG, t, []), /nicht-leeres Array von Kriterien/);
 });
+
+// ── contact_change misst die Sohle, nicht den Fußknochen ─────────────────────
+//
+// Am Xbot sitzt der Fußknochen 7,2 cm über der Sohle, die Kontaktschwelle
+// liegt bei 6,3 cm. Am Knochen gemessen war der Fuß nie am Boden, und das
+// Kriterium war auf dem echten Rig unerfüllbar — in Lauf 9 und 10 (Claude und
+// Codex) gleichermaßen rot, während measure die Sohle bis zum Absprung auf
+// 0 m zeigte.
+
+test('contact_change: Fußknochen 7,2 cm über der Sohle — gemessen wird die Sohle, Abheben bei 15 wird erkannt', () => {
+  const t = saltoTimeline();
+  const KNOCHEN_UEBER_SOHLE = 0.072;
+  for (const f of t.solved.frames) {
+    const sohleY = f.positions.foot_r[1];
+    f.positions.foot_r = [0.12, sohleY + KNOCHEN_UEBER_SOHLE, 0.05];
+    f.solePositions = { sole_r_ferse: [0.12, sohleY, 0.02], sole_r_ballen: [0.12, sohleY, 0.10] };
+  }
+  const rigMitSohlen = { ...RIG, soles: [{ id: 'sole_r_ferse', bone: 'foot_r' }, { id: 'sole_r_ballen', bone: 'foot_r' }] };
+  const r = pruefeAbsicht(rigMitSohlen, t, [
+    { kind: 'contact_change', foot: 'foot_r', von: 10, bis: 20 }]);
+  assert.equal(r.checks[0].passed, true, JSON.stringify(r.checks[0]));
+  assert.equal(r.checks[0].measured, 15);
+});
+
+test('contact_change, Negativfall: ohne Sohlenverzeichnis zählt der Knochen — 7,2 cm hoch heißt dann in der Luft', () => {
+  const t = saltoTimeline();
+  for (const f of t.solved.frames) {
+    f.positions.foot_r = [0.12, f.positions.foot_r[1] + 0.072, 0.05];
+  }
+  const r = pruefeAbsicht(RIG, t, [
+    { kind: 'contact_change', foot: 'foot_r', von: 10, bis: 20 }]);
+  assert.equal(r.checks[0].passed, false);
+  assert.match(r.checks[0].message, /schon vor Frame 10 in der Luft/);
+});

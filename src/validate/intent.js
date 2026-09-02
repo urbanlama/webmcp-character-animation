@@ -316,10 +316,31 @@ function messeOrtsveraenderung(alle, frames, part, richtung, from, to) {
 //    Erwartet: von = letzter Kontakt-Frame, bis = erster Flug-Frame danach.
 function messeKontaktwechsel(alle, profile, frames, boneName, von, bis) {
   const schwelle = alle.kontaktSchwelle;
+  const groundY = profile.world?.groundY ?? 0;
+  // Gemessen wird die SOHLE, nicht der Fußknochen. Der Knochen sitzt am Xbot
+  // 7,2 cm über der Sohle, die Kontaktschwelle liegt bei 6,3 cm (3,5 % von
+  // 1,81 m): am Knochen gemessen war der Fuß NIE am Boden, das Abheben lag
+  // immer auf `von`, und das Kriterium war auf dem echten Rig unerfüllbar.
+  // Agentenläufe 9 und 10 (Claude wie Codex, 2. September 2026): "gemessen
+  // wurde Frame 34 — der Fuß war schon vor Frame 34 in der Luft", während
+  // measure die Sohle bis Frame 36 auf 0 m zeigte. Ohne Sohlenverzeichnis im
+  // Frame (fremde Erzeuger, Testrigs ohne soles) bleibt der Knochen.
+  const sohlenIds = (profile.soles ?? []).filter((s) => s.bone === boneName).map((s) => s.id);
   const footY = (i) => {
+    const pts = frames[i].solePositions;
+    if (pts && typeof pts === 'object' && sohlenIds.length > 0) {
+      let min = null;
+      for (const id of sohlenIds) {
+        const q = pts[id];
+        if (!Array.isArray(q) || !Number.isFinite(q[1])) continue;
+        const h = q[1] - groundY;
+        if (min === null || h < min) min = h;
+      }
+      if (min !== null) return min;
+    }
     const p = frames[i].positions?.[boneName];
     if (!p) fehler(`Knochen ${JSON.stringify(boneName)} fehlt in Frame ${i} der gelösten Timeline`);
-    return p[1] - (profile.world?.groundY ?? 0);
+    return p[1] - groundY;
   };
   // Der Fuß muss unmittelbar vor dem Fenster (oder an seinem Anfang) am Boden
   // gewesen sein — sonst ist das Abheben früher passiert und wird hier nicht
