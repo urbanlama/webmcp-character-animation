@@ -2117,6 +2117,26 @@ function wirkung(z, frame, ports) {
       }
     }
 
+    // Steht ein Fuss auf dem Boden, aber nicht FLACH?
+    //
+    // Lauf 13 vom 3. September 2026: der Agent setzte auf Frame 86 (Landung)
+    // einen Anker fuer beide Fuesse ueber 46 Frames. Auf Frame 86 landet die
+    // Figur auf dem Ballen — richtig fuer eine Landung. Der Anker haelt aber
+    // Fuss- UND Zehenknochen fest, und zwei Punkte legen auch die NEIGUNG
+    // fest: die Figur richtete sich auf und stand am Ende auf Zehenspitzen,
+    // Ferse 12,25 cm in der Luft. Kein Wert sagte es ihm; bodenabstand und
+    // die tiefste Sohle meldeten beide 0.
+    //
+    // Der Befund gehoert hierher, nicht nur in describe_pose: in diesem Lauf
+    // rief der Agent hold_foot 31-mal auf und describe_pose ein einziges Mal.
+    for (const [fuss, seite] of [['foot_l', 'l'], ['foot_r', 'r']]) {
+      const st = fussStand(hier, seite, boden, ports.rig ? ports.rig.world().height : null);
+      if (!st || st.stand === 'flach' || st.stand === 'frei') continue;
+      zeilen.push(`${fuss} steht im ${st.stand.toUpperCase()} — Ferse ${zahl(st.ferse)} m, `
+        + `Spitze ${zahl(st.spitze)} m ueber dem Boden. Ein hold_foot auf diesem Frame haelt `
+        + `genau diese Stellung ueber die ganze Spanne fest, auch wenn die Figur sich aufrichtet`);
+    }
+
     const com = hier.com;
     if (com) zeilen.push(`Schwerpunkt ${zahl(com[1] - boden)} m über dem Boden`);
 
@@ -2211,6 +2231,23 @@ function sohlenTeil(frame, seite, teil, boden) {
   return best === null ? null : +(best - boden).toFixed(4);
 }
 
+/** Fersen-, Spitzenhoehe und Stand EINES Fusses ('l' | 'r'), oder null. */
+function fussStand(frame, seite, boden, koerperhoehe) {
+  const p = tiefsteSohle(frame, seite);
+  if (!p) return null;
+  const ferse = sohlenTeil(frame, seite, 'back', boden);
+  const spitze = sohlenTeil(frame, seite, 'front', boden);
+  if (ferse === null || spitze === null) return null;
+  const tol = (typeof koerperhoehe === 'number' && koerperhoehe > 0)
+    ? koerperhoehe * BODEN_TOLERANZ_ANTEIL : 0.018;
+  const tiefste = +(p[1] - boden).toFixed(4);
+  let stand;
+  if (tiefste > tol) stand = 'frei';
+  else if (Math.abs(ferse - spitze) <= tol) stand = 'flach';
+  else stand = ferse > spitze ? 'zehenstand' : 'fersenstand';
+  return { tiefste, ferse, spitze, stand };
+}
+
 /**
  * Hoehe des tiefsten Sohlenpunkts je Fuss ueber dem Boden, in Metern —
  * und getrennt davon FERSE und SPITZE.
@@ -2232,20 +2269,11 @@ function sohlenTeil(frame, seite, teil, boden) {
  */
 function sohlenHoehen(frame, boden, koerperhoehe) {
   const out = {};
-  const tol = (typeof koerperhoehe === 'number' && koerperhoehe > 0)
-    ? koerperhoehe * BODEN_TOLERANZ_ANTEIL : 0.018;
   for (const seite of ['l', 'r']) {
+    const st = fussStand(frame, seite, boden, koerperhoehe);
+    if (st) { out[`foot_${seite}`] = st; continue; }
     const p = tiefsteSohle(frame, seite);
-    if (!p) continue;
-    const tiefste = +(p[1] - boden).toFixed(4);
-    const ferse = sohlenTeil(frame, seite, 'back', boden);
-    const spitze = sohlenTeil(frame, seite, 'front', boden);
-    if (ferse === null || spitze === null) { out[`foot_${seite}`] = tiefste; continue; }
-    let stand;
-    if (tiefste > tol) stand = 'frei';
-    else if (Math.abs(ferse - spitze) <= tol) stand = 'flach';
-    else stand = ferse > spitze ? 'zehenstand' : 'fersenstand';
-    out[`foot_${seite}`] = { tiefste, ferse, spitze, stand };
+    if (p) out[`foot_${seite}`] = +(p[1] - boden).toFixed(4);
   }
   return Object.keys(out).length ? out : null;
 }
