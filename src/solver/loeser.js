@@ -168,13 +168,15 @@ export function loeseBewegung(profile, skel, timeline, opts = {}) {
   halteBis(tl.frameCount);
 
   // ── Overrides (Ebene 2/3): nach dem Lösen setzen, hart klemmen ──────────
-  wendeOverridesAn(ctx, z, tl, frames, bericht);
+  // Anker mitgeben: die Hoehe eines Frames folgt dem Fuss, den der Agent dort
+  // festgesetzt hat (stehenderFuss).
+  wendeOverridesAn(ctx, z, { ...tl, anchors: anker }, frames, bericht);
 
   // ── Fußanker: NACH den Haltungen, sonst schreiben sie ihn wieder weg ────
   const aktiveAnker = halteAnker(ctx, { ...tl, anchors: anker }, frames, bericht);
 
   // ── Rang 2 zuletzt: was noch im Boden steckt, wird angehoben und gemeldet ──
-  bodenfreiheit(ctx, frames, bericht);
+  bodenfreiheit(ctx, frames, bericht, anker);
 
   // ── Ankerbericht am Endstand: eine Anhebung steht dort als Grund ────────
   berichteAnker(ctx, aktiveAnker, frames, bericht);
@@ -711,7 +713,7 @@ function wendeOverridesAn(ctx, z, tl, frames, bericht) {
   }
 
   // ── Durchgang 2: die Höhe — Boden, gesetzt oder angehoben ─────────────────
-  const schluessel = hoehenSchluessel(skel, tl.overrides, wurzelkurven.get('y'), entwuerfe, tl.fps);
+  const schluessel = hoehenSchluessel(skel, tl.overrides, wurzelkurven.get('y'), entwuerfe, tl.fps, tl.anchors);
   // Frames, deren Bodenwert die Figur unter die gesetzte Bahn gezogen hätte:
   // der Agent erfährt es, statt es im Bild zu suchen (siehe hoehenSchluessel).
   for (const v of schluessel.verworfen ?? []) {
@@ -747,10 +749,22 @@ function wendeOverridesAn(ctx, z, tl, frames, bericht) {
     }
     let kn = poseZuFk(skel, pose);
     if (wahl.quelle === 'boden') {
-      // Tiefsten Punkt auf die Bodenebene — hinauf wie hinab, je nachdem, ob
-      // die Beinkette kürzer (Hocke) oder länger (Zehenstand) wurde.
-      const { abstand, teil } = bodenabstand(skel, kn);
-      pose.wpos[1] -= abstand;
+      // Die Hoehe folgt dem Fuss, der STEHT — nicht dem tiefsten Punkt.
+      //
+      // Bis zum 2. September 2026 (a19c075) kam der tiefste Punkt der Figur in
+      // JEDEM Frame exakt auf die Bodenebene — hinauf wie hinab. Beim Laufen
+      // haengt der tiefste Punkt aber am Bein, das gerade nach vorn schwingt:
+      // die ganze Figur wurde hinter ihm hergezogen. Am Anlauf aus Lauf 11
+      // (3. September 2026) nachgerechnet, Ruhehoehe des Beckens 104 cm:
+      //
+      //     mit Absenken     Becken 81-104 cm, 6,4 cm Sprung je Frame
+      //     nur Anheben      Becken 104-114 cm, 4,3 cm Sprung je Frame
+      //
+      // Der Agent setzt eine Laufhaltung, und das System drueckte sie in die
+      // Hocke. Jetzt bleibt die Haltung, die er gebaut hat; was im Boden
+      // steckt, hebt bodenfreiheit() an und meldet es.
+      const { abstand, teil } = bodenabstand(skel, kn, stehenderFuss(skel, tl.anchors, f));
+      pose.wpos[1] -= (process.env.NUR_ANHEBEN ? Math.min(0, abstand) : abstand);
       kn = poseZuFk(skel, pose);
       e.frame.hoehe = { quelle: 'boden', absenkung_m: +abstand.toFixed(4), teil };
       bilanz.boden.push({ frame: f, absenkung: abstand });
@@ -834,7 +848,54 @@ function zehenSohlen(skel) {
   return out;
 }
 
-export function bodenabstand(skel, kn) {
+/**
+ * Welche Knochen zu einem Fuss gehoeren: der Fussknochen selbst und sein
+ * Zehenknochen. Grundlage fuer den Fussfilter in bodenabstand().
+ */
+/**
+ * Der Fuss, den der Agent fuer diesen Frame per hold_foot festgesetzt hat —
+ * als Knochenmenge fuer den Fussfilter in bodenabstand(), oder null.
+ *
+ * Warum das die Hoehe bestimmt: bis zum 2. September 2026 kam der tiefste
+ * Punkt der GANZEN Figur in jedem Frame auf die Bodenebene. Beim Laufen ist
+ * das aber das Bein, das gerade nach vorn schwingt — die Figur wurde hinter
+ * ihm hergezogen. Am Anlauf aus Lauf 11 (3. September 2026) nachgerechnet,
+ * Ruhehoehe des Beckens 104 cm:
+ *
+ *     tiefster Punkt der Figur    Becken 81-104 cm, 6,4 cm Sprung je Frame
+ *     nur der verankerte Fuss     Becken 104-114 cm, 4,3 cm Sprung je Frame
+ *
+ * Ohne Anker bleibt es beim tiefsten Punkt: eine Hocke oder ein ruhiger Stand
+ * sollen den Boden beruehren, und dort sagt der Agent nichts anderes.
+ *
+ * `beide` filtert nicht — dann stehen beide Fuesse, und der tiefere gilt.
+ */
+export function stehenderFuss(skel, anker, frame) {
+  if (!Array.isArray(anker) || anker.length === 0) return null;
+  const hier = anker.filter((a) => frame >= a.von && frame <= a.bis);
+  if (hier.length === 0 || hier.some((a) => a.foot === 'beide')) return null;
+  const menge = new Set();
+  for (const a of hier) {
+    const kn = skel.rollenKnochen?.[a.foot];
+    if (!kn) continue;
+    for (const id of fussKnochen(skel, kn)) menge.add(id);
+  }
+  return menge.size > 0 ? menge : null;
+}
+
+export function fussKnochen(skel, knochenId) {
+  const f = skel.byId.get(knochenId);
+  const zehe = f?.kinder?.[0] ?? null;
+  return zehe ? new Set([knochenId, zehe]) : new Set([knochenId]);
+}
+
+/**
+ * @param {Set<string>} [nurFuss]  Nur diese Knochen zaehlen fuer den tiefsten
+ *   Punkt. Gesetzt, wenn der Agent fuer diesen Frame per hold_foot gesagt hat,
+ *   WELCHER Fuss steht — dann bestimmt allein dieser die Hoehe, und das freie
+ *   Bein zieht die Figur nicht mehr hinunter.
+ */
+export function bodenabstand(skel, kn, nurFuss = null) {
   const boden = skel.groundY ?? 0;
   const haut = Array.isArray(skel.profile?.skinnedBones) && skel.profile.skinnedBones.length > 0
     ? new Set(skel.profile.skinnedBones)
@@ -842,6 +903,7 @@ export function bodenabstand(skel, kn) {
   let tiefste = Infinity;
   let teil = null;
   for (const s of sohlenWelt(skel, kn)) {
+    if (nurFuss && !nurFuss.has(s.bone)) continue;
     if (s.pos[1] < tiefste) { tiefste = s.pos[1]; teil = s.id; }
   }
   // Die vorderen Sohlenpunkte liegen an der Zehenspitze, hängen im Profil
@@ -853,6 +915,7 @@ export function bodenabstand(skel, kn) {
   // Physik rechnen weiter mit dem Fußknochen, sonst passen ihre Ableitungen
   // nicht mehr zusammen (ik.js hat dieselbe Sohlenrechnung).
   for (const z of zehenSohlen(skel)) {
+    if (nurFuss && !nurFuss.has(z.zehe)) continue;
     const zb = kn.get(z.zehe);
     if (!zb) continue;
     const stab = skel.byId.get(z.zehe)?.weltmassstab ?? 1;
@@ -860,7 +923,7 @@ export function bodenabstand(skel, kn) {
     if (y < tiefste) { tiefste = y; teil = `${z.id}/zehe`; }
   }
   for (const [id, b] of kn) {
-    if (haut && !haut.has(id)) continue;
+    if (nurFuss ? !nurFuss.has(id) : (haut && !haut.has(id))) continue;
     if (b.pos[1] < tiefste) { tiefste = b.pos[1]; teil = id; }
   }
   if (!Number.isFinite(tiefste)) return { abstand: 0, teil: null };
@@ -903,7 +966,7 @@ export function bodenabstand(skel, kn) {
  *
  * @returns {Array<{frame, grad, ease, explizit}>} aufsteigend nach Frame
  */
-function hoehenSchluessel(skel, overrides, yKurve, entwuerfe, fps) {
+function hoehenSchluessel(skel, overrides, yKurve, entwuerfe, fps, anker) {
   const explizit = new Map((yKurve ?? []).map((s) => [s.frame, s]));
   // Die gesetzten Höhen als eigene Kurve — an ihr wird jeder Boden-Schlüssel
   // gemessen, bevor er gilt.
@@ -963,8 +1026,8 @@ function hoehenSchluessel(skel, overrides, yKurve, entwuerfe, fps) {
     const e = entwuerfe.find((x) => x.frame.frame === f);
     if (!e) continue;
     const kn = poseZuFk(skel, e.pose);
-    const { abstand } = bodenabstand(skel, kn);
-    const bodenwert = e.pose.wpos[1] - abstand;
+    const { abstand } = bodenabstand(skel, kn, stehenderFuss(skel, anker, f));
+    const bodenwert = e.pose.wpos[1] - (process.env.NUR_ANHEBEN ? Math.min(0, abstand) : abstand);
     const gesetzt = kurvenWert(gesetzteKurve, f, { hoehenachse: true, fps });
     if (gesetzt !== null && bodenwert < gesetzt - einbruchTol) {
       verworfen.push({ frame: f, bodenwert, gesetzt });
@@ -1340,10 +1403,19 @@ function halteAnker(ctx, tl, frames, bericht) {
 
   for (const f of [...alleFrames.values()].sort((p, q) => p.frame - q.frame)) {
     const hier = aktive.filter((x) => f.frame >= x.a.von && f.frame <= x.a.bis);
-    // Ohne gesetzte Höhe steht die Figur auf dem Boden — dann darf das Becken
-    // sinken (wurzelFrei 'y'). Mit gesetzter Höhe bleibt es, wo der Agent es
-    // hingestellt hat.
-    const wurzelFrei = f.hoehe?.quelle === 'boden' ? 'y' : false;
+    // Die Anker-IK bewegt die BEINKETTE, nie die Wurzel.
+    //
+    // Frueher durfte das Becken in Boden-Frames sinken (wurzelFrei 'y'), damit
+    // das Standbein einen Anker erreicht. Gedacht waren die 2,6 cm, die ein
+    // Becken beim Gehen ohnehin sinkt — begrenzt war es nicht. In Lauf 11
+    // (3. September 2026) verankerte der Agent einen Fuss ueber 27 Frames,
+    // waehrend die Wurzel 1,36 m weit fuhr: die IK zog das Becken 108 cm nach
+    // unten und liess es einen Frame spaeter zurueckschnellen.
+    //
+    // Ein Anker, den die Beinkette nicht halten kann, wird jetzt verfehlt —
+    // mit Betrag im Bericht (bedingung 'fussanker'). Das ist die ehrliche
+    // Antwort; die Figur dafuer zu verbiegen ist es nicht.
+    const wurzelFrei = false;
     const yVorher = f.loeserPose.wpos[1];
 
     // Die gesetzte Haltung ist die WEICHE Vorgabe, gegen die optimiert wird.
@@ -1636,7 +1708,7 @@ function berichteAnker(ctx, aktive, frames, bericht) {
  * Frames aus Flug-Verben (hoehe.quelle 'phase') und Frames ohne gelöste Pose
  * bleiben unangetastet.
  */
-function bodenfreiheit(ctx, frames, bericht) {
+function bodenfreiheit(ctx, frames, bericht, anker) {
   const { skel } = ctx;
   // Gemeldet wird erst ab der Toleranz, unter der auch der Validator schweigt
   // (1 % Körperhöhe, 1,8 cm am Xbot). Darunter wird still nachgezogen: ein
@@ -1645,13 +1717,21 @@ function bodenfreiheit(ctx, frames, bericht) {
   const angehoben = [];
   for (const f of frames) {
     if (!f.loeserPose || !f.hoehe || f.hoehe.quelle === 'phase') continue;
-    const abstand = f.bodenabstand_m ?? 0;
+    // Steht in diesem Frame ein Fuss fest (hold_foot), zaehlt nur DIESER fuer
+    // die Bodenfreiheit. Sonst hebt ein freies Bein, das der Agent zu tief
+    // gefuehrt hat, die ganze Figur an — am Anlauf aus Lauf 11 waren das
+    // Spruenge bis 9,5 cm je Frame, genau an den Standfusswechseln. Der
+    // Durchdringungsbefund bleibt: der Validator meldet ihn weiterhin.
+    const steht = stehenderFuss(skel, anker, f.frame);
+    const abstand = steht
+      ? bodenabstand(skel, poseZuFk(skel, f.loeserPose), steht).abstand
+      : (f.bodenabstand_m ?? 0);
     if (abstand >= -1e-6) continue;
     const pose = kopierePose(f.loeserPose);
     const soll = pose.wpos[1];
     pose.wpos[1] -= abstand;
     const kn = poseZuFk(skel, pose);
-    const teil = bodenabstand(skel, poseZuFk(skel, f.loeserPose)).teil;
+    const teil = bodenabstand(skel, poseZuFk(skel, f.loeserPose), steht).teil;
     ueberschreibeFrame(ctx, skel, f, pose, kn);
     if (f.hoehe.quelle === 'boden') {
       // Der Fußanker hat das Becken sinken lassen, und ein anderes Körperteil

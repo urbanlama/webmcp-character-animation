@@ -250,6 +250,29 @@ export function baueValidationReport({ profile, timeline, intent, stil, strip } 
   // ── 1. Die drei Prüfschichten aufrufen ─────────────────────────────────────
   const physics = pruefePhysik(profile, frames, timeline.fps);
 
+  // Ankerkonflikte des Loesers durchreichen.
+  //
+  // Der Loeser weiss laengst, wenn er einen Fussanker nicht halten konnte, und
+  // legt es mit Betrag in bericht.konflikt ab — nur sah der Agent es nie. In
+  // Lauf 11 (3. September 2026) stand dort "Anker foot_l ueber Frames 32-58 um
+  // 136 cm verfehlt", waehrend validate ihm 3,1 bis 7,4 cm Restrutschen
+  // meldete. Er hielt das fuer Feinschliff und gab ab.
+  for (const k of timeline.solved?.bericht?.konflikt ?? []) {
+    if (k.bedingung !== 'fussanker') continue;
+    physics.issues.push({
+      kind: 'anker',
+      frame: k.frame,
+      value: +Number(k.betrag ?? 0).toFixed(4),
+      unit: k.einheit ?? 'm',
+      part: k.teil ?? 'fuss',
+      message: k.meldung ?? `Fussanker auf Frame ${k.frame} um `
+        + `${(Number(k.betrag ?? 0) * 100).toFixed(1)} cm verfehlt`,
+      fix: 'Ankerspanne verkuerzen oder in Schritte teilen — ueber eine lange '
+        + 'Spanne mit weiter Wurzelfahrt kann die Beinkette den Fuss nicht halten',
+    });
+    physics.passed = false;
+  }
+
   // Fehlt die Absicht, wird IHRE Schicht übersprungen — nicht der Bericht
   // verworfen.
   //
