@@ -1,4 +1,4 @@
-// Pruefer fuer den Timeline-Vertrag, docs/plan.md 5.2.
+// Pruefer fuer den Timeline-Vertrag, docs/journal/plan.md 5.2.
 //
 // Quelle der Wahrheit sind `phases` und `overrides`. `solved` ist abgeleitet und
 // darf jederzeit verworfen werden — fehlt es, ist das kein Fehler.

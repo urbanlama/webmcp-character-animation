@@ -1,5 +1,5 @@
 // AP2 — Rig-Vermessung. Misst aus einem geladenen glTF/GLB-Modell ein RigProfile
-// im Format aus docs/plan.md Abschnitt 5.1.
+// im Format aus docs/journal/plan.md Abschnitt 5.1.
 //
 // Grundregel (AGENTS.md, Regel 1): Körpermaße werden GEMESSEN, nie getippt.
 // Radien, Massen, Kontaktpunkte, Gelenkachsen, Blickrichtung — alles aus der
@@ -11,7 +11,7 @@
 // aus node_modules (npm r180) — derselbe Build wie vendor/. Der Alias
 // 'three/addons/loaders/GLTFLoader.js' liefert dieselbe Datei wie
 // vendor/GLTFLoader.js; fällt der Alias weg, ist die Datei zusätzlich im Repo
-// unter ../../spikes/test-b-motion/assets/GLTFLoader.js && vendor/ abgelegt.
+// unter vendor/GLTFLoader.js && vendor/ abgelegt.
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -1270,10 +1270,10 @@ export function measureJoints(gltf, opts = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Gelenkgrenzen am Modell messen (statt sie aus einem Katalog zu übernehmen)
 //
-// Belegt (docs/buehne-befunde-2026-09-02.md, Befund E): der anatomische
+// Belegt (docs/journal/buehne-befunde-2026-09-02.md, Befund E): der anatomische
 // Katalog erlaubt `arm.swing -130`, `arm.lift 100` und `knee.bend 150`. Am
 // Bild steckt der Oberarm im Kopf und der Unterschenkel im Oberschenkel, und
-// kein Werkzeug meldet es. NACHLESE.md Punkt 3 beschreibt dieselbe Sorte
+// kein Werkzeug meldet es. docs/journal/nachlese-2026-09-01.md Punkt 3 beschreibt dieselbe Sorte
 // Fehler eine Ebene tiefer: die Ellbogenachse stand als Handbuchwissen im
 // Katalog, statt gemessen zu werden.
 //
@@ -1354,7 +1354,7 @@ export const REFERENZ_CLIPS = new Set(['idle', 'walk', 'agree', 'sad_pose']);
  * Modells verstoesst, ist widerlegt. Am Xbot klemmte der anatomische Katalog
  * head.bend bei 30 Grad, waehrend `agree` 35,2 Grad faehrt, und
  * shoulder_l.fwd bei 25 Grad gegen 26,4 gefahrene. Das Kriterium kommt aus dem
- * Modell, nicht aus einer gewaehlten Zahl (docs/buehne-befunde-2026-09-02.md,
+ * Modell, nicht aus einer gewaehlten Zahl (docs/journal/buehne-befunde-2026-09-02.md,
  * Nachlese zu Auftrag E).
  *
  * Gemessen wird die Drehung gegen die Bind-Pose, um die Katalogachse zerlegt
@@ -1887,7 +1887,7 @@ function kapselachsenAmGelenk(a1, a2, b1, b2, A, B, rA, rB) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Misst das komplette RigProfile gemäß docs/plan.md 5.1 aus der Bind-Pose.
+ * Misst das komplette RigProfile gemäß docs/journal/plan.md 5.1 aus der Bind-Pose.
  *
  * @param {{scene: THREE.Object3D}} gltf  Ergebnis von loadGLB
  * @param {{fileName?: string}} [opts]
@@ -2043,7 +2043,7 @@ export function measureRigProfile(gltf, opts = {}) {
   // Grenzen aus dem Modell kommen statt aus einem Handbuch. Sie läuft einmal
   // je geladenem Modell. `opts.grenzenMessen: false` schaltet sie ab; die
   // Grenzen heißen dann wieder durchgehend `anatomisch`, wie vor dieser
-  // Messung (docs/plan.md 6.1 in seiner alten Fassung).
+  // Messung (docs/journal/plan.md 6.1 in seiner alten Fassung).
   const probeDeg = opts.probeDeg ?? PROBE_DEG;
   let grenzen = null;
   if (opts.grenzenMessen !== false) {

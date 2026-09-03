@@ -1,6 +1,6 @@
 // Abnahmetest — „Keine Grenze ist enger als das, was das Modell selbst fährt".
 //
-// Befund vom 2. September 2026 (docs/buehne-befunde-2026-09-02.md, Nachlese zu
+// Befund vom 2. September 2026 (docs/journal/buehne-befunde-2026-09-02.md, Nachlese zu
 // Auftrag E): der anatomische Katalog klemmt an zwei Kanälen Bewegung ab, die
 // die mitgelieferten Animationen des Xbot fahren.
 //
@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs';
 import { loadGLB, clipSpannen, REFERENZ_CLIPS } from './measure.js';
 import { xbotProfil } from './xbot-profil.mjs';
 
-const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
+const XBOT = 'beispiel/Xbot.glb';
 
 let gltf = null;
 let profil = null;

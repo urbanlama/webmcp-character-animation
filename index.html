@@ -889,6 +889,18 @@ window.addEventListener('keydown', (e) => {
     zurueckAnsicht();
     e.preventDefault();
   }
+  // Pfeiltasten springen Frame fuer Frame, ohne dass der Schieber den Fokus
+  // braucht: drehen in der Ansicht nimmt dem range-Input den Fokus, und
+  // nativ reagierte die Navigation danach nicht mehr. Hat der Schieber den
+  // Fokus, bedient der Browser die Pfeiltasten selbst (INPUT oben).
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    const s = abspieler.stand();
+    if (s.bereit) {
+      const zielFrame = s.index + (e.key === 'ArrowRight' ? 1 : -1);
+      if (zielFrame >= 0 && zielFrame < s.frameCount) abspieler.anfahren(zielFrame);
+    }
+    e.preventDefault();
+  }
 });
 
 /**

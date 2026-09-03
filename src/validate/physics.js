@@ -125,7 +125,7 @@ export const EPS_DEGENERIERT_QUAD = 1e-12;
 //
 // pruefePhysik(profile, frames) erwartet:
 //
-// profile: RigProfile gemäß docs/plan.md 5.1. Benutzt werden:
+// profile: RigProfile gemäß docs/journal/plan.md 5.1. Benutzt werden:
 //   world.height           — Körperhöhe in Metern (Referenz aller Toleranzen)
 //   world.groundY          — Höhe der Bodenebene in Metern
 //   world.up               — erwartet 'y'; anderes wird abgelehnt, nicht geraten

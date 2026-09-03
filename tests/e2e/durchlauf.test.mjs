@@ -29,7 +29,7 @@ import { nahtstellen } from './nahtstellen.mjs';
 
 const HIER = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HIER, '..', '..');
-const XBOT = join(REPO, 'spikes', 'test-b-motion', 'assets', 'Xbot.glb');
+const XBOT = join(REPO, 'beispiel', 'Xbot.glb');
 
 /** Die Node-Umgebung: URLs, Dateiblick, Modellbytes, solver-Dateibestand. */
 function umgebung(zusatz = {}) {

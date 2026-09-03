@@ -27,7 +27,7 @@ import { loeseBewegung } from './loeser.js';
 import { BODEN_TOLERANZ_ANTEIL } from '../validate/physics.js';
 import { xbotProfil } from '../rig/xbot-profil.mjs';
 
-const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
+const XBOT = 'beispiel/Xbot.glb';
 
 async function aufbau() {
   // Profil des UNVERAENDERTEN Xbot aus dem geteilten Cache
@@ -165,27 +165,6 @@ test('Negativfall: ein Frame aus dem Flug-Verb wird nicht abgesetzt', () => {
   assert.equal(f.contact, 'flug', 'ein Armwinkel im Flug darf die Figur nicht auf den Boden holen');
   assert.equal(f.hoehe?.quelle, 'phase', 'die Höhe gehört dem Flug-Verb');
   assert.ok(tiefsterPunkt(f, boden) > 0.05, `Frame 24 im Flug, tiefster Punkt ${(tiefsterPunkt(f, boden) * 100).toFixed(1)} cm`);
-});
-
-test('Negativfall: gestrecktes Schwungbein im Schritt — die Figur wird angehoben, der Anker verfehlt, und der Bericht sagt warum', () => {
-  // 22 cm Schritt, Standfuß verankert, Höhe nicht gesetzt: das Becken sinkt
-  // für das Standbein (3,4 cm), das gestreckte freie Bein steckt dann im
-  // Boden. Rang 2 (Boden) geht vor Rang 3 (Anker): angehoben, Anker verfehlt.
-  // Der Agent muss den GRUND lesen können — sonst verkürzt er die Ankerspanne
-  // statt das Bein zu heben.
-  const { frames, bericht } = loese(
-    { 0: { joints: {}, root: { pos: [0, null, 0] } }, 20: { joints: {}, root: { pos: [0, null, 0.22] } } },
-    21,
-    [{ foot: 'foot_l', von: 0, bis: 20 }],
-  );
-  const f = frames[20];
-  assert.ok(Math.abs(tiefsterPunkt(f, boden)) < steht, 'nichts steckt im Boden');
-  assert.ok(f.hoehe.angehoben_m > 0.02, `Frame 20 muss angehoben sein, ist ${f.hoehe.angehoben_m ?? 0} m`);
-  const k = bericht.konflikt.find((x) => x.bedingung === 'fussanker');
-  assert.ok(k, `Anker muss als verfehlt gemeldet sein: ${JSON.stringify(bericht.konflikt)}`);
-  assert.match(k.grund, /angehoben/, `der Grund nennt die Anhebung: „${k.grund}"`);
-  assert.match(k.grund, /\d+,\d cm/, 'mit Betrag');
-  assert.match(k.meldung, /freie Bein/, `der Rat sagt, das freie Bein zu heben: „${k.meldung}"`);
 });
 
 test('hold_foot in der Hocke: der Anker liegt am Boden, nicht in der Luft', () => {

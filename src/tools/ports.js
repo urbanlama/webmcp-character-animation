@@ -589,7 +589,7 @@ export function echtePorts(opt = {}) {
       // Bild gehen nicht raus. Die Auswahl kommt aus report.js, nicht von hier.
       // Zwei grosse Einzelbilder desselben Frames statt eines Rasters aus
       // sechs. Aus einem Blick ist der Raum nicht eindeutig, aus zwoelf
-      // Briefmarken erkennt der Agent nichts (docs/buehne-befunde-2026-09-02.md,
+      // Briefmarken erkennt der Agent nichts (docs/journal/buehne-befunde-2026-09-02.md,
       // Punkt 1). Der Verlauf gehoert `look`, das der Agent selbst richtet.
       const streifenQuelle = (auswahl) => {
         const frame = auswahl[0]?.frame ?? 0;

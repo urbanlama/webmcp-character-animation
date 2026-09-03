@@ -1,4 +1,4 @@
-// AP-Export — glTF-Ausgabe mit Wurzelbewegung (docs/plan.md 6.9).
+// AP-Export — glTF-Ausgabe mit Wurzelbewegung (docs/journal/plan.md 6.9).
 //
 // Schreibt eine gelöste Timeline (plan.md 5.2, `solved.frames`) als GLB mit
 // Animation. Der Export trägt die Wurzelbewegung als Position UND Rotation
@@ -131,7 +131,7 @@ function pruefeQuat(q, wo) {
 
 function pruefeRigProfile(rigProfile) {
   if (!rigProfile || typeof rigProfile !== 'object') {
-    throw new Error(`Export abgelehnt: rigProfile = ${rigProfile === null ? 'null' : typeof rigProfile} — erwartet RigProfile nach docs/plan.md 5.1`);
+    throw new Error(`Export abgelehnt: rigProfile = ${rigProfile === null ? 'null' : typeof rigProfile} — erwartet RigProfile nach docs/journal/plan.md 5.1`);
   }
   const hoehe = rigProfile.world?.height;
   if (!(typeof hoehe === 'number' && Number.isFinite(hoehe) && hoehe > 0)) {
@@ -210,7 +210,7 @@ export async function exportiereClip(gltf, timeline, rigProfile) {
     throw new Error(`Export abgelehnt: gltf.scene fehlt (Typ ${gltf === null || gltf === undefined ? String(gltf) : typeof gltf}) — das Modell muss über loadGLB geladen sein`);
   }
   if (!timeline || typeof timeline !== 'object') {
-    throw new Error(`Export abgelehnt: timeline = ${timeline === null ? 'null' : typeof timeline} — erwartet Timeline nach docs/plan.md 5.2`);
+    throw new Error(`Export abgelehnt: timeline = ${timeline === null ? 'null' : typeof timeline} — erwartet Timeline nach docs/journal/plan.md 5.2`);
   }
   pruefeFps(timeline.fps, 'Export abgelehnt');
   const { pelvis: wurzelName, hoehe: koerperHoehe } = pruefeRigProfile(rigProfile);

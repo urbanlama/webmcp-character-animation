@@ -1,4 +1,4 @@
-// Pruefer fuer den RigProfile-Vertrag, docs/plan.md 5.1.
+// Pruefer fuer den RigProfile-Vertrag, docs/journal/plan.md 5.1.
 //
 // Auslegung der Verfahrensparameter (AGENTS.md, Regel 1): Diese Schranken sind
 // KEINE Koerpermasse und werden nicht aus einem Modell geraten. Sie begrenzen nur,

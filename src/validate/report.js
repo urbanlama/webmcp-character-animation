@@ -1,4 +1,4 @@
-// AP8 — Berichts-Zusammenbau (docs/plan.md 5.3, 6.8).
+// AP8 — Berichts-Zusammenbau (docs/journal/plan.md 5.3, 6.8).
 //
 // Drei Prüfschichten, getrennt gebaut, kommen beim Agenten nie einzeln an,
 // sondern als EIN Bericht — und an dem hängt immer ein Bild:
@@ -56,7 +56,7 @@ import { istInt } from '../contracts/validate.js';
  *
  *  Bis zum 2. September 2026 waren es sechs, in zwei Ansichten nebeneinander
  *  geklebt — zwölf Kacheln, jede Figur fingernagelgroß, und darauf war eine
- *  Fehlhaltung nachweislich nicht erkennbar (docs/buehne-befunde-2026-09-02.md,
+ *  Fehlhaltung nachweislich nicht erkennbar (docs/journal/buehne-befunde-2026-09-02.md,
  *  Punkt 1). Gezeigt wird jetzt EIN Moment, dafür groß und aus zwei Richtungen.
  *  Den Verlauf liefert `trace`, den zeitlichen Zusammenhang also nicht mehr der
  *  Bericht. */
@@ -74,7 +74,7 @@ export const BERICHT_SKALA = 0.72;
  *  Antwortbudget. Bis zum 2. September 2026 klebte der Bericht sechs Frames in
  *  zwei Ansichten zusammen — zwölf Kacheln, jede Figur fingernagelgroß, und
  *  darauf war eine Fehlhaltung nachweislich nicht erkennbar
- *  (docs/buehne-befunde-2026-09-02.md, Punkt 1).
+ *  (docs/journal/buehne-befunde-2026-09-02.md, Punkt 1).
  *
  *  30 Grad ist der Standardblick von `look` (RICHTUNG_STANDARD_GRAD), 120 der
  *  um 90 Grad gedrehte dazu. */

@@ -28,7 +28,7 @@ import { loeseBewegung } from '../solver/loeser.js';
 import { pruefePhysik } from './physics.js';
 import { xbotProfil } from '../rig/xbot-profil.mjs';
 
-const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
+const XBOT = 'beispiel/Xbot.glb';
 
 /** Ein Schritt, bei dem der Fuss von der Ferse in den Abdruck abrollt. */
 const TIMELINE = {

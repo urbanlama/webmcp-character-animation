@@ -1,6 +1,6 @@
 // Werkzeug `look` — ein Bild je Aufruf, Kamera vom Agenten gerichtet.
 //
-// Befund vom 2.9.2026 (docs/buehne-befunde-2026-09-02.md, Kapitel 1.1 bis 1.4):
+// Befund vom 2.9.2026 (docs/journal/buehne-befunde-2026-09-02.md, Kapitel 1.1 bis 1.4):
 // `look` verlangte zwei Listen (frames × views), deren Produkt unter 12 bleiben
 // musste, und lieferte dafür ein Raster, in dem jede Figur fingernagelgroß war.
 // Geprüft wird hier die Werkzeugseite des Umbaus:

@@ -1,6 +1,6 @@
 // Gelenkgrenzen am Modell gemessen statt katalogisiert.
 //
-// Belegte Fälle aus docs/buehne-befunde-2026-09-02.md, Befund E: `arm.swing
+// Belegte Fälle aus docs/journal/buehne-befunde-2026-09-02.md, Befund E: `arm.swing
 // -130`, `arm.lift 100` und `knee.bend 150` erzeugen Stellungen, die kein
 // Mensch kann, und kein Werkzeug meldet es. Diese Datei prüft, dass das
 // Messverfahren die drei Fälle trifft — und dass es die Figur dabei nicht
@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { loadGLB, measureJointLimits, measureJoints, GRENZ_PARAMS } from './measure.js';
 
-const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
+const XBOT = 'beispiel/Xbot.glb';
 
 let gltf = null;
 let grenzen = null;

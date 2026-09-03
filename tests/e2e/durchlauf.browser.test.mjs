@@ -36,7 +36,7 @@ import { durchlauf, SCHRITTE, FRAMES } from './durchlauf.mjs';
 
 const HIER = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HIER, '..', '..');
-const XBOT = join(REPO, 'spikes', 'test-b-motion', 'assets', 'Xbot.glb');
+const XBOT = join(REPO, 'beispiel', 'Xbot.glb');
 const STARTZEILE = /Server läuft: (http:\/\/localhost:\d+\/)/;
 // Was der Agent sieht, nicht was der Gesamtbestand fuehrt: die Werkzeugkiste
 // (add_phase, edit_phase, set_target) ist dem Agenten absichtlich unsichtbar
@@ -138,7 +138,7 @@ function schnittInDerSeite(page, { umgebungsname = 'browser', mitRenderer = true
       moduleUrl: (datei) => '/' + datei,
       existiert: async (datei) => (await fetch('/' + datei, { method: 'HEAD' })).ok,
       glbBytes: async () => new Uint8Array(
-        await (await fetch('/spikes/test-b-motion/assets/Xbot.glb')).arrayBuffer()),
+        await (await fetch('/beispiel/Xbot.glb')).arrayBuffer()),
       solverDateien,
       umgebungsname,
       scene,

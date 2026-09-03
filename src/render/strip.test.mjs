@@ -1,4 +1,4 @@
-// AP9 — Abnahmetest für den Bildstreifen (src/render/strip.js, docs/plan.md 6.8).
+// AP9 — Abnahmetest für den Bildstreifen (src/render/strip.js, docs/journal/plan.md 6.8).
 //
 // Runner: node --test "src/**/*.test.mjs" — diese Datei liegt neben dem Code.
 //
@@ -695,7 +695,7 @@ async function streifeInDerSeite(p) {
     let vorher = null;
     if (anfrage.mitMesh) {
       const { loadGLB } = await import(new URL('src/scene/load.js', document.baseURI).href);
-      const antwort = await fetch(new URL('spikes/test-b-motion/assets/Xbot.glb',
+      const antwort = await fetch(new URL('beispiel/Xbot.glb',
         document.baseURI).href);
       if (!antwort.ok) {
         throw new Error(`Testmodell nicht ladbar: HTTP ${antwort.status} für ${antwort.url}`);
@@ -1233,7 +1233,7 @@ async function bildInDerSeite({ profile, frame, kamera, mitMesh = false }) {
     };
     if (anfrage.mitMesh) {
       const { loadGLB } = await import(new URL('src/scene/load.js', document.baseURI).href);
-      const antwort = await fetch(new URL('spikes/test-b-motion/assets/Xbot.glb',
+      const antwort = await fetch(new URL('beispiel/Xbot.glb',
         document.baseURI).href);
       if (!antwort.ok) {
         throw new Error(`Testmodell nicht ladbar: HTTP ${antwort.status} für ${antwort.url}`);

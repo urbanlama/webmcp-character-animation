@@ -1824,7 +1824,7 @@ export function baueWerkzeuge({ store, ask, ports }) {
     /**
      * trace — der Ablauf als Folge GROSSER Einzelbilder.
      *
-     * Zwei Wege dahin waren falsch (docs/buehne-befunde-2026-09-02.md): der
+     * Zwei Wege dahin waren falsch (docs/journal/buehne-befunde-2026-09-02.md): der
      * alte Bildstreifen klebte sechs Frames in ein PNG und machte jede Figur
      * fingernagelgross; die Bewegungsspur legte alle Bahnen in ein Bild und
      * verlangte Deutung — bei drei Rueckwaertssaltos ueberlagern sich die

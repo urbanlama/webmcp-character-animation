@@ -30,7 +30,7 @@ import { loeseBewegung, wurfHoehe } from './loeser.js';
 import { pruefePhysik, BALLISTIK_TOLERANZ_ANTEIL, G } from '../validate/physics.js';
 import { xbotProfil } from '../rig/xbot-profil.mjs';
 
-const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
+const XBOT = 'beispiel/Xbot.glb';
 
 async function aufbau() {
   const profil = await xbotProfil();

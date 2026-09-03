@@ -1,4 +1,4 @@
-// Der Werkzeugkatalog: sechzehn Werkzeuge, docs/plan.md 5.4 und 5.5.
+// Der Werkzeugkatalog: sechzehn Werkzeuge, docs/journal/plan.md 5.4 und 5.5.
 //
 // Der Beschreibungstext ist die Kopiervorlage aus src/ui/WERKZEUGE.md, Wort
 // fuer Wort. Er ist das Handbuch fuer den Agenten, der die fertige Seite

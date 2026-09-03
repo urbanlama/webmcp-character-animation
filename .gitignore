@@ -28,3 +28,7 @@ tmp-*
 
 # Abnahmebilder, nicht ins Repo
 /abnahme/
+
+# Abgabetext, Wettbewerbsfakten, Videodrehbuch und die Arbeitsprotokolle aus
+# dem Bau. Liegen lokal, gehoeren nicht ins oeffentliche Repo.
+/docs/

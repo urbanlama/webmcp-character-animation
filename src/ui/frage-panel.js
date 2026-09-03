@@ -1,4 +1,4 @@
-// Sichtbare Haelfte der Rueckfrage, docs/plan.md 6.7.
+// Sichtbare Haelfte der Rueckfrage, docs/journal/plan.md 6.7.
 //
 // src/ui/ask-human.js kennt kein DOM: der Broker haelt den Werkzeugaufruf offen
 // und wartet auf antworte(index). Diese Datei ist das Gegenstueck in der Seite —
@@ -23,7 +23,7 @@
 // import weiter unten: PANEL_BREITE_MAX für Befund 2 unten.
 
 /**
- * Text der Budgetanzeige, docs/plan.md 6.7: drei Rueckfragen je Auftrag,
+ * Text der Budgetanzeige, docs/journal/plan.md 6.7: drei Rueckfragen je Auftrag,
  * einstellbar bis 0. Rollen- und Absichtbestätigungen sind Pflichtfragen
  * ("kein Notausgang") und verbrauchen das Budget bewusst nicht — der Broker
  * zählt sie nicht (src/ui/ask-human.js, `pflicht`), und die Anzeige darf nicht

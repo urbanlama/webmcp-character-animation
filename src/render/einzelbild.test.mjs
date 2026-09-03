@@ -2,7 +2,7 @@
 //
 // Runder: node --test "src/**/*.test.mjs" — diese Datei liegt neben dem Code.
 //
-// Befund vom 2. September 2026 (docs/buehne-befunde-2026-09-02.md, Kapitel 1.1
+// Befund vom 2. September 2026 (docs/journal/buehne-befunde-2026-09-02.md, Kapitel 1.1
 // bis 1.5): `look` lieferte nie ein Bild, sondern ein Raster aus Frames × An-
 // sichten, dessen Auflösung sank, je mehr der Agent sehen wollte — bis auf
 // 4 px Schrift. Eine Kamera hatte er nicht: vier feste Ansichten, kein Zoom,

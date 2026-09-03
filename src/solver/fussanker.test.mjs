@@ -26,7 +26,7 @@ import { loeseBewegung } from './loeser.js';
 import { ANKER_TOLERANZ_ANTEIL } from './ik.js';
 import { xbotProfil } from '../rig/xbot-profil.mjs';
 
-const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
+const XBOT = 'beispiel/Xbot.glb';
 
 async function aufbau() {
   // Profil des UNVERAENDERTEN Xbot aus dem geteilten Cache

@@ -14,7 +14,7 @@ const HIER = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(HIER, '..', '..');
 
 /** Das einzige geriggte Bewegungsmaterial im Repo (docs/umsetzung.md). */
-export const XBOT_PFAD = join(REPO_ROOT, 'spikes', 'test-b-motion', 'assets', 'Xbot.glb');
+export const XBOT_PFAD = join(REPO_ROOT, 'beispiel', 'Xbot.glb');
 
 const GLB_MAGIC = 0x46546c67;
 const CHUNK_JSON = 0x4e4f534a;

@@ -1,4 +1,4 @@
-// Pruefer fuer den ValidationReport-Vertrag, docs/plan.md 5.3.
+// Pruefer fuer den ValidationReport-Vertrag, docs/journal/plan.md 5.3.
 //
 // Kreuzbedingung: issues nicht leer MUSS passed === false bedeuten. Ein Bericht,
 // der Beanstandungen listet und trotzdem "passed: true" meldet, ist unbrauchbar

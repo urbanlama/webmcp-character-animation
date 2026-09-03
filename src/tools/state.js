@@ -1,4 +1,4 @@
-// Sitzungszustand der Werkzeugschicht und der Undo-Stapel, docs/plan.md 5.2.
+// Sitzungszustand der Werkzeugschicht und der Undo-Stapel, docs/journal/plan.md 5.2.
 //
 // Quelle der Wahrheit sind `phases` und `overrides` (dazu `fps`, `frameCount`
 // und `intent`, die der Agent ebenfalls setzt). `solved` ist abgeleitet und

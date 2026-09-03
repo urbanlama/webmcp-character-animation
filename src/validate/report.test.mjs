@@ -323,7 +323,7 @@ test('Ein Moment, zwei Blicke — kein Raster aus sechs Frames', () => {
   // Bis zum 2. September 2026 klebte der Bericht bis zu sechs Frames in zwei
   // Ansichten zusammen. Zwoelf Kacheln, jede Figur fingernagelgross — auf so
   // einem Bild ist eine Fehlhaltung nachweislich nicht erkennbar
-  // (docs/buehne-befunde-2026-09-02.md, Punkt 1). Der Verlauf gehoert `look`.
+  // (docs/journal/buehne-befunde-2026-09-02.md, Punkt 1). Der Verlauf gehoert `look`.
   const bericht = baueValidationReport(BASIS());
   const frames = new Set(bericht.images.flatMap((i) => i.frames));
   assert.equal(frames.size, 1,

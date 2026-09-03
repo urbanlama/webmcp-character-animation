@@ -29,7 +29,7 @@ import { loeseBewegung } from '../solver/loeser.js';
 import { pruefePhysik } from './physics.js';
 import { xbotProfil } from '../rig/xbot-profil.mjs';
 
-const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
+const XBOT = 'beispiel/Xbot.glb';
 const FPS = 30;
 
 // Kanalnamen aus profile.joints, nicht geraten: arm_l hat lift/swing/twist,

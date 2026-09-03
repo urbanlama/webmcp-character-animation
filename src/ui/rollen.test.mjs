@@ -1,4 +1,4 @@
-// Mensch-Moment 1 aus docs/plan.md 6.7: unsichere Rollen nach dem Upload.
+// Mensch-Moment 1 aus docs/journal/plan.md 6.7: unsichere Rollen nach dem Upload.
 //
 // Geprueft wird der Ablauf, nicht die Erkennung: die Fragen kommen als
 // Attrappe im Format aus plan.md 5.1 herein, so wie detectRig() sie liefert.

@@ -2,7 +2,7 @@
 // Konvention laut Brett-Eintrag 2026-08-30 21:52: default export ist ein Array
 // von { name, async run() } — tests/run.mjs findet und führt sie darüber aus.
 //
-// Gemessen wird am echten Modell (spikes/test-b-motion/assets/Xbot.glb, die
+// Gemessen wird am echten Modell (beispiel/Xbot.glb, die
 // Referenzdatei). Perzentil- und Toleranzgrenzen sind Verfahrensparameter und
 // stehen im Code mit Begründung.
 
@@ -14,7 +14,7 @@ import { ok, strictEqual, throws } from 'node:assert/strict';
 import { loadGLB, validateLoadedModel, getBounds } from '../../src/scene/load.js';
 
 const hier = dirname(fileURLToPath(import.meta.url));
-const XBOT = join(hier, '..', '..', 'spikes', 'test-b-motion', 'assets', 'Xbot.glb');
+const XBOT = join(hier, '..', '..', 'beispiel', 'Xbot.glb');
 
 // Verfahrensparameter der Grenzen, benannt mit Begründung:
 //   Knochenzahl >= 20  — ein humanoides Rig mit Armen, Beinen, Wirbelsäule und

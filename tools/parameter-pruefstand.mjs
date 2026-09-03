@@ -9,7 +9,7 @@
 //
 // Aufruf:   node tools/parameter-pruefstand.mjs
 // Ausgabe:  Tabelle aller Funde nach Kategorie, dann der Abgleich gegen die
-//           in docs/plan.md Kapitel 4 festgelegten Werte, dann die Bilanz.
+//           in docs/journal/plan.md Kapitel 4 festgelegten Werte, dann die Bilanz.
 // Das Skript ist wiederholbar und stürzt nicht ab, wenn eine Datei fehlt.
 //
 // Verfahren (deterministisch, gleiche Eingabe — gleiche Tabelle):
@@ -381,7 +381,7 @@ function pruefeStand() {
   return funde;
 }
 
-// ── Abgleich gegen docs/plan.md Kapitel 4 ────────────────────────────────────
+// ── Abgleich gegen docs/journal/plan.md Kapitel 4 ────────────────────────────────────
 
 function abgleichPlan(funde) {
   const gesucht = [
@@ -441,7 +441,7 @@ function druckeTabelle(funde) {
 
 function druckePlanAbgleich(abgleich) {
   console.log('\n' + '='.repeat(100));
-  console.log('ABGLEICH GEGEN docs/plan.md Kapitel 4');
+  console.log('ABGLEICH GEGEN docs/journal/plan.md Kapitel 4');
   for (const z of abgleich) {
     if (z.treffer.length === 0) {
       console.log(`  ${z.name} (Soll ${z.ist}): NICHT im Code gefunden`);

@@ -1,134 +1,68 @@
-# Charakteranimation für Agenten
+# Character Animation for Agents
 
-Eine Web-Oberfläche, in der ein KI-Agent einen geriggten 3D-Charakter animiert — und
-dabei zum ersten Mal sieht, was er tut.
+A web page where an AI agent animates a rigged 3D character.
 
-Beitrag zur [OpenAI WebMCP Challenge](https://webmcp.devpost.com).
+Entry for the [OpenAI WebMCP Challenge](https://webmcp.devpost.com).
 
-- **Live ausprobieren:** https://urbanlama.github.io/webmcp-character-animation/
+- **Try it live:** https://urbanlama.github.io/webmcp-character-animation/
 - **Code:** https://github.com/urbanlama/webmcp-character-animation (MIT)
 
-## Das Problem
+## The problem
 
-Wer schon einmal versucht hat, einen KI-Agenten in Blender animieren zu lassen, kennt
-das Ergebnis: Der Ellbogen steckt im Gesicht. Die Füße lösen sich vom Boden und
-schweben. Arme wachsen durch den Brustkorb. Ein Rückwärtssalto aus dem Stand scheitert
-meist, bevor er begonnen hat.
+Ask an AI agent to animate a rigged character today, through a Blender connection or
+straight in a 3D scene in the browser, and you get a figure that reaches through
+itself, sticks in the floor, or barely moves at all.
 
-Das liegt nicht an mangelnder Intelligenz der Modelle. Es liegt daran, dass sie blind
-arbeiten. 3D-Software ist für menschliche Augen gebaut. Am Ende jeder Aktion steht ein
-gerendertes Bild — und darauf ist nicht zu erkennen, dass der Körperschwerpunkt aus der
-Standfläche kippt, dass ein Fuß 18 Millimeter im Boden steckt oder dass ein Kniegelenk
-in eine Richtung gebogen wurde, die es anatomisch nicht gibt.
+That is not because the AI is too stupid for it. It has too little to work with. It
+does not know how tall the figure is, where its weight sits, or how far a knee bends.
+And it never finds out what its last move actually did.
 
-## Die Idee
+## The approach
 
-Eine Seite, die den Agenten sehend macht.
+A page that gives the agent what it was missing.
 
-**Sie vermisst das Modell selbst.** Lade ein beliebiges geriggtes Humanoid hoch — egal
-welche Rig-Konvention, egal wie viele Knochen, egal welches Namensschema. Die Seite
-misst Körperhöhe, Massenverteilung, Fußsohlen, Gelenkachsen und Blickrichtung aus dem
-Modell. Kein manuelles Zuordnen von Knochen.
+**It measures the model itself.** Body height, mass distribution, sole points, joint
+axes and facing direction are measured from the loaded model. No manual bone mapping,
+no assumptions baked into the code.
 
-**Sie gibt Zahlen statt Vermutungen.** Nach jedem Schritt bekommt der Agent einen
-Messbericht: wo etwas den Boden durchdringt, in Zentimetern. Wo der Schwerpunkt kippt.
-Welcher Fuß in welchem Frame rutscht. Dazu einen Bildstreifen aus mehreren
-Blickwinkeln — beides, nie nur eins.
+**The agent animates by hand.** It sets poses and single joint angles, frame by frame.
+Nothing comes out of a motion library, so the movement that comes out did not exist
+before.
 
-**Sie lässt ihn in Bewegungen denken, nicht in Winkeln.** Der Agent bestellt Abschnitte:
-absenken, ausholen, abspringen, drehen, landen, abfedern. Die Seite rechnet daraus die
-Körperhaltung aus — über Schwerpunkt und Fußkontakte, sodass Bodendurchdringung und
-verdrehte Gelenke gar nicht erst entstehen können.
+**Every call answers with numbers.** How far a foot sits inside the floor, in
+centimetres. Which foot slides in which frame. Where the balance tips. Where the
+solver had to miss what the agent asked for, and by how much.
 
-**Sie fragt nach, wenn es um Geschmack geht.** Zwei Varianten nebeneinander, ein Klick.
-Kein Fachwissen nötig. Das ist der Teil, den nur WebMCP ermöglicht: Mensch und Agent
-sitzen vor derselben laufenden Seite.
+**It can look.** The agent can request a rendered image strip from several angles when
+numbers alone are not enough.
 
-## Warum WebMCP
+## Code map
 
-Messwerte und Löser könnte auch ein herkömmlicher MCP-Server liefern. Was nur WebMCP
-kann, ist die gemeinsame Situation: Der Agent hält mitten in der Arbeit an, zeigt dir
-zwei Landungen, wartet auf deinen Klick und baut mit deiner Antwort weiter. Ein
-Server-Prozess kann das nicht — er hat keine Oberfläche, vor der du sitzt.
-
-## Stand
-
-Stand vom 31. August 2026, abends. `node --test "src/**/*.test.mjs"`: **319 Tests,
-alle grün.** `node tools/browser-test.mjs` über Playwright: **13 Tests, alle grün.**
-
-**Echtes WebMCP, nachgemessen.** In Chrome 151 mit
-`--enable-features=WebMCP` liegt `document.modelContext` vor, mit
-`registerTool`, `getTools` und `executeTool`. Die Seite registriert darüber ihre
-18 sichtbaren Werkzeuge, meldet `connected`, und ein Agent von außen ruft sie über
-genau diesen Weg auf — nicht über einen Ersatzpfad. Zwei Eigenheiten der echten
-Schnittstelle, die dabei zutage kamen: `getTools()` liefert Objekte mit Funktionen
-(sie müssen abgeflacht werden, sonst lehnt die Serialisierung ab), und
-`executeTool` erwartet das **Werkzeugobjekt**, nicht seinen Namen.
-
-**So arbeitet der Agent.** Er setzt Haltungen, Gelenk für Gelenk, auf einzelne
-Frames; dazwischen wird überblendet. Ein Sprung entsteht, indem er zusätzlich die
-Wurzel bewegt — Position in Metern und Drehung je Achse. Gemessen an einem
-selbst gebauten Rückwärtssalto über 48 Frames:
-
-| Frame | Zustand | Becken | Drehung |
-|---|---|---|---|
-| 0 | kontakt | 1,04 m | 0° |
-| 8 | kontakt | 0,76 m | 0° |
-| 16 | flug | 1,39 m | −90° |
-| 26 | flug | 1,59 m | −250° |
-| 36 | kontakt | 0,84 m | −360° |
-
-Der Bewegungszustand wird dabei aus der gelösten Haltung **gemessen**, nicht
-übernommen: hebt eine Haltung die Figur vom Boden, gilt der Frame als Flug, und
-die Balance- und Rutschprüfungen greifen dort nicht mehr.
-
-Gemessen und belegt:
-
-- **Vermessung am Xbot** (67 Knochen, 28 374 Vertices): 18 Gelenke, 14 Segmente,
-  8 Sohlenpunkte, 0 Warnungen, Körperhöhe 1,8093 m. Die Werkzeuge liefern diese
-  Werte real, keine Attrappen: `describe_world` → 1,8093 m, Bodenebene
-  −0,00323 m; `describe_body` → 14 Segmente, 8 Sohlen, 151,88 kg, Rumpfradius
-  0,169 m.
-- **Werkzeugkatalog**: 22 Einträge, davon 19 für den Agenten sichtbar. Die drei
-  übrigen sind eine Bibliothek fertiger Bewegungen, bewusst ausgeblendet —
-  gemessen in zwei Agentenläufen: liegt sie neben `set_pose`, baut der Agent die
-  ganze Bewegung daraus und setzt keine einzige eigene Haltung.
-- **Der Agent misst selbst.** Statt fertiger Urteile liefert `measure` acht
-  geometrische Grundmessungen, die er beliebig kombiniert — Höhe, Abstand,
-  Abstand vorne/seitlich/hoch, Winkel, Neigung, Tempo. „Steht das Knie vor dem
-  Zeh" ist damit keine eingebaute Prüfung, sondern eine Frage, die er stellt.
-  An einer absichtlich schlechten Hocke gemessen: Knie 10,9 cm vor dem Zeh,
-  Rumpf nur 5,9° geneigt.
-- **WebMCP-Transport** (Chrome 151): Werkzeuge lassen sich nach dem Upload zur
-  Laufzeit erzeugen; Antworten bis 512 KB kommen in 5 Millisekunden vollständig
-  durch; ein Werkzeug kann auf den Klick des Menschen warten und die Antwort im
-  selben Aufruf liefern (gemessen 3,1 s); Bilder funktionieren neben Text in
-  derselben Antwort.
-- **Gemessene Körpergeometrie schlägt geschätzte**: geschätzte Radien, Massen und
-  Kontaktpunkte erzeugten 269 Fehlalarme auf einem Clip, in dem die Figur ruhig
-  steht; nach der Umstellung auf Vermessung verschwanden Bodendurchdringung und
-  Balancefehler vollständig.
-- **Antwortgrößen für den Agenten**: `describe_rig` lieferte 52 599 Bytes, ein
-  Agent schrieb sie in eine Datei und durchsuchte sie mit Shell-Aufrufen. Als
-  Tabelle sind es 3 176 Bytes, mit der Zahl der Gelenke oben, damit er
-  Vollständigkeit selbst prüfen kann; die Vollfassung gibt es auf Anfrage.
-- **Export**: 1 943 856 Bytes glTF für 48 Frames, mit Wurzelbewegung, und der
-  Mensch bekommt die Datei als Download.
-
-Nicht fertig ist: der aufgezeichnete Demolauf für den Wettbewerb, und die
-Zusage „beliebiges fremdes Rig" — von zehn geriggten Fremdmodellen laufen drei
-durch die volle Kette. Details in [`docs/abgabe.md`](docs/abgabe.md).
-
-## Aufbau
-
-| Datei | Inhalt |
+| Directory | What lives there |
 |---|---|
-| [`VISION.md`](VISION.md) | das Ziel in kurz |
-| [`docs/plan.md`](docs/plan.md) | Design, Datenformate, Architektur |
-| [`docs/challenge.md`](docs/challenge.md) | Bedingungen des Wettbewerbs |
-| [`AGENTS.md`](AGENTS.md) | Arbeitsanweisungen für alle, die hier mitbauen |
-| `spikes/` | Wegwerfcode aus Vorabtests, samt Messergebnissen |
+| `src/rig/` | Measuring the loaded model |
+| `src/solver/` | The solvers: keyframes, foot anchors, ballistic arcs |
+| `src/validate/` | Physics, intent and style checks |
+| `src/tools/` | The WebMCP tool layer (20 registered tools) |
+| `src/render/` | The image strip for the agent |
+| `src/ui/` | The interface, the agent trace |
 
-## Lizenz
+Measured on the test figure Xbot: 1.8093 m tall, 67 bones, 15 segments, 8 sole points.
+None of these numbers is typed into the code.
 
-MIT, siehe [LICENSE](LICENSE).
+## A note on language
+
+> Source code comments are in German. They are not decoration — each one cites the
+> measurement that caused the decision. This README is the English entry point.
+
+## Trying it out
+
+- In the ChatGPT in-app browser, or
+- in Chrome with `chrome://flags/#enable-webmcp-testing` enabled.
+
+Open https://urbanlama.github.io/webmcp-character-animation/ and let the agent
+drive the page.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

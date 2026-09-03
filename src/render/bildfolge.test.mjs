@@ -1,6 +1,6 @@
 // Abnahmetest — „Der Agent sieht den Ablauf als Folge GROSSER Einzelbilder".
 //
-// Vorgeschichte, zwei verworfene Wege (docs/buehne-befunde-2026-09-02.md):
+// Vorgeschichte, zwei verworfene Wege (docs/journal/buehne-befunde-2026-09-02.md):
 //
 //   1. Der alte Bildstreifen klebte bis zu sechs Frames in EIN PNG. Jede Figur
 //      wurde fingernagelgross; am Bild belegt, dass darauf nichts zu erkennen

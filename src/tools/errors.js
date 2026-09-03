@@ -1,4 +1,4 @@
-// Fehlermeldungen der Werkzeugschicht, docs/plan.md 5.5 (Schlussabsatz).
+// Fehlermeldungen der Werkzeugschicht, docs/journal/plan.md 5.5 (Schlussabsatz).
 //
 // Eine Werkzeug-Fehlermeldung nennt immer drei Dinge:
 //   1. den Wert, den der Agent geschickt hat

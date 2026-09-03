@@ -39,7 +39,7 @@ function istKnochenverzeichnis(v) {
 }
 
 test('Frame-Felder: kein reserviertes Feld traegt etwas anderes als Knochen', async () => {
-  const puff = readFileSync('spikes/test-b-motion/assets/Xbot.glb');
+  const puff = readFileSync('beispiel/Xbot.glb');
   const gltf = await loadGLB(puff.buffer.slice(puff.byteOffset, puff.byteOffset + puff.byteLength));
   const profil = await xbotProfil();
   const skel = baueSkeleton(profil, erfasseBind(gltf.scene));

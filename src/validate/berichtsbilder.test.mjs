@@ -1,12 +1,12 @@
 // Abnahmetest — „Der Prüfbericht zeigt EINEN Moment, dafür räumlich eindeutig".
 //
-// Befund vom 2. September 2026 (docs/buehne-befunde-2026-09-02.md, Punkt 1):
+// Befund vom 2. September 2026 (docs/journal/buehne-befunde-2026-09-02.md, Punkt 1):
 // `validate` klebte bis zu sechs Frames in zwei Ansichten zu einem Bild
 // zusammen — zwölf Kacheln, jede Figur fingernagelgroß. Belegt am Bild:
 // darauf ist eine Fehlhaltung nicht erkennbar, und genau dafür war das Bild da.
 //
 // Die Bildpflicht selbst bleibt (plan.md 5.3): ein Agent, der nur Zahlen liest,
-// baut kaputte Bewegungen mit grünem Gewissen — NACHLESE.md, Punkt 1. Sechs
+// baut kaputte Bewegungen mit grünem Gewissen — docs/journal/nachlese-2026-09-01.md,
 // Briefmarken erfüllen sie aber nur auf dem Papier.
 //
 // Zwei Ansichten, nicht eine: aus einem einzelnen Blick ist ein 3D-Raum nicht

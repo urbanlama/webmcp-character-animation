@@ -1,6 +1,6 @@
 // AP5 — Phasenlöser: Kinematik-Kern.
 //
-// Was hier passiert: aus dem GEMESSENEN RigProfile (docs/plan.md 5.1) und der
+// Was hier passiert: aus dem GEMESSENEN RigProfile (docs/journal/plan.md 5.1) und der
 // eingefangenen Bind-Pose des geladenen Modells wird ein rechenbares Skelett.
 // Forward-Kinematik (FK) liefert je Pose die Weltpositionen aller Knochen,
 // den Schwerpunkt aus den gemessenen Segmentmassen und das Trägheitsmoment

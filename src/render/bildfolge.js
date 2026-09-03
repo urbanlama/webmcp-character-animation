@@ -1,6 +1,6 @@
 // Bildfolge — der Ablauf einer Bewegung als Folge GROSSER Einzelbilder.
 //
-// Zwei Wege dahin waren falsch (docs/buehne-befunde-2026-09-02.md):
+// Zwei Wege dahin waren falsch (docs/journal/buehne-befunde-2026-09-02.md):
 //
 //   Der Bildstreifen klebte bis zu sechs Frames in EIN PNG. Jede Figur wurde
 //   fingernagelgross; am Bild belegt, dass darauf nichts zu erkennen ist.

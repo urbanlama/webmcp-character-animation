@@ -12,7 +12,7 @@
 // sich innerhalb der Oberschenkelkapsel, ohne sie je zu verlassen, und der
 // Rumpf ist eine einzige Kapsel von der Hüfte bis zum Hals. Am Xbot gemessen:
 // `knee.bend` bekäme mit Kapseln nie eine Grenze, und der Oberarm im Kopf
-// bleibt unter der Kapselschwelle (docs/buehne-befunde-2026-09-02.md, D und E).
+// bleibt unter der Kapselschwelle (docs/journal/buehne-befunde-2026-09-02.md, D und E).
 //
 // Kein three.js: Punkte sind [x, y, z]-Arrays. Damit läuft die Prüfung in Node
 // und im Browser, wie der Rest der Rechenschicht (AGENTS.md, Testen).

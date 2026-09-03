@@ -1,4 +1,4 @@
-// Fester Mensch-Moment 1 aus docs/plan.md 6.7: nach dem Upload unsichere
+// Fester Mensch-Moment 1 aus docs/journal/plan.md 6.7: nach dem Upload unsichere
 // Rollen bestaetigen.
 //
 // Die Schwellen stehen nicht hier. src/rig/detect.js vergibt Rollen mit

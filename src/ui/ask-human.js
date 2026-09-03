@@ -1,4 +1,4 @@
-// Rueckfrage an den Menschen, docs/plan.md 6.7 und Werkzeug 15 aus 5.5.
+// Rueckfrage an den Menschen, docs/journal/plan.md 6.7 und Werkzeug 15 aus 5.5.
 //
 // Der Agent ruft ask_human auf, der Aufruf bleibt offen, der Mensch klickt,
 // die Antwort kommt im selben Aufruf zurueck. Dazwischen liegt dieser Broker:

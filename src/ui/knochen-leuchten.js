@@ -1,4 +1,4 @@
-// Der fragliche Knochen leuchtet, docs/plan.md 6.7, Moment 1.
+// Der fragliche Knochen leuchtet, docs/journal/plan.md 6.7, Moment 1.
 //
 // Ohne das ist die Rollenfrage nicht beantwortbar: „Ist mixamorigLeftFoot die
 // Rolle foot_l?“ kann niemand beurteilen, der nicht sieht, welcher Knochen

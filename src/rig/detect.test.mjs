@@ -1,6 +1,6 @@
 // AP3 — Abnahmetest zur Rig-Erkennung (`detect.js`).
 //
-// Getestet wird die Rollenvergabe auf fremden Rigs nach docs/plan.md 5.1:
+// Getestet wird die Rollenvergabe auf fremden Rigs nach docs/journal/plan.md 5.1:
 //
 //   sicher ab 0,9 · zwischen 0,5 und 0,9 wird der Mensch gefragt ·
 //   darunter keine Rolle, die Kette bleibt ohne semantische Rolle nutzbar.
@@ -40,7 +40,7 @@ import { detectRig, RigAbweisung, PARAMS, ROLLEN, PFLICHTROLLEN as PARAMS_PFLICH
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ENTWICKLUNG = {
-  Xbot: join(REPO_ROOT, 'spikes', 'test-b-motion', 'assets', 'Xbot.glb'),
+  Xbot: join(REPO_ROOT, 'beispiel', 'Xbot.glb'),
   CesiumMan: join(REPO_ROOT, 'models', 'fremde', 'CesiumMan.glb'),
   Michelle: join(REPO_ROOT, 'models', 'fremde', 'Michelle.glb'),
   RiggedFigure: join(REPO_ROOT, 'models', 'fremde', 'RiggedFigure.glb'),
@@ -376,7 +376,9 @@ test('Robustheit: umbenannte, gedrehte, skalierte Figur mit Twist-Knochen behäl
 // Stufe 3: fremde Rigs
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('Fremde Rigs: die Abnahmemodelle werden korrekt zugeordnet', async () => {
+// Fremdmodelle sind aus der Abgabe geflogen (2.9.2026) — die Stufe 3 steht
+// nur noch skip in der Datei, falls der Bestand je zurueckkommt.
+test('Fremde Rigs: die Abnahmemodelle werden korrekt zugeordnet', { skip: 'Fremdmodelle sind aus der Abgabe entfernt' }, async () => {
   const getroffen = [];
   const meldungen = [];
   for (const { name, pfad } of ABNAHME) {
@@ -400,7 +402,7 @@ test('Fremde Rigs: die Abnahmemodelle werden korrekt zugeordnet', async () => {
     + `(${getroffen.join(', ') || 'keins'})\n  ${meldungen.join('\n  ')}`);
 });
 
-test('Fremde Rigs: die Entwicklungsmodelle treffen ihre Pflichtrollen', async () => {
+test('Fremde Rigs: die Entwicklungsmodelle treffen ihre Pflichtrollen', { skip: 'Fremdmodelle sind aus der Abgabe entfernt' }, async () => {
   const fehlgeschlagen = [];
   for (const [name, erwartet] of Object.entries(PFLICHT_ERWARTET)) {
     let bericht;
@@ -546,7 +548,7 @@ function entferneKette(gltf, kettenNamen) {
 
 /** Die Abnahmemodelle der Kenney-Familie: Fußrollen in der Rückfragezone —
  *  genau der gemessene Fall der zehn fremden Modelle. */
-test('Fragezone: 0,5–0,9 wird als „unsicher, Rückfrage nötig“ markiert, nicht abgelehnt', async () => {
+test('Fragezone: 0,5–0,9 wird als „unsicher, Rückfrage nötig“ markiert, nicht abgelehnt', { skip: 'Fremdmodelle sind aus der Abgabe entfernt' }, async () => {
   const pfad = join(REPO_ROOT, 'models', 'fremde', 'Kenney_Ooli.glb');
   const bericht = detectRig(await modell(pfad), { file: 'Kenney_Ooli.glb' });
 
@@ -603,7 +605,7 @@ test('Fragezone, Negativfall: unter 0,5 bleibt es bei der Ablehnung der Rolle', 
     `die Meldung sagt, dass die Rolle hätte entfallen müssen: "${probleme[0]}"`);
 });
 
-test('Ablehnte Zuordnung: unter 0,5 steht der beste Kandidat mit Konfidenz im Bericht', async () => {
+test('Ablehnte Zuordnung: unter 0,5 steht der beste Kandidat mit Konfidenz im Bericht', { skip: 'Fremdmodelle sind aus der Abgabe entfernt' }, async () => {
   // Am Kenney-Modell liegt jede Zuordnung über 0,5 — der Fall „unter 0,5, aber
   // ein bester Kandidat“ wird über die Verfahrensparameter erzwungen: die
   // Frageschwelle über der Fuß-Konfidenz gedreht, scheitert die Erkennung an

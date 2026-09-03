@@ -21,7 +21,7 @@ import { loadGLB } from '../scene/load.js';
 import { createToolLayer } from './index.js';
 import { echtePorts } from './ports.js';
 
-const XBOT = 'spikes/test-b-motion/assets/Xbot.glb';
+const XBOT = 'beispiel/Xbot.glb';
 
 async function schichtMitXbot() {
   const puff = readFileSync(XBOT);

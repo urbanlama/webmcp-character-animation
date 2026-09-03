@@ -1,4 +1,4 @@
-// AP9 — Bildstreifen für den Agenten (docs/plan.md 6.8).
+// AP9 — Bildstreifen für den Agenten (docs/journal/plan.md 6.8).
 //
 // Der Agent, der diese Seite bedient, ist blind, wenn er nur Zahlen bekommt. Dieser
 // Streifen gibt ihm Augen: mehrere fest benannte Ansichten nebeneinander in EINEM

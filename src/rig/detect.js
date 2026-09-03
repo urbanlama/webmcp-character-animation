@@ -2,7 +2,7 @@
 //
 // Eingabe: ein geladenes Modell (three.js-Szene mit Skelett in Bind-Pose).
 // Ausgabe: die semantischen Rollen seiner Knochen — Becken, linkes Bein,
-// rechter Fuß, wo vorne ist — mit Konfidenz nach docs/plan.md 5.1.
+// rechter Fuß, wo vorne ist — mit Konfidenz nach docs/journal/plan.md 5.1.
 //
 // Grundsätze dieses Moduls
 //
@@ -1204,7 +1204,7 @@ export function erkenneKonvention(knochenNamen) {
  * Rig-Erkennung auf einem geladenen Modell.
  * @param {{scene: object}} gltf Ergebnis von loadGLB
  * @param {{file?: string, params?: object}} [opts]
- * @returns {object} Bericht nach docs/plan.md 5.1: world, bones, roles,
+ * @returns {object} Bericht nach docs/journal/plan.md 5.1: world, bones, roles,
  *                   unknown, questions, evidence, params, warnings
  * @throws {RigAbweisung}
  */

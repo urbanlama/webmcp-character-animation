@@ -3,12 +3,13 @@
 Beitrag zur OpenAI WebMCP Challenge. Eine Web-Oberfläche, in der ein Agent geriggte
 3D-Charaktere animiert, ohne blind zu sein.
 
-Lies `VISION.md` für das Ziel und `docs/plan.md` für die technischen Festlegungen —
-Datenformate, Werkzeugkatalog, Architektur.
+Die technischen Festlegungen — Datenformate, Werkzeugkatalog, Architektur — stehen in
+`docs/journal/plan.md`. Der Ordner `docs/` liegt nur lokal und ist nicht Teil des
+Repos.
 
 ---
 
-## Die drei Regeln
+## Die zwei Regeln
 
 ### 1. Körpermaße werden gemessen, Verfahrensparameter werden benannt
 
@@ -22,12 +23,7 @@ einer Stelle, mit Begründung, und werden im Rig-Bericht ausgegeben.
 Belegt: Geschätzte Körpermaße erzeugten 269 Fehlalarme auf einem Clip, in dem eine
 Figur ruhig dasteht.
 
-### 2. Kein Test ohne Negativfall
-
-Zu jedem Test gehört ein absichtlich kaputter Fall, der rot werden **muss**. Wird er
-nicht rot, ist der Test kaputt, nicht der Code.
-
-### 3. Kalibrierungsdaten und Testdaten sind getrennt
+### 2. Kalibrierungsdaten und Testdaten sind getrennt
 
 Wer aus Daten lernt, prüft nicht mit denselben Daten.
 
@@ -81,8 +77,8 @@ Prüfungen, Löser — läuft ohne Browser. **Browser nur, wo Pixel entstehen** 
 Bildstreifen); diese laufen über Playwright. `npm test` führt beide Hälften aus.
 
 **Bezugsmaterial:** Referenzclips sind die sieben Animationen in
-`spikes/test-b-motion/assets/Xbot.glb` (`agree`, `headShake`, `idle`, `run`,
-`sad_pose`, `sneak_pose`, `walk`) — siehe Regel 3, wer womit arbeitet.
+`beispiel/Xbot.glb` (`agree`, `headShake`, `idle`, `run`, `sad_pose`, `sneak_pose`,
+`walk`) — siehe Regel 2, wer womit arbeitet.
 
 ---
 
@@ -113,20 +109,23 @@ await document.modelContext.registerTool({
 ## Aufbau des Repos
 
 ```
-README.md         was das Projekt ist, für Menschen
-VISION.md         das Ziel in kurz
-AGENTS.md         diese Datei — wie hier gearbeitet wird
-CLAUDE.md         Verweis auf AGENTS.md
-docs/plan.md      Datenformate, Werkzeugkatalog, Architektur
-docs/challenge.md offizielle Wettbewerbsfakten
-docs/abgabe.md    der Abgabetext
-docs/video.md     Demo-Video (Abgabepflicht)
-spikes/           Wegwerfcode aus Vorabtests, nicht Teil des Produkts
+README.md     was das Projekt ist, für Menschen
+AGENTS.md     diese Datei — wie hier gearbeitet wird
+CLAUDE.md     Verweis auf AGENTS.md
+index.html    die Seite
+src/          Vermessung, Löser, Prüfungen, Werkzeuge, Oberfläche
+tests/        Durchläufe über die ganze Kette
+tools/        Test- und Abnahmeskripte
+beispiel/     Xbot.glb, das Testmodell mit sieben Referenzclips
+vendor/       three.js und GLTFLoader
 ```
+
+`docs/` liegt daneben, nur lokal: Abgabetext, Wettbewerbsfakten, Videodrehbuch und
+unter `docs/journal/` die Arbeitsprotokolle aus dem Bau.
 
 ---
 
 ## Was nicht gebaut wird
 
 Vierbeiner und Fabelwesen, Text-to-Motion-Modelle im Browser, Ragdoll-Simulation,
-mehrere Figuren, Kleidung, Gesichtsanimation. Begründungen in `docs/plan.md`.
+mehrere Figuren, Kleidung, Gesichtsanimation. Begründungen in `docs/journal/plan.md`.
