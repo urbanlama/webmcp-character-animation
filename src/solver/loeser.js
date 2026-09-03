@@ -764,7 +764,7 @@ function wendeOverridesAn(ctx, z, tl, frames, bericht) {
       // Hocke. Jetzt bleibt die Haltung, die er gebaut hat; was im Boden
       // steckt, hebt bodenfreiheit() an und meldet es.
       const { abstand, teil } = bodenabstand(skel, kn, stehenderFuss(skel, tl.anchors, f));
-      pose.wpos[1] -= (process.env.NUR_ANHEBEN ? Math.min(0, abstand) : abstand);
+      pose.wpos[1] -= abstand;
       kn = poseZuFk(skel, pose);
       e.frame.hoehe = { quelle: 'boden', absenkung_m: +abstand.toFixed(4), teil };
       bilanz.boden.push({ frame: f, absenkung: abstand });
@@ -1027,7 +1027,7 @@ function hoehenSchluessel(skel, overrides, yKurve, entwuerfe, fps, anker) {
     if (!e) continue;
     const kn = poseZuFk(skel, e.pose);
     const { abstand } = bodenabstand(skel, kn, stehenderFuss(skel, anker, f));
-    const bodenwert = e.pose.wpos[1] - (process.env.NUR_ANHEBEN ? Math.min(0, abstand) : abstand);
+    const bodenwert = e.pose.wpos[1] - abstand;
     const gesetzt = kurvenWert(gesetzteKurve, f, { hoehenachse: true, fps });
     if (gesetzt !== null && bodenwert < gesetzt - einbruchTol) {
       verworfen.push({ frame: f, bodenwert, gesetzt });
