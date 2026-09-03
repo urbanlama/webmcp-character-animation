@@ -892,12 +892,87 @@ export function baueWerkzeuge({ store, ask, ports }) {
         + 'diesem Frame. Der Löser strebt es an — ob es gelingt, steht in validate.');
     },
 
+    /**
+     * Nachtrag an einer stehenden Haltung — einer oder mehrere Kanaele.
+     *
+     * Warum mehrere: seit ein set_pose-Schluesselbild die GANZE Haltung ist,
+     * kann der Agent einen einzelnen Winkel nicht mehr mit set_pose
+     * nachbessern — er muesste alle Gelenke des Frames wiederholen. Also nimmt
+     * er set_joint, und das schrieb einen Kanal je Aufruf. Im Lauf vom
+     * 3. September 2026 waren das 77 von 144 Aufrufen, 53 Prozent, verteilt
+     * auf zwoelf Frames; Frame 58 allein brauchte zwoelf Aufrufe. Ein
+     * symmetrischer Armschwung sind vier: arm_l.lift, arm_r.lift, arm_l.swing,
+     * arm_r.swing.
+     *
+     * Mit `joints` sind es zwoelf Aufrufe statt 77. Der alte Weg
+     * (joint/channel/angleDeg) bleibt gueltig und unveraendert.
+     */
     async set_joint(args) {
       const a = pruefeObjekt('set_joint', 'Argumente', args,
-        'übergib {frame, joint, angleDeg, channel}');
+        'übergib {frame, joint, angleDeg, channel} für einen Kanal '
+        + 'oder {frame, joints} für mehrere');
       const z0 = store.roh();
       brauchtLaenge('set_joint', z0.frameCount);
       pruefeFrame('set_joint', 'frame', a.frame, z0.frameCount);
+
+      // ── Mehrere Kanaele auf einmal ────────────────────────────────────────
+      if (a.joints !== undefined) {
+        pruefeObjekt('set_joint', 'joints', a.joints,
+          'Gelenkname auf Kanal auf Grad, z. B. {"arm_l": {"lift": -30, "swing": 68}}');
+        const gesetzt = [];
+        for (const [gelenk, kanaele] of Object.entries(a.joints)) {
+          pruefeObjekt('set_joint', `joints.${gelenk}`, kanaele,
+            'Kanalname auf Grad, z. B. {"lift": -30}');
+          for (const [kanal, grad] of Object.entries(kanaele)) {
+            pruefeZahl('set_joint', `joints.${gelenk}.${kanal}`, grad, -180, 180, 'Grad',
+              'die Grenzwerte je Gelenk stehen in describe_rig');
+            const d = pruefeGelenkKanal('set_joint', ports, gelenk, kanal);
+            const gr = Array.isArray(d.limit) ? d.limit : null;
+            const kl = gr ? Math.min(gr[1], Math.max(gr[0], grad)) : grad;
+            gesetzt.push({ gelenk, kanal, grad, geklemmt: kl !== grad ? kl : null, grenze: gr });
+          }
+        }
+        if (gesetzt.length === 0) {
+          throw new WerkzeugMeldung({
+            tool: 'set_joint', param: 'joints', value: 0,
+            range: 'mindestens 1 Kanal',
+            next: 'nenne mindestens ein Gelenk mit einem Kanal, z. B. {"arm_l": {"lift": -30}}',
+            message: 'joints enthält 0 Kanäle: es gibt nichts zu setzen'
+          });
+        }
+        store.aendere((z) => {
+          const o = z.overrides[String(a.frame)] || (z.overrides[String(a.frame)] = {});
+          const joints = o.joints || (o.joints = {});
+          for (const { gelenk, kanal, grad } of gesetzt) {
+            const g = joints[gelenk] || (joints[gelenk] = {});
+            g[kanal] = grad;
+          }
+        });
+        const geklemmte = gesetzt.filter((x) => x.geklemmt !== null);
+        const hinweisM = geklemmte.length
+          ? ' Geklemmt an der gemessenen Grenze: '
+            + geklemmte.map((x) => `${x.gelenk}.${x.kanal} ${zahl(x.grad)}° → ${zahl(x.geklemmt)}° `
+              + `(${x.grenze[0]}…${x.grenze[1]}°)`).join(', ') + '.'
+          : '';
+        return text(`${gesetzt.length} Kanäle in Frame ${a.frame} nachgetragen: `
+          + gesetzt.map((x) => `${x.gelenk}.${x.kanal} ${zahl(x.grad)}°`).join(', ')
+          + `. Die übrigen Kanäle dieses Frames bleiben unverändert; `
+          + `${Object.keys(store.roh().overrides).length} Frames haben jetzt Overrides.`
+          + hinweisM
+          + ' Rücknehmbar mit undo.'
+          + wirkung(store.roh(), a.frame, ports));
+      }
+
+      // ── Ein Kanal, der bisherige Weg ──────────────────────────────────────
+      if (a.joint === undefined && a.channel === undefined && a.angleDeg === undefined) {
+        throw new WerkzeugMeldung({
+          tool: 'set_joint', param: 'joints', value: 0,
+          range: 'entweder joints oder joint + channel + angleDeg',
+          next: 'für mehrere Kanäle: {frame, joints:{"arm_l":{"lift":-30,"swing":68}}} — '
+            + 'für einen: {frame, joint:"arm_l", channel:"lift", angleDeg:-30}',
+          message: 'weder joints noch joint/channel/angleDeg übergeben: 0 Kanäle zu setzen'
+        });
+      }
       pruefeText('set_joint', 'joint', a.joint, 'Gelenknamen liefert describe_rig');
       pruefeZahl('set_joint', 'angleDeg', a.angleDeg, -180, 180, 'Grad',
         'die Grenzwerte je Gelenk stehen in describe_rig');

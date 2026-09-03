@@ -349,9 +349,14 @@ export const KATALOG = [
   },
   {
     name: 'set_joint',
-    description: 'EBENE 1, Feinschliff - setzt EINEN Kanal EINES Gelenks in einem Frame. Fuer '
-      + 'Nachbesserungen an einer Haltung, die schon steht. Eine ganze Haltung setzt man mit '
-      + 'set_pose, nicht mit vielen Aufrufen hiervon. Gelenk- und Kanalnamen kommen aus '
+    description: 'EBENE 1, Feinschliff - traegt Gelenkwinkel in einem Frame NACH, ohne die '
+      + 'uebrigen Kanaele anzufassen. Das ist der Unterschied zu set_pose: dort ist das '
+      + 'Schluesselbild die ganze Haltung, hier bleibt alles Ungenannte stehen. '
+      + 'MEHRERE KANAELE IN EINEM AUFRUF: nimm joints wie bei set_pose, also '
+      + '{frame, joints:{arm_l:{lift:-30,swing:68}, arm_r:{lift:-30,swing:68}}}. Ein einzelner '
+      + 'Kanal geht weiterhin mit {frame, joint, channel, angleDeg}. Rufe NICHT viermal '
+      + 'hintereinander fuer denselben Frame auf - dafuer gibt es joints. Eine ganze Haltung '
+      + 'setzt man mit set_pose. Gelenk- und Kanalnamen kommen aus '
       + 'describe_rig; Werte ausserhalb der gemessenen Gelenkgrenze werden beim Loesen geklemmt und '
       + 'gemeldet. Auf einem Frame OHNE Haltung entsteht dabei ein neues Schluesselbild - es traegt '
       + 'nur diesen einen Kanal und keine Hoehe. Zwischen zwei gesetzten Hoehen (Sprung, Salto) '
@@ -361,7 +366,17 @@ export const KATALOG = [
       type: 'object',
       properties: {
         frame: { type: 'integer', minimum: 0 },
-        joint: { type: 'string', description: 'Gelenkname aus describe_rig' },
+        joints: {
+          type: 'object',
+          description: 'MEHRERE Kanaele auf einmal: Gelenkname auf Kanalname auf Grad, '
+            + 'z. B. {"arm_l": {"lift": -30, "swing": 68}}. Nicht genannte Kanaele des Frames '
+            + 'bleiben unveraendert. Statt joint/channel/angleDeg zu verwenden.',
+          additionalProperties: {
+            type: 'object',
+            additionalProperties: { type: 'number', minimum: -180, maximum: 180 }
+          }
+        },
+        joint: { type: 'string', description: 'Gelenkname aus describe_rig (Einzelkanal-Weg)' },
         angleDeg: { type: 'number', minimum: -180, maximum: 180, description: 'Winkel in Grad' },
         channel: {
           type: 'string',
@@ -373,7 +388,10 @@ export const KATALOG = [
             + 'welche es an welchem Gelenk gibt, sagt describe_rig'
         }
       },
-      required: ['frame', 'joint', 'angleDeg', 'channel']
+      // Nur `frame` ist Pflicht: entweder kommt `joints` (mehrere Kanaele) oder
+      // das Tripel joint/channel/angleDeg (ein Kanal). Der Handler sagt mit
+      // Zahl, wenn keines von beiden da ist.
+      required: ['frame']
     }
   },
   {

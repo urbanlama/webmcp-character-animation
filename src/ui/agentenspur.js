@@ -179,11 +179,18 @@ export function mounteSpur({ wurzel, zeilen = ZEILEN_STANDARD, uhr = () => new D
   wurzel.replaceChildren(titel, liste);
 
   const eintraege = [];
+  // Gezaehlt wird jeder Aufruf, vorgehalten werden nur die letzten `zeilen`.
+  //
+  // Vorher zeigte die Ueberschrift die Laenge der GEKAPPTEN Liste. Sie blieb
+  // damit bei 60 stehen, waehrend der Agent weiterarbeitete: der Lauf vom
+  // 3. September 2026 machte 144 Aufrufe, die Seite meldete 60. Wer
+  // zuschaute, hielt den Agenten fuer fertig.
+  let gesamt = 0;
 
   function zeichne() {
-    titel.textContent = eintraege.length === 1
+    titel.textContent = gesamt === 1
       ? 'Agent activity — 1 call'
-      : `Agent activity — ${eintraege.length} calls`;
+      : `Agent activity — ${gesamt} calls`;
 
     liste.replaceChildren(...eintraege.slice(0, zeilen).map((e) => {
       const zeile = dok.createElement('li');
@@ -220,6 +227,7 @@ export function mounteSpur({ wurzel, zeilen = ZEILEN_STANDARD, uhr = () => new D
       // Aelteste Eintraege fallen hinten raus: die Spur ist ein Fenster auf die
       // letzte Arbeit, kein wachsendes Protokoll.
       if (eintraege.length >= zeilen) eintraege.length = zeilen - 1;
+      gesamt += 1;
       eintraege.unshift({
         name, dauerMs, fehler, text, voll: voll || text,
         zeit: `${String(t.getHours()).padStart(2, '0')}:`
@@ -230,10 +238,11 @@ export function mounteSpur({ wurzel, zeilen = ZEILEN_STANDARD, uhr = () => new D
     },
     /** Fuer Tests und Diagnose. */
     stand() {
-      return { gesamt: eintraege.length, sichtbar: Math.min(eintraege.length, zeilen) };
+      return { gesamt, sichtbar: Math.min(eintraege.length, zeilen) };
     },
     leeren() {
       eintraege.length = 0;
+      gesamt = 0;
       zeichne();
     }
   };
