@@ -24,7 +24,7 @@ import { PFLICHTROLLEN, priorisiereFragen, offenerRest } from './rollen-priorisi
 import { ANTWORT_MAX_BYTES, AUFRUF_MAX_MS } from './registry.js';
 import { pruefeKriterien } from '../validate/intent.js';
 import { folgeFrames, FOLGE_BILDER, FOLGE_SKALA } from '../render/bildfolge.js';
-import { pruefePhysik, fussLiegtAuf } from '../validate/physics.js';
+import { pruefePhysik, fussLiegtAuf, BODEN_TOLERANZ_ANTEIL } from '../validate/physics.js';
 
 /**
  * Verfahrensparameter: welcher Koerperbereich von welchem Verb betroffen ist.
@@ -1491,7 +1491,7 @@ export function baueWerkzeuge({ store, ask, ports }) {
         // die Hoehe des Fussknochens — 8,8 cm ueber der Sohle, unbrauchbar.
         bodenabstand_m: f.bodenabstand_m ?? null,
         wurzelhoehe: f.hoehe ?? null,
-        sohlen_m: sohlenHoehen(f, boden),
+        sohlen_m: sohlenHoehen(f, boden, ports.rig ? ports.rig.world().height : null),
         schwerpunkt_m: f.com ? f.com.map((v) => +v.toFixed(4)) : null,
         schwerpunktHoeheUeberBoden_m: f.com ? +(f.com[1] - boden).toFixed(4) : null,
         wurzel: f.root
@@ -2200,12 +2200,52 @@ function tiefsteSohle(frame, seite) {
   return best;
 }
 
-/** Hoehe des tiefsten Sohlenpunkts je Fuss ueber dem Boden, in Metern. */
-function sohlenHoehen(frame, boden) {
+/** Tiefster Punkt der HINTEREN (back) oder VORDEREN (front) Sohlenpunkte
+ *  eines Fusses ueber dem Boden, in Metern — oder null. */
+function sohlenTeil(frame, seite, teil, boden) {
+  let best = null;
+  for (const [id, p] of Object.entries(frame.solePositions ?? {})) {
+    if (!id.startsWith(`sole_${seite}_${teil}`)) continue;
+    if (best === null || p[1] < best) best = p[1];
+  }
+  return best === null ? null : +(best - boden).toFixed(4);
+}
+
+/**
+ * Hoehe des tiefsten Sohlenpunkts je Fuss ueber dem Boden, in Metern —
+ * und getrennt davon FERSE und SPITZE.
+ *
+ * Warum getrennt: der tiefste Punkt allein sagt nur, DASS der Fuss den Boden
+ * beruehrt, nicht WIE. Lauf 12 vom 3. September 2026, letzter Frame der
+ * Landung: `sohlen_m foot_l 0.0001` — der Agent las "steht sauber". Die Ferse
+ * hing dabei 12,1 cm in der Luft, die Figur stand auf den Zehenspitzen und
+ * kippte nach hinten. Keine Zahl der Antwort nannte es; im Bild war es
+ * sofort zu sehen.
+ *
+ * Der Xbot hat vier Sohlenpunkte je Fuss (back_in, back_out, front_in,
+ * front_out) — sie sind vermessen und liegen im Frame. Gemeldet wurde bisher
+ * nur ihr Minimum.
+ *
+ * `stand` fasst es in ein Wort, gemessen an derselben Schwelle, ab der ein
+ * Fuss als tragend gilt (AUFLAGE_SCHWELLE_ANTEIL, 1 % Koerperhoehe = 1,8 cm
+ * am Xbot): flach, zehenstand, fersenstand oder frei.
+ */
+function sohlenHoehen(frame, boden, koerperhoehe) {
   const out = {};
+  const tol = (typeof koerperhoehe === 'number' && koerperhoehe > 0)
+    ? koerperhoehe * BODEN_TOLERANZ_ANTEIL : 0.018;
   for (const seite of ['l', 'r']) {
     const p = tiefsteSohle(frame, seite);
-    if (p) out[`foot_${seite}`] = +(p[1] - boden).toFixed(4);
+    if (!p) continue;
+    const tiefste = +(p[1] - boden).toFixed(4);
+    const ferse = sohlenTeil(frame, seite, 'back', boden);
+    const spitze = sohlenTeil(frame, seite, 'front', boden);
+    if (ferse === null || spitze === null) { out[`foot_${seite}`] = tiefste; continue; }
+    let stand;
+    if (tiefste > tol) stand = 'frei';
+    else if (Math.abs(ferse - spitze) <= tol) stand = 'flach';
+    else stand = ferse > spitze ? 'zehenstand' : 'fersenstand';
+    out[`foot_${seite}`] = { tiefste, ferse, spitze, stand };
   }
   return Object.keys(out).length ? out : null;
 }
