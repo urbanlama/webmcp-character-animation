@@ -21,11 +21,19 @@ two-footed landing, a bow. Screen recordings, uncut at the end.
 
 **Blender MCP**
 
-<!-- Video 1: media/blender-mcp.mp4 hier in den GitHub-Editor ziehen -->
+
+
+https://github.com/user-attachments/assets/03ad5f2c-e632-4e79-bb07-42d9f008a57c
+
+
 
 **WebMCP**
 
-<!-- Video 2: media/webmcp.mp4 hier in den GitHub-Editor ziehen -->
+
+
+https://github.com/user-attachments/assets/706012e9-61f9-45c0-969f-38a4ca74c448
+
+
 
 ## The approach
 
