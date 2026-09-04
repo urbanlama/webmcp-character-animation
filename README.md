@@ -19,18 +19,13 @@ And it never finds out what its last move actually did.
 The same order, given twice: a three-step run-up, a one-legged take-off, a backflip, a
 two-footed landing, a bow. Screen recordings, uncut at the end.
 
-<table>
-<tr>
-<td width="50%" align="center">
-<video src="https://urbanlama.github.io/webmcp-character-animation/media/blender-mcp.mp4" controls muted playsinline width="100%"></video>
-<br><b>Blender MCP</b>
-</td>
-<td width="50%" align="center">
-<video src="https://urbanlama.github.io/webmcp-character-animation/media/webmcp.mp4" controls muted playsinline width="100%"></video>
-<br><b>WebMCP</b>
-</td>
-</tr>
-</table>
+**Blender MCP**
+
+<!-- Video 1: media/blender-mcp.mp4 hier in den GitHub-Editor ziehen -->
+
+**WebMCP**
+
+<!-- Video 2: media/webmcp.mp4 hier in den GitHub-Editor ziehen -->
 
 ## The approach
 
