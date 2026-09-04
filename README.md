@@ -4,8 +4,7 @@ A web page where an AI agent animates a rigged 3D character.
 
 Entry for the [OpenAI WebMCP Challenge](https://webmcp.devpost.com).
 
-- **Try it live:** https://urbanlama.github.io/webmcp-character-animation/
-- **Code:** https://github.com/urbanlama/webmcp-character-animation (MIT)
+**Try it live:** https://urbanlama.github.io/webmcp-character-animation/
 
 ## The problem
 
@@ -16,6 +15,22 @@ itself, sticks in the floor, or barely moves at all.
 That is not because the AI is too stupid for it. It has too little to work with. It
 does not know how tall the figure is, where its weight sits, or how far a knee bends.
 And it never finds out what its last move actually did.
+
+The same order, given twice: a three-step run-up, a one-legged take-off, a backflip, a
+two-footed landing, a bow. Screen recordings, uncut at the end.
+
+<table>
+<tr>
+<td width="50%" align="center">
+<video src="https://urbanlama.github.io/webmcp-character-animation/media/blender-mcp.mp4" controls muted playsinline width="100%"></video>
+<br><b>Blender MCP</b>
+</td>
+<td width="50%" align="center">
+<video src="https://urbanlama.github.io/webmcp-character-animation/media/webmcp.mp4" controls muted playsinline width="100%"></video>
+<br><b>WebMCP</b>
+</td>
+</tr>
+</table>
 
 ## The approach
 
